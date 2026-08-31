@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import * as XLSX from "xlsx";
 import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, ShieldAlert, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
-  ImageOff, CircleCheck, CircleX, CircleDot, Search, FileSpreadsheet, Upload,
+  ImageOff, CircleCheck, CircleX, CircleDot, Search,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -74,38 +73,6 @@ function shuffle(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
-}
-
-// Interpreta las filas de un Excel de jugadoras/DT (ver plantilla). Columnas esperadas:
-// Tipo, Nombre, Equipo, Posición, Valor (M), Foto (URL). Devuelve las filas válidas y
-// un listado de errores legibles (fila a fila) para las que no se pudieron interpretar.
-function parsePlayerRows(json) {
-  const rows = [];
-  const errors = [];
-  json.forEach((row, i) => {
-    const excelRow = i + 2; // fila 1 = cabecera
-    const get = (...keys) => { for (const k of keys) if (row[k] !== undefined && row[k] !== null) return String(row[k]).trim(); return ""; };
-    const tipoRaw = get("Tipo", "tipo").toLowerCase();
-    const isCoach = tipoRaw.startsWith("entren") || tipoRaw === "dt";
-    const isPlayer = tipoRaw.startsWith("jugad");
-    const name = get("Nombre", "nombre");
-    const team = get("Equipo", "equipo");
-    const posRaw = get("Posición", "Posicion", "posición", "posicion").toLowerCase();
-    const valorRaw = get("Valor (M)", "Valor", "valor (m)", "valor");
-    const photo = get("Foto (URL)", "Foto", "foto (url)", "foto");
-    if (!name || !team) { errors.push(`Fila ${excelRow}: falta el nombre o el equipo.`); return; }
-    if (!isCoach && !isPlayer) { errors.push(`Fila ${excelRow}: la columna "Tipo" debe ser "Jugadora" o "Entrenador".`); return; }
-    let position = "DT";
-    if (isPlayer) {
-      if (posRaw.startsWith("base")) position = "BASE";
-      else if (posRaw.startsWith("aler")) position = "ALERO";
-      else if (posRaw.startsWith("piv") || posRaw.startsWith("pív")) position = "PIVOT";
-      else { errors.push(`Fila ${excelRow}: posición "${posRaw || "(vacía)"}" no reconocida (usa Base, Alero o Pívot).`); return; }
-    }
-    const basePrice = Math.max(1, Math.round(Number(String(valorRaw).replace(",", ".")) || 1));
-    rows.push({ name, team, position, basePrice, photo });
-  });
-  return { rows, errors };
 }
 
 function fmtCredits(n) {
@@ -497,16 +464,58 @@ const rankingService = {
 
 /* =============================================================================
    ALMACENAMIENTO (Supabase)
-   Usamos UNA sola tabla "kv_store" (key text primary key, value jsonb) como
-   almacén clave-valor genérico para todo lo COMPARTIDO por la liga (jugadoras,
-   jornadas, mercado, pujas, equipos...). Así mantenemos exactamente las mismas
-   funciones (readShared/writeShared/readTeam/writeTeam/readAllTeams) que ya
-   usa el resto de la app, solo que ahora hablan con Supabase en vez de con el
-   almacenamiento de la vista previa de artifacts.
+   Dos almacenes distintos:
+   - "players": tabla REAL de Supabase (id, name, team, position, base_price,
+     photo, prev_base_price, price_history). Se gestiona por completo desde el
+     Table Editor de Supabase (altas, bajas y ediciones). La app SOLO lee esta
+     tabla y, automáticamente, actualiza el valor/histórico de cada jugadora
+     al cerrar una jornada.
+   - "kv_store" (key text, value jsonb): almacén clave-valor genérico para
+     todo lo demás que es COMPARTIDO por la liga (jornadas, mercado, pujas,
+     equipos fantasy, escudos...).
    Lo PERSONAL (perfil del dispositivo, favoritos) todavía no tiene login real
    (eso llega en el siguiente paso), así que de momento vive en localStorage,
    solo en este navegador.
    ========================================================================== */
+
+// Lee TODAS las jugadoras/entrenadoras desde la tabla real "players".
+async function readPlayers() {
+  try {
+    const { data, error } = await supabase.from("players").select("*");
+    if (error) throw error;
+    return (data || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      team: p.team,
+      position: p.position,
+      basePrice: Number(p.base_price) || 0,
+      prevBasePrice: p.prev_base_price != null ? Number(p.prev_base_price) : Number(p.base_price) || 0,
+      photo: p.photo || "",
+      priceHistory: p.price_history || [],
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Tras resolver una jornada, actualiza en la tabla real SOLO las jugadoras
+// cuyo valor cambió (las que tenían estadísticas en esa jornada).
+async function writePlayersAfterJornada(updatedPlayers, jornada) {
+  const changed = updatedPlayers.filter((p) => jornada.stats && jornada.stats[p.id]);
+  try {
+    await Promise.all(changed.map((p) =>
+      supabase.from("players").update({
+        base_price: p.basePrice,
+        prev_base_price: p.prevBasePrice,
+        price_history: p.priceHistory,
+      }).eq("id", p.id)
+    ));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readShared(key, fallback) {
   try {
     const { data, error } = await supabase.from("kv_store").select("value").eq("key", key).maybeSingle();
@@ -866,7 +875,7 @@ export default function App() {
       const p = await readPersonal("profile", null);
       const fav = await readPersonal("favoritos", []);
       const [pl, jo, tm, cfg, mk, bd, hist, act, crests] = await Promise.all([
-        readShared("players", []), readShared("jornadas", []), readAllTeams(),
+        readPlayers(), readShared("jornadas", []), readAllTeams(),
         readShared("marketConfig", null), readShared("currentMarket", null),
         readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
         readShared("teamCrests", {}),
@@ -891,7 +900,7 @@ export default function App() {
     resolvingRef.current = true;
     try {
       const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity] = await Promise.all([
-        readShared("players", []), readAllTeams(), readShared("marketConfig", DEFAULT_MARKET_CONFIG),
+        readPlayers(), readAllTeams(), readShared("marketConfig", DEFAULT_MARKET_CONFIG),
         readShared("currentMarket", null), readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
       ]);
       if (freshTeamsOrNull === null) {
@@ -975,7 +984,7 @@ export default function App() {
       setProfile(prof);
       return;
     }
-    const freshPlayers = await readShared("players", []);
+    const freshPlayers = await readPlayers();
     // Para el reparto inicial sí necesitamos ver qué jugadoras están ya
     // ocupadas por otros equipos; esto es solo lectura para no repetir
     // jugadora, así que un fallo aquí (fresh = {}) es un problema menor
@@ -1066,47 +1075,6 @@ export default function App() {
     return { ok: true };
   }, [profile, players, bids, market]);
 
-  const addPlayer = useCallback(async (data) => {
-    const fresh = await readShared("players", []);
-    const next = [...fresh, { id: uid(slug(data.name) || "player"), prevBasePrice: data.basePrice, ...data }];
-    await writeShared("players", next);
-    setPlayers(next);
-  }, []);
-
-  // Alta masiva (importación desde Excel): evita duplicar filas ya existentes
-  // (mismo nombre + equipo + posición) para poder reimportar el mismo archivo sin problema.
-  const bulkAddPlayers = useCallback(async (rows) => {
-    const fresh = await readShared("players", []);
-    const existingKeys = new Set(fresh.map(p => `${p.name.trim().toLowerCase()}|${p.team.trim().toLowerCase()}|${p.position}`));
-    const toAdd = [];
-    rows.forEach(r => {
-      const key = `${r.name.trim().toLowerCase()}|${r.team.trim().toLowerCase()}|${r.position}`;
-      if (existingKeys.has(key)) return;
-      existingKeys.add(key);
-      toAdd.push({ id: uid(slug(r.name) || "player"), name: r.name, team: r.team, position: r.position, basePrice: r.basePrice, photo: r.photo || "", prevBasePrice: r.basePrice });
-    });
-    if (toAdd.length > 0) {
-      const next = [...fresh, ...toAdd];
-      await writeShared("players", next);
-      setPlayers(next);
-    }
-    return { added: toAdd.length, skipped: rows.length - toAdd.length };
-  }, []);
-
-  const updatePlayer = useCallback(async (id, patch) => {
-    const fresh = await readShared("players", []);
-    const next = fresh.map(p => p.id === id ? { ...p, ...patch } : p);
-    await writeShared("players", next);
-    setPlayers(next);
-  }, []);
-
-  const deletePlayer = useCallback(async (id) => {
-    const fresh = await readShared("players", []);
-    const next = fresh.filter(p => p.id !== id);
-    await writeShared("players", next);
-    setPlayers(next);
-  }, []);
-
   const saveMarketConfig = useCallback(async (cfg) => {
     await writeShared("marketConfig", cfg);
     setMarketConfig(cfg);
@@ -1134,9 +1102,9 @@ export default function App() {
     await writeShared("jornadas", nextJ);
     setJornadas(nextJ);
 
-    const freshP = await readShared("players", []);
+    const freshP = await readPlayers();
     const updatedPlayers = applyMarketMovement(freshP, jornadaToSave, freshT);
-    await writeShared("players", updatedPlayers);
+    await writePlayersAfterJornada(updatedPlayers, jornadaToSave);
     setPlayers(updatedPlayers);
   }, []);
 
@@ -1154,6 +1122,13 @@ export default function App() {
     const next = { ...fresh, [teamName]: url };
     await writeShared("teamCrests", next);
     setTeamCrests(next);
+  }, []);
+
+  // Vuelve a leer la tabla real "players" de Supabase (por si se ha
+  // añadido/editado/borrado alguna jugadora directamente desde ahí).
+  const refreshPlayers = useCallback(async () => {
+    const fresh = await readPlayers();
+    setPlayers(fresh);
   }, []);
 
   if (profile === undefined || !market) return <Loading />;
@@ -1190,8 +1165,8 @@ export default function App() {
             <MasTab profile={profile} onToggleAdmin={toggleAdmin} activity={activity} teams={teams}
               players={players} jornadas={jornadas} marketConfig={marketConfig} market={market} bids={bids}
               onSaveConfig={saveMarketConfig} onForceResolve={forceResolveMarket}
-              onAddPlayer={addPlayer} onUpdatePlayer={updatePlayer} onDeletePlayer={deletePlayer} onBulkAddPlayers={bulkAddPlayers}
               onSaveJornada={saveJornada} onDeleteJornada={deleteJornada}
+              onRefreshPlayers={refreshPlayers}
               focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={() => setFocusRealTeam(null)}
               teamCrests={teamCrests} onSaveTeamCrest={saveTeamCrest} />
           )}
@@ -1441,7 +1416,7 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
               </div>
             ))}
           </div>
-          {profile.isAdmin && <p className="fl-body text-[10px] mt-1.5" style={{ color: C.muted }}>Toca un equipo para entrar y añadir jugadoras.</p>}
+          {profile.isAdmin && <p className="fl-body text-[10px] mt-1.5" style={{ color: C.muted }}>Toca un equipo para ver su plantilla.</p>}
         </div>
       )}
 
@@ -2646,7 +2621,7 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids }) {
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
 function MasTab({ profile, onToggleAdmin, activity, teams, players, jornadas, marketConfig, market, bids,
-  onSaveConfig, onForceResolve, onAddPlayer, onUpdatePlayer, onDeletePlayer, onBulkAddPlayers, onSaveJornada, onDeleteJornada,
+  onSaveConfig, onForceResolve, onSaveJornada, onDeleteJornada, onRefreshPlayers,
   focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
   const [sub, setSub] = useState("actividad");
   const tabs = [["actividad", "Actividad"], ["jornadas", "Jornadas"]];
@@ -2671,8 +2646,7 @@ function MasTab({ profile, onToggleAdmin, activity, teams, players, jornadas, ma
       {sub === "jornadas" && <JornadasPanel jornadas={jornadas} players={players} isAdmin={profile.isAdmin} onSave={onSaveJornada} onDelete={onDeleteJornada} />}
       {sub === "admin" && profile.isAdmin && (
         <AdminPanel teams={teams} players={players} jornadas={jornadas} marketConfig={marketConfig} market={market} bids={bids}
-          onSaveConfig={onSaveConfig} onForceResolve={onForceResolve}
-          onAddPlayer={onAddPlayer} onUpdatePlayer={onUpdatePlayer} onDeletePlayer={onDeletePlayer} onBulkAddPlayers={onBulkAddPlayers}
+          onSaveConfig={onSaveConfig} onForceResolve={onForceResolve} onRefreshPlayers={onRefreshPlayers}
           focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={onConsumeFocusRealTeam}
           teamCrests={teamCrests} onSaveTeamCrest={onSaveTeamCrest} />
       )}
@@ -2783,7 +2757,7 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
         )}
       </div>
 
-      {players.length === 0 && <div className="mt-3"><EmptyState title="No hay jugadoras en el álbum" text="Añade jugadoras primero desde Admin." compact /></div>}
+      {players.length === 0 && <div className="mt-3"><EmptyState title="No hay jugadoras en el álbum" text="Añádelas desde el Table Editor de Supabase (tabla players)." compact /></div>}
       {jugadoras.length > 0 && (
         <div className="overflow-x-auto fl-scrollbar mt-2">
           <table className="w-full text-xs" style={{ minWidth: 980 }}>
@@ -2868,7 +2842,7 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
 /* =============================================================================
    ADMINISTRACIÓN
    ========================================================================== */
-function AdminPanel({ teams, players, jornadas, marketConfig, market, bids, onSaveConfig, onForceResolve, onAddPlayer, onUpdatePlayer, onDeletePlayer, onBulkAddPlayers,
+function AdminPanel({ teams, players, jornadas, marketConfig, market, bids, onSaveConfig, onForceResolve, onRefreshPlayers,
   focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
   const [asub, setAsub] = useState("mercado");
 
@@ -2887,9 +2861,9 @@ function AdminPanel({ teams, players, jornadas, marketConfig, market, bids, onSa
         ))}
       </div>
       {asub === "mercado" && <AdminMercado marketConfig={marketConfig} market={market} onSaveConfig={onSaveConfig} onForceResolve={onForceResolve} />}
-      {asub === "jugadoras" && <AdminJugadoras players={players} onAdd={onAddPlayer} onUpdate={onUpdatePlayer} onDelete={onDeletePlayer} onBulkAdd={onBulkAddPlayers} />}
+      {asub === "jugadoras" && <AdminJugadoras players={players} onRefresh={onRefreshPlayers} />}
       {asub === "equiposreales" && (
-        <RealTeamsPanel players={players} jornadas={jornadas} onAdd={onAddPlayer} onUpdate={onUpdatePlayer} onDelete={onDeletePlayer}
+        <RealTeamsPanel players={players} jornadas={jornadas}
           focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={onConsumeFocusRealTeam}
           teamCrests={teamCrests} onSaveTeamCrest={onSaveTeamCrest} />
       )}
@@ -2900,12 +2874,11 @@ function AdminPanel({ teams, players, jornadas, marketConfig, market, bids, onSa
 }
 
 // Equipos reales (los clubes a los que pertenecen las jugadoras en la vida real, no los
-// equipos fantasy). Lista cada equipo real con su plantilla y permite entrar en uno para
-// ir añadiendo jugadoras directamente con ese equipo ya seleccionado.
-function RealTeamsPanel({ players, jornadas, onAdd, onUpdate, onDelete, focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
+// equipos fantasy). Lista cada equipo real con su plantilla (de solo lectura: las altas,
+// bajas y ediciones de jugadoras se hacen siempre desde el Table Editor de Supabase).
+function RealTeamsPanel({ players, jornadas, focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
   const teamsList = useMemo(() => realTeamsFrom(players, jornadas), [players, jornadas]);
   const [selected, setSelected] = useState(null);
-  const [newTeamName, setNewTeamName] = useState("");
 
   useEffect(() => {
     if (focusRealTeam?.name) {
@@ -2917,21 +2890,16 @@ function RealTeamsPanel({ players, jornadas, onAdd, onUpdate, onDelete, focusRea
   if (selected) {
     return <RealTeamRoster teamName={selected} players={players.filter(p => p.team === selected)}
       crestUrl={teamCrests?.[selected] || ""} onSaveCrest={(url) => onSaveTeamCrest(selected, url)}
-      onAdd={onAdd} onUpdate={onUpdate} onDelete={onDelete} onBack={() => setSelected(null)} />;
+      onBack={() => setSelected(null)} />;
   }
 
   return (
     <div>
-      <div className="flex gap-2 mb-3">
-        <input placeholder="Nombre de un equipo real nuevo" value={newTeamName} onChange={e => setNewTeamName(e.target.value)}
-          className="flex-1 rounded-md px-2.5 py-1.5 text-sm" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
-        <button onClick={() => { const n = newTeamName.trim(); if (n) { setSelected(n); setNewTeamName(""); } }} disabled={!newTeamName.trim()}
-          className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-3 py-1.5 disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-          <Plus size={13} /> Crear
-        </button>
-      </div>
+      <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
+        Las jugadoras y entrenadoras/es se gestionan desde la tabla <span style={{ color: C.white }}>players</span> en Supabase. Aquí solo puedes verlas agrupadas por equipo real y editar el escudo de cada equipo.
+      </p>
       {teamsList.length === 0 ? (
-        <EmptyState title="Sin equipos reales todavía" text="Créalos aquí arriba, o añade una jugadora indicando su equipo desde Jugadoras/DT." />
+        <EmptyState title="Sin equipos reales todavía" text="En cuanto añadas jugadoras en Supabase con su columna 'team', aparecerán aquí agrupadas." />
       ) : (
         <div className="space-y-1.5">
           {teamsList.map(name => {
@@ -2953,11 +2921,9 @@ function RealTeamsPanel({ players, jornadas, onAdd, onUpdate, onDelete, focusRea
   );
 }
 
-// Plantilla de un equipo real concreto: escudo (URL editable) + listado de jugadoras/DT
-// + alta rápida con el equipo ya preseleccionado.
-function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onAdd, onUpdate, onDelete, onBack }) {
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", team: teamName, position: "BASE", basePrice: 5, photo: "" });
+// Plantilla de un equipo real concreto: escudo (URL editable) + listado de jugadoras/DT,
+// de solo lectura (las altas/bajas/ediciones se hacen en Supabase).
+function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onBack }) {
   const [crestDraft, setCrestDraft] = useState(crestUrl || "");
   const [crestDirty, setCrestDirty] = useState(false);
   const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
@@ -2967,9 +2933,6 @@ function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onAdd, onUpd
         <button onClick={onBack} className="fl-tap -ml-1.5 px-1.5 py-1" style={{ color: C.white }}><ChevronLeft size={20} /></button>
         <TeamCrest name={teamName} size={30} photo={crestUrl} />
         <div className="fl-display text-sm uppercase flex-1 truncate" style={{ color: C.white }}>{teamName}</div>
-        <button onClick={() => setShowForm(s => !s)} className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-2.5 py-1.5" style={{ background: C.baby, color: C.ink }}>
-          <Plus size={13} /> Jugadora/DT
-        </button>
       </div>
 
       <div className="fl-row p-3 mb-3 flex items-center gap-2.5">
@@ -2985,22 +2948,8 @@ function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onAdd, onUpd
         </button>
       </div>
 
-      {showForm && (
-        <div className="fl-row p-3 mb-3 grid grid-cols-2 gap-2">
-          <input placeholder="Nombre" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <input placeholder="URL de fotografía (opcional)" value={form.photo} onChange={e => setForm({ ...form, photo: e.target.value })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <select value={form.position} onChange={e => setForm({ ...form, position: e.target.value })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle}>
-            {ALL_POSITIONS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
-          <input type="number" min={1} max={40} placeholder="Valor inicial" value={form.basePrice} onChange={e => setForm({ ...form, basePrice: Number(e.target.value) })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <button disabled={!form.name.trim()} onClick={async () => { await onAdd({ ...form, team: teamName }); setForm({ name: "", team: teamName, position: "BASE", basePrice: 5, photo: "" }); setShowForm(false); }}
-            className="col-span-2 fl-tap rounded-md px-2.5 py-1.5 text-sm font-medium disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-            Añadir a {teamName}
-          </button>
-        </div>
-      )}
       {players.length === 0 ? (
-        <EmptyState title="Este equipo todavía no tiene jugadoras" text="Añade la primera con el botón de arriba." />
+        <EmptyState title="Este equipo todavía no tiene jugadoras" text="Añádelas desde el Table Editor de Supabase (tabla players)." />
       ) : (
         <div className="space-y-1.5">
           {players.map(p => (
@@ -3011,7 +2960,6 @@ function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onAdd, onUpd
                 <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Valor {fmtCredits(p.basePrice)}</div>
               </div>
               <PositionBadge posKey={p.position} />
-              <button onClick={() => onDelete(p.id)} className="p-1.5 rounded-md"><Trash2 size={14} color={C.negative} /></button>
             </div>
           ))}
         </div>
@@ -3058,87 +3006,27 @@ function AdminMercado({ marketConfig, market, onSaveConfig, onForceResolve }) {
   );
 }
 
-function AdminJugadoras({ players, onAdd, onUpdate, onDelete, onBulkAdd }) {
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", team: "", position: "BASE", basePrice: 5, photo: "" });
-  const [importBusy, setImportBusy] = useState(false);
-  const [importResult, setImportResult] = useState(null); // { added, skipped, errors }
-  const fileInputRef = useRef(null);
-  const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
-
-  const handleFile = async (file) => {
-    if (!file) return;
-    setImportBusy(true); setImportResult(null);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      const { rows, errors } = parsePlayerRows(json);
-      const { added, skipped } = rows.length > 0 ? await onBulkAdd(rows) : { added: 0, skipped: 0 };
-      setImportResult({ added, skipped: skipped + errors.length, errors });
-    } catch (e) {
-      setImportResult({ added: 0, skipped: 0, errors: ["No se pudo leer el archivo. Comprueba que sea un .xlsx válido."] });
-    } finally {
-      setImportBusy(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
+// Álbum de jugadoras/DT: de solo lectura. Las altas, bajas y ediciones se hacen
+// siempre desde el Table Editor de la tabla "players" en Supabase; este panel
+// solo refleja lo que haya en esa tabla, con un botón para releer los últimos cambios.
+function AdminJugadoras({ players, onRefresh }) {
+  const [busy, setBusy] = useState(false);
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <div className="fl-mono text-[11px]" style={{ color: C.muted }}>{players.length} en el álbum</div>
-        <div className="flex gap-1.5">
-          <button onClick={() => fileInputRef.current?.click()} disabled={importBusy}
-            className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-2.5 py-1.5 disabled:opacity-50" style={{ background: "transparent", border: `1px solid ${C.baby}`, color: C.baby }}>
-            {importBusy ? <Loader2 size={13} className="animate-spin" /> : <FileSpreadsheet size={13} />} Importar Excel
-          </button>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={e => handleFile(e.target.files?.[0])} />
-          <button onClick={() => setShowForm(s => !s)} className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-2.5 py-1.5" style={{ background: C.baby, color: C.ink }}>
-            <Plus size={13} /> Jugadora/DT
-          </button>
-        </div>
+        <button onClick={async () => { setBusy(true); await onRefresh(); setBusy(false); }} disabled={busy}
+          className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-2.5 py-1.5" style={{ background: "transparent", border: `1px solid ${C.baby}`, color: C.baby }}>
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Releer de Supabase
+        </button>
       </div>
 
       <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
-        El Excel debe tener las columnas: <span style={{ color: C.white }}>Tipo</span> (Jugadora/Entrenador), <span style={{ color: C.white }}>Nombre</span>, <span style={{ color: C.white }}>Equipo</span>, <span style={{ color: C.white }}>Posición</span> (Base/Alero/Pívot), <span style={{ color: C.white }}>Valor (M)</span> y <span style={{ color: C.white }}>Foto (URL)</span> opcional. Reimportar el mismo archivo no duplica filas ya existentes.
+        Las jugadoras y entrenadoras/es se añaden, editan o eliminan directamente en la tabla <span style={{ color: C.white }}>players</span> de Supabase (columnas: id, name, team, position, base_price, photo). Esta pantalla es solo de consulta.
       </p>
 
-      {importResult && (
-        <div className="fl-row p-3 mb-3">
-          <div className="fl-body text-sm font-medium" style={{ color: C.white }}>
-            {importResult.added} {importResult.added === 1 ? "añadida" : "añadidas"}
-            {importResult.skipped > 0 && <span style={{ color: C.muted }}> · {importResult.skipped} omitida{importResult.skipped === 1 ? "" : "s"}</span>}
-          </div>
-          {importResult.errors && importResult.errors.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5">
-              {importResult.errors.slice(0, 8).map((e, i) => (
-                <li key={i} className="fl-mono text-[10px]" style={{ color: C.negative }}>{e}</li>
-              ))}
-              {importResult.errors.length > 8 && <li className="fl-mono text-[10px]" style={{ color: C.muted }}>… y {importResult.errors.length - 8} más.</li>}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {showForm && (
-        <div className="fl-row p-3 mb-3 grid grid-cols-2 gap-2">
-          <input placeholder="Nombre" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <input placeholder="URL de fotografía (opcional)" value={form.photo} onChange={e => setForm({ ...form, photo: e.target.value })} className="col-span-2 rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <input placeholder="Equipo real" value={form.team} onChange={e => setForm({ ...form, team: e.target.value })} className="rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <select value={form.position} onChange={e => setForm({ ...form, position: e.target.value })} className="rounded-md px-2.5 py-1.5 text-sm" style={inputStyle}>
-            {ALL_POSITIONS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-          </select>
-          <input type="number" min={1} max={40} placeholder="Valor inicial" value={form.basePrice} onChange={e => setForm({ ...form, basePrice: Number(e.target.value) })} className="rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          <button disabled={!form.name.trim() || !form.team.trim()} onClick={async () => { await onAdd(form); setForm({ name: "", team: "", position: "BASE", basePrice: 5, photo: "" }); setShowForm(false); }}
-            className="fl-tap rounded-md px-2.5 py-1.5 text-sm font-medium disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-            Añadir al álbum
-          </button>
-        </div>
-      )}
       {players.length === 0 ? (
-        <EmptyState title="El álbum está vacío" text="Añade jugadoras y entrenadoras/es; saldrán al mercado por rondas." />
+        <EmptyState title="El álbum está vacío" text="Añade jugadoras y entrenadoras/es desde el Table Editor de Supabase." />
       ) : (
         <div className="space-y-1.5">
           {players.map(p => (
@@ -3149,7 +3037,6 @@ function AdminJugadoras({ players, onAdd, onUpdate, onDelete, onBulkAdd }) {
                 <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team} · Valor {fmtCredits(p.basePrice)}</div>
               </div>
               <PositionBadge posKey={p.position} />
-              <button onClick={() => onDelete(p.id)} className="p-1.5 rounded-md"><Trash2 size={14} color={C.negative} /></button>
             </div>
           ))}
         </div>
