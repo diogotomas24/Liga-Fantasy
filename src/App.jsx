@@ -216,7 +216,7 @@ const teamService = {
     return {
       budgetTotal: BUDGET_TOTAL,
       budgetSpent: 0,
-      squad: [], // [{ id, pricePaid, acquiredAt, forSale, saleOffer }]
+      squad: [], // [{ id, pricePaid, clause, acquiredAt, forSale, saleOffer }]
       // bench: banquillo explícito, máx. 1 jugadora por posición. Todo lo que no sea
       // titular ni banquillo es "reserva": se posee pero no se puede alinear.
       lineup: { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null },
@@ -234,10 +234,10 @@ const teamService = {
     const ids = new Set(teamService.squadIds(team));
     return players.filter(p => ids.has(p.id) && p.position === "DT").length < MAX_COACHES;
   },
-  // Cláusula: durante los primeros 14 días desde que se adquirió, la jugadora
-  // está protegida (nadie puede llevársela). Pasado ese plazo, cualquiera
-  // puede pujar por su cláusula a partir de su valor de mercado ACTUAL
-  // (no se guarda un importe fijo; se recalcula siempre con el valor vivo).
+  // Cláusula: durante los primeros 14 días desde que se adquirió, la jugadora está
+  // protegida (nadie de fuera puede comprar su cláusula, aunque su propia persona
+  // dueña sí puede subirla pagando). Pasado ese plazo, cualquiera puede pagar la
+  // cláusula (un importe guardado, no recalculado) y llevársela.
   isClauseLocked(entry) {
     return Date.now() < (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
   },
@@ -245,18 +245,20 @@ const teamService = {
     return (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
   },
   addAsset(team, asset, pricePaid) {
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, acquiredAt: Date.now() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, clause: pricePaid, acquiredAt: Date.now() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
   },
   // Añade el reparto inicial a la plantilla SIN descontar presupuesto: el valor de equipo del
   // sorteo (90-100 M) es aparte de los 100 M que cada persona tiene disponibles para pujar.
+  // La cláusula inicial nace igual al valor de mercado del reparto.
   addInitialSquad(team, entries) {
-    const squadEntries = entries.map(e => ({ id: e.id, pricePaid: e.price, acquiredAt: Date.now(), initial: true }));
+    const squadEntries = entries.map(e => ({ id: e.id, pricePaid: e.price, clause: e.price, acquiredAt: Date.now(), initial: true }));
     return { ...team, squad: [...(team.squad || []), ...squadEntries] };
   },
-  // Transferencia entre plantillas (cláusula pagada a otro usuario): la jugadora entra en la
-  // plantilla compradora con un nuevo periodo de protección de 14 días.
+  // Transferencia entre plantillas (cláusula pagada a otro usuario, u oferta aceptada): la
+  // jugadora entra en la plantilla compradora con la cláusula igual al importe pagado y un
+  // nuevo periodo de protección de 14 días.
   receiveTransfer(team, asset, amountPaid) {
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, acquiredAt: Date.now(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, clause: amountPaid, acquiredAt: Date.now(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
   },
   // Lado vendedor de una cláusula pagada, de una venta directa a la liga, o de una oferta de
   // compra aceptada: se libera la jugadora y se abona el importe recibido (baja su presupuesto
@@ -266,8 +268,9 @@ const teamService = {
     return { ...released, budgetSpent: (released.budgetSpent || 0) - amountReceived };
   },
   getSquadEntry(team, assetId) { return (team?.squad || []).find(e => e.id === assetId) || null; },
-  // Marca/desmarca una jugadora "en venta" a la liga. Al desmarcarla se borra
-  // cualquier oferta pendiente que hubiera.
+  // Marca/desmarca una jugadora "en venta" (visible en el Mercado para el resto de la liga,
+  // y recibirá una oferta de la liga al abrirse el siguiente mercado). Al desmarcarla se
+  // borra cualquier oferta pendiente que hubiera.
   setForSale(team, assetId, forSale) {
     const squad = (team.squad || []).map(e => e.id === assetId ? { ...e, forSale, saleOffer: forSale ? e.saleOffer : null } : e);
     return { ...team, squad };
@@ -275,6 +278,25 @@ const teamService = {
   setSaleOffer(team, assetId, offer) {
     const squad = (team.squad || []).map(e => e.id === assetId ? { ...e, saleOffer: offer } : e);
     return { ...team, squad };
+  },
+  // Sube la cláusula de tu propia jugadora pagando: el importe pagado se descuenta del
+  // presupuesto y la cláusula sube el DOBLE de lo pagado (pagar 1 M sube la cláusula 2 M).
+  raiseClause(team, assetId, payAmount) {
+    const squad = (team.squad || []).map(e => e.id === assetId ? { ...e, clause: (e.clause || 0) + payAmount * 2 } : e);
+    return { ...team, squad, budgetSpent: (team.budgetSpent || 0) + payAmount };
+  },
+  // Si el valor de mercado de una jugadora sube por encima de su cláusula guardada, la
+  // cláusula sube para igualarlo (nunca baja sola). Se llama tras cerrar cada jornada.
+  bumpClausesToMarket(team, players) {
+    let changed = false;
+    const squad = (team.squad || []).map(e => {
+      const player = players.find(p => p.id === e.id);
+      if (!player) return e;
+      const marketValue = player.basePrice || 0;
+      if (marketValue > (e.clause || 0)) { changed = true; return { ...e, clause: marketValue }; }
+      return e;
+    });
+    return changed ? { ...team, squad } : team;
   },
   removeAsset(team, assetId) {
     const nextSquad = (team.squad || []).filter(e => e.id !== assetId);
@@ -400,9 +422,9 @@ const clauseService = {
       const d = new Date(teamService.clauseUnlockAt(entry));
       return { ok: false, error: `Cláusula protegida hasta el ${d.toLocaleDateString("es-ES")}.` };
     }
-    const clause = asset.basePrice || 1; // una vez abierta, la cláusula es el valor de mercado actual
+    const clause = entry.clause || asset.basePrice || 1; // valor de cláusula guardado (sube con el mercado y al pagar por subirla)
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (amount < clause) return { ok: false, error: `Debes igualar o superar el valor de mercado: ${fmtCredits(clause)}.` };
+    if (amount < clause) return { ok: false, error: `Debes igualar o superar la cláusula: ${fmtCredits(clause)}.` };
     if (asset.position === "DT") {
       if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
     } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
@@ -1472,6 +1494,20 @@ export default function App() {
     return { ok: true };
   }, [profile, activeLeagueId]);
 
+  // Sube la cláusula de tu propia jugadora pagando: el importe se descuenta de tu
+  // presupuesto y la cláusula sube el DOBLE de lo pagado.
+  const raiseClause = useCallback(async (assetId, payAmount) => {
+    if (!Number.isFinite(payAmount) || payAmount <= 0) return { ok: false, error: "Introduce un importe válido." };
+    if (payAmount > budgetAvailable) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(budgetAvailable)}.` };
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const entry = teamService.getSquadEntry(fresh, assetId);
+    if (!entry) return { ok: false, error: "Ya no tienes esta jugadora." };
+    const nextTeam = teamService.raiseClause(fresh, assetId, payAmount);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    return { ok: true };
+  }, [profile, activeLeagueId, budgetAvailable]);
+
   // Ofertas de compra directas a otra persona: se pueden enviar en cualquier
   // momento (mercado abierto o cerrado, jugadora protegida por cláusula o no).
   const sendOffer = useCallback(async (sellerName, asset, amount) => {
@@ -1543,6 +1579,15 @@ export default function App() {
     const updatedPlayers = applyMarketMovement(freshP, jornadaToSave, freshTGlobal);
     await writePlayersAfterJornada(updatedPlayers, jornadaToSave);
     setPlayers(updatedPlayers);
+
+    // Si alguna jugadora ha subido de valor, su cláusula sube para igualarlo
+    // (nunca baja sola), en TODOS los equipos de TODAS las ligas que la tengan.
+    const clauseBumps = [];
+    Object.entries(freshTGlobal).forEach(([key, t]) => {
+      const bumped = teamService.bumpClausesToMarket(t, updatedPlayers);
+      if (bumped !== t) clauseBumps.push(writeTeam(t.leagueId, t.name, bumped));
+    });
+    if (clauseBumps.length > 0) await Promise.all(clauseBumps);
   }, []);
 
   const deleteJornada = useCallback(async (id) => {
@@ -1591,7 +1636,7 @@ export default function App() {
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} />
+              onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mercado" && (
             <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory}
@@ -1600,7 +1645,7 @@ export default function App() {
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
               jornadas={jornadas}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} />
+              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
             <MasTab activity={activity} players={players} jornadas={jornadas} />
@@ -2178,8 +2223,113 @@ function ValorHistoricoModal({ player, onClose }) {
 // media de la temporada, chips de jornadas (J1, J2…) y, debajo, el desglose
 // estadística a estadística de la jornada seleccionada con el sistema de
 // Puntos SWISH, igual que el modelo de referencia.
-function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onClose }) {
+// Menú de acciones a modo de hoja inferior (bottom sheet), estilo referencia
+// (Blindar jugador / Añadir al mercado / Subir cláusula / Venta inmediata / Cerrar).
+function ActionSheet({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+      <div className="w-full rounded-t-2xl overflow-hidden fl-pop" style={{ background: C.navy800, border: `1px solid ${C.line}` }} onClick={e => e.stopPropagation()}>
+        {title && (
+          <div className="px-4 py-3 text-center" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+            <span className="fl-display text-sm uppercase" style={{ color: C.white }}>{title}</span>
+          </div>
+        )}
+        <div>{children}</div>
+        <button onClick={onClose} className="fl-tap w-full py-3.5 text-sm font-semibold" style={{ color: C.muted, borderTop: `1px solid ${C.lineSoft}` }}>
+          Cerrar
+        </button>
+      </div>
+    </div>
+  );
+}
+function ActionSheetItem({ label, subtitle, onClick, disabled, danger }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className="fl-tap w-full px-4 py-3.5 text-center disabled:opacity-40"
+      style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+      <div className="fl-body text-sm font-medium" style={{ color: danger ? C.negative : C.principal }}>{label}</div>
+      {subtitle && <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{subtitle}</div>}
+    </button>
+  );
+}
+
+// Pantalla "Subir cláusula": pagas un importe y la cláusula sube el doble de
+// lo pagado (pagar 1 M sube la cláusula 2 M), a pantalla completa.
+function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
+  const clause = entry?.clause || player.basePrice || 0;
+  const [amount, setAmount] = useState("0");
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const pay = Number(amount) || 0;
+  const previewClause = clause + pay * 2;
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    const res = await onConfirm(pay);
+    setBusy(false);
+    if (!res.ok) setError(res.error); else onBack();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Subir cláusula a {player.name}</div>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 py-6">
+        <div className="flex justify-center mb-6">
+          <div className="rounded-full p-1" style={{ border: `2px solid ${C.line}` }}>
+            <PlayerPhoto url={player.photo} size={92} rounded={999} />
+          </div>
+        </div>
+        <div className="space-y-2 mb-4">
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-1.5 fl-mono text-[11px]" style={{ color: C.muted }}>
+              <Coins size={13} color={C.gold} /> VALOR DE MERCADO
+            </div>
+            <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(player.basePrice || 0)}</div>
+          </div>
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-1.5 fl-mono text-[11px]" style={{ color: C.muted }}>
+              <Coins size={13} color={C.gold} /> VALOR DE CLÁUSULA
+            </div>
+            <div className="fl-mono text-sm font-semibold" style={{ color: C.gold }}>{fmtCredits(previewClause)}</div>
+          </div>
+        </div>
+        <div className="fl-row flex items-center gap-2.5 px-3 py-2.5 mb-3" style={{ background: C.navy700 }}>
+          <div className="flex items-center justify-center rounded-full" style={{ width: 26, height: 26, background: C.gold }}>
+            <Coins size={14} color={C.ink} />
+          </div>
+          <div className="flex-1">
+            <div className="fl-mono text-[9px]" style={{ color: C.muted }}>IMPORTE A PAGAR</div>
+            {editing ? (
+              <input autoFocus type="number" min={0} value={amount} onChange={e => setAmount(e.target.value)}
+                onBlur={() => setEditing(false)} className="fl-mono text-sm font-semibold w-full bg-transparent outline-none" style={{ color: C.white }} />
+            ) : (
+              <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(pay)}</div>
+            )}
+          </div>
+          <button onClick={() => setEditing(e => !e)} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><Pencil size={12} color={C.white} /></button>
+          <button onClick={() => setAmount("0")} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><X size={12} color={C.white} /></button>
+        </div>
+        <p className="fl-body text-[11px]" style={{ color: C.muted }}>Cada euro que pagues aquí sube la cláusula el doble. Por ejemplo, pagar 1.000.000 € sube la cláusula 2.000.000 €.</p>
+        {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
+      </div>
+      <div className="px-5 pb-3">
+        <button onClick={submit} disabled={busy || pay <= 0}
+          className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
+          style={{ background: C.positive, color: C.ink }}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : "Subir cláusula"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose }) {
   const [showHistorico, setShowHistorico] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const [showRaiseClause, setShowRaiseClause] = useState(false);
   const [busyAction, setBusyAction] = useState(null); // "sell" | "forsale" | "offer" | null
   const [actionMsg, setActionMsg] = useState("");
   const [confirmSell, setConfirmSell] = useState(false);
@@ -2214,6 +2364,14 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   const selected = seasonRows[selectedIdx];
   const { breakdown } = selected?.played ? calcPointsBreakdown(selected.jornada.stats[player.id], player.position) : { breakdown: [] };
 
+  if (showRaiseClause) {
+    return (
+      <RaiseClauseScreen player={player} entry={entry}
+        onBack={() => setShowRaiseClause(false)}
+        onConfirm={(payAmount) => onRaiseClause(player.id, payAmount)} />
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
@@ -2246,31 +2404,39 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           </div>
         </div>
 
-        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: "1fr" }}>
+        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: isOwned && entry ? "1fr 1fr" : "1fr" }}>
           <button onClick={() => setShowHistorico(true)} className="fl-tap rounded-md py-2.5 text-xs font-semibold"
             style={{ border: `1px solid ${C.line}`, color: C.white }}>
             Valor histórico
           </button>
+          {isOwned && entry && (
+            <button onClick={() => setShowActions(true)} className="fl-tap rounded-md py-2.5 text-xs font-semibold" style={{ background: C.principal, color: C.white }}>
+              Acciones
+            </button>
+          )}
         </div>
 
         {isOwned && entry && (() => {
           const locked = teamService.isClauseLocked(entry);
           const unlockDate = new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES");
-          const sellAmount = Math.max(1, Math.round((player.basePrice || 1) * 0.5));
+          const clauseValue = entry.clause || player.basePrice || 0;
           const offer = entry.saleOffer;
           const offerExpired = offer && offer.expiresAt && Date.now() > offer.expiresAt;
           return (
             <div className="px-4 pt-3">
               <div className="fl-row p-3">
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Lock size={12} color={locked ? C.muted : C.gold} />
-                  <span className="fl-mono text-[11px]" style={{ color: locked ? C.muted : C.gold }}>
-                    {locked ? `Cláusula protegida hasta el ${unlockDate}` : "Cláusula abierta — cualquiera puede pujar al valor de mercado"}
-                  </span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-1.5">
+                    <Lock size={12} color={locked ? C.muted : C.gold} />
+                    <span className="fl-mono text-[11px]" style={{ color: locked ? C.muted : C.gold }}>
+                      {locked ? `Protegida hasta el ${unlockDate}` : "Cláusula abierta"}
+                    </span>
+                  </div>
+                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{fmtCredits(clauseValue)}</span>
                 </div>
 
                 {entry.forSale && (
-                  <div className="mb-2 p-2 rounded-md" style={{ background: C.principalSoft }}>
+                  <div className="mt-2 p-2 rounded-md" style={{ background: C.principalSoft }}>
                     {offer && !offerExpired ? (
                       <>
                         <div className="fl-body text-xs" style={{ color: C.white }}>Oferta de la liga: <span className="font-semibold">{fmtCredits(offer.amount)}</span></div>
@@ -2285,40 +2451,49 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
                         </button>
                       </>
                     ) : (
-                      <div className="fl-body text-xs" style={{ color: C.muted }}>En venta — recibirás una oferta de la liga cuando se abra el próximo mercado.</div>
+                      <div className="fl-body text-xs" style={{ color: C.muted }}>En el mercado — recibirás una oferta de la liga cuando se abra el próximo mercado.</div>
                     )}
                   </div>
                 )}
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button disabled={busyAction === "forsale"} onClick={async () => {
-                    setBusyAction("forsale"); setActionMsg("");
-                    await onToggleForSale(player.id, !entry.forSale);
-                    setBusyAction(null);
-                  }} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
-                    {entry.forSale ? "Quitar de venta" : "Poner en venta"}
-                  </button>
-                  {!confirmSell ? (
-                    <button onClick={() => setConfirmSell(true)} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ background: C.negative, color: C.white }}>
-                      Venta inmediata
-                    </button>
-                  ) : (
-                    <button disabled={busyAction === "sell"} onClick={async () => {
-                      setBusyAction("sell"); setActionMsg("");
-                      const res = await onSellImmediate(player.id);
-                      setBusyAction(null);
-                      if (res.ok) onClose(); else setActionMsg(res.error);
-                    }} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ background: C.negative, color: C.white }}>
-                      {busyAction === "sell" ? <Loader2 size={13} className="animate-spin mx-auto" /> : `Confirmar (${fmtCredits(sellAmount)})`}
-                    </button>
-                  )}
-                </div>
-                <p className="fl-body text-[10px] mt-2" style={{ color: C.muted }}>La venta inmediata te paga el 50% del valor de mercado actual, al instante.</p>
-                {actionMsg && <div className="fl-mono text-[10px] mt-1" style={{ color: C.negative }}>{actionMsg}</div>}
+                {actionMsg && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{actionMsg}</div>}
               </div>
             </div>
           );
         })()}
+
+        {showActions && entry && (
+          <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
+            <ActionSheetItem label="Blindar jugador" disabled subtitle="Próximamente" />
+            <ActionSheetItem
+              label={entry.forSale ? "Quitar del mercado" : "Añadir al mercado"}
+              onClick={async () => {
+                setBusyAction("forsale"); setActionMsg(""); setShowActions(false);
+                await onToggleForSale(player.id, !entry.forSale);
+                setBusyAction(null);
+              }} />
+            <ActionSheetItem label="Subir cláusula" onClick={() => { setShowActions(false); setShowRaiseClause(true); }} />
+            <ActionSheetItem label="Venta inmediata" danger onClick={() => { setShowActions(false); setConfirmSell(true); }} />
+          </ActionSheet>
+        )}
+
+        {confirmSell && (
+          <ActionSheet onClose={() => setConfirmSell(false)} title="Venta inmediata">
+            <div className="px-4 pb-3">
+              <p className="fl-body text-sm" style={{ color: C.white }}>
+                Recibirás <span className="font-semibold">{fmtCredits(Math.max(1, Math.round((player.basePrice || 1) * 0.5)))}</span> (50% del valor de mercado) al instante.
+              </p>
+            </div>
+            <ActionSheetItem
+              label={busyAction === "sell" ? "Vendiendo…" : "Confirmar venta"}
+              danger
+              onClick={async () => {
+                setBusyAction("sell"); setActionMsg("");
+                const res = await onSellImmediate(player.id);
+                setBusyAction(null); setConfirmSell(false);
+                if (res.ok) onClose(); else setActionMsg(res.error);
+              }} />
+          </ActionSheet>
+        )}
 
         {showHistorico && <ValorHistoricoModal player={player} onClose={() => setShowHistorico(false)} />}
 
@@ -2388,7 +2563,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -2482,7 +2657,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
         return (
           <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas} isOwned
             isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => onToggleFavorite(p.id)}
-            onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
+            onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
             onClose={() => setDetailPlayerId(null)} />
         );
       })()}
@@ -2849,7 +3024,7 @@ function DropdownItem({ active, onClick, children }) {
 
 // Buscador global de jugadoras y entrenadoras/es: nombre, favoritos, equipo
 // real, posición y orden — igual estructura que el buscador de referencia.
-function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onClose }) {
+function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose }) {
   const [query, setQuery] = useState("");
   const [onlyFav, setOnlyFav] = useState(false);
   const [teamFilter, setTeamFilter] = useState("");
@@ -2960,14 +3135,14 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
         <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
           entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={favSet.has(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
-          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setDetailPlayer(null)} />
       )}
     </div>
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer }) {
+function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
   const [sub, setSub] = useState("mercado");
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
   const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset }
@@ -3029,9 +3204,13 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
         )
       )}
 
+      {sub === "mercado" && (
+        <EnVentaSection teams={teams} players={players} onOpenPlayer={setDetailPlayer} />
+      )}
+
       {sub === "plantillas" && (
         <RivalRosters teams={teams} players={players} me={profile.name}
-          onSelectClause={(sellerName, asset) => setClauseTarget({ sellerName, asset })}
+          onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
           onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
           onOpenPlayer={setDetailPlayer} />
       )}
@@ -3069,14 +3248,14 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
         <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
           entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
-          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setDetailPlayer(null)} />
       )}
 
       {showSearch && (
         <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam}
           favoritos={favoritos} onToggleFavorite={onToggleFavorite}
-          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setShowSearch(false)} />
       )}
     </div>
@@ -3086,6 +3265,38 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
 // Plantillas rivales: solo aquí se puede pujar por una jugadora que ya pertenece a otra
 // persona, pagando (como mínimo) su cláusula. Los jugadores del mercado general NUNCA
 // muestran cláusula porque, mientras están libres, no la tienen.
+// Jugadoras marcadas "en venta" por cualquier equipo de la liga, visibles
+// directamente en el Mercado (no solo dentro de su ficha).
+function EnVentaSection({ teams, players, onOpenPlayer }) {
+  const rows = [];
+  Object.entries(teams || {}).forEach(([name, team]) => {
+    (team.squad || []).forEach(entry => {
+      if (!entry.forSale) return;
+      const player = players.find(p => p.id === entry.id);
+      if (player) rows.push({ owner: name, entry, player });
+    });
+  });
+  if (rows.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <SectionTitle>En venta</SectionTitle>
+      <div className="space-y-1.5">
+        {rows.map(({ owner, entry, player }) => (
+          <button key={player.id} onClick={() => onOpenPlayer(player)} className="fl-tap w-full fl-row flex items-center gap-2.5 px-3 py-2.5 text-left">
+            <PlayerPhoto url={player.photo} size={38} />
+            <div className="flex-1 min-w-0">
+              <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{owner} · {player.team}</div>
+            </div>
+            <PositionBadge posKey={player.position} />
+            <div className="fl-mono text-xs font-semibold" style={{ color: C.principal }}>{fmtCredits(entry.clause || player.basePrice)}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpenPlayer }) {
   const rivals = Object.entries(teams || {}).filter(([name]) => name !== me);
   if (rivals.length === 0) return <EmptyState title="Todavía no hay otras plantillas" text="En cuanto más gente entre en la liga podrás ver sus jugadoras aquí." />;
@@ -3118,10 +3329,10 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
                           <Lock size={10} /> hasta {new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES")}
                         </span>
                       ) : (
-                        <button onClick={() => onSelectClause(name, player)}
+                        <button onClick={() => onSelectClause(name, player, entry)}
                           className="fl-tap flex items-center gap-1 fl-mono text-[11px] font-semibold rounded-md px-2 py-1"
                           style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
-                          <Lock size={10} /> {fmtCredits(player.basePrice)}
+                          <Lock size={10} /> {fmtCredits(entry.clause || player.basePrice)}
                         </button>
                       )}
                       <button onClick={() => onSelectOffer(name, player)}
@@ -3283,8 +3494,8 @@ function OfertasTab({ offers, players, me, onRespond }) {
 // La cláusula ya no es un importe fijo guardado: una vez abierta (pasados los
 // 14 días de protección), es siempre el valor de mercado ACTUAL de la jugadora.
 function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
-  const { sellerName, asset } = target;
-  const clause = asset.basePrice || 1;
+  const { sellerName, asset, entry } = target;
+  const clause = (entry && entry.clause) || asset.basePrice || 1;
   const [amount, setAmount] = useState(String(clause));
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState("");
