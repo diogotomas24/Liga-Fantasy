@@ -67,8 +67,6 @@ const DEFAULT_MARKET_CONFIG = { openHour: "08:00", closeHour: "20:00" };
    ========================================================================== */
 const slug = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 const uid = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-// Multiplicador aleatorio e independiente por jugadora para la cláusula inicial (entre 1,45 y 1,66)
-const randomClauseMultiplier = () => 1.45 + Math.random() * (1.66 - 1.45);
 
 function shuffle(arr) {
   const a = [...arr];
@@ -79,9 +77,11 @@ function shuffle(arr) {
   return a;
 }
 
+// Los valores internos siguen en "millones" (100 = 100 M), pero se muestran
+// como euros completos con separador de miles, p. ej. fmtCredits(2.3) -> "2.300.000 €".
 function fmtCredits(n) {
-  const v = Math.round((n || 0) * 100) / 100;
-  return `${v.toLocaleString("es-ES")} M`;
+  const euros = Math.round((n || 0) * 1000000);
+  return `${euros.toLocaleString("es-ES")} €`;
 }
 
 function fmtHMS(ms) {
@@ -209,12 +209,14 @@ function applyMarketMovement(players, jornada, teams) {
    ========================================================================== */
 
 // --- teamService ---------------------------------------------------------
+const CLAUSE_LOCK_DAYS = 14;
+const CLAUSE_LOCK_MS = CLAUSE_LOCK_DAYS * 24 * 3600 * 1000;
 const teamService = {
   emptyTeam() {
     return {
       budgetTotal: BUDGET_TOTAL,
       budgetSpent: 0,
-      squad: [], // [{ id, pricePaid, acquiredAt }]
+      squad: [], // [{ id, pricePaid, acquiredAt, forSale, saleOffer }]
       // bench: banquillo explícito, máx. 1 jugadora por posición. Todo lo que no sea
       // titular ni banquillo es "reserva": se posee pero no se puede alinear.
       lineup: { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null },
@@ -232,34 +234,48 @@ const teamService = {
     const ids = new Set(teamService.squadIds(team));
     return players.filter(p => ids.has(p.id) && p.position === "DT").length < MAX_COACHES;
   },
+  // Cláusula: durante los primeros 14 días desde que se adquirió, la jugadora
+  // está protegida (nadie puede llevársela). Pasado ese plazo, cualquiera
+  // puede pujar por su cláusula a partir de su valor de mercado ACTUAL
+  // (no se guarda un importe fijo; se recalcula siempre con el valor vivo).
+  isClauseLocked(entry) {
+    return Date.now() < (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
+  },
+  clauseUnlockAt(entry) {
+    return (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
+  },
   addAsset(team, asset, pricePaid) {
-    // Comprado en el mercado general (sin cláusula previa): la cláusula nace siendo
-    // exactamente el precio final pagado, sin aplicar el multiplicador aleatorio.
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, clause: pricePaid, acquiredAt: Date.now() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, acquiredAt: Date.now() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
   },
   // Añade el reparto inicial a la plantilla SIN descontar presupuesto: el valor de equipo del
   // sorteo (90-100 M) es aparte de los 100 M que cada persona tiene disponibles para pujar.
-  // Cada jugadora recibe su cláusula inicial: valor de mercado × multiplicador aleatorio (1,45-1,66),
-  // calculada una única vez aquí y guardada; nunca se vuelve a recalcular sola.
   addInitialSquad(team, entries) {
-    const squadEntries = entries.map(e => ({
-      id: e.id, pricePaid: e.price, acquiredAt: Date.now(), initial: true,
-      clause: Math.round(e.price * randomClauseMultiplier()),
-    }));
+    const squadEntries = entries.map(e => ({ id: e.id, pricePaid: e.price, acquiredAt: Date.now(), initial: true }));
     return { ...team, squad: [...(team.squad || []), ...squadEntries] };
   },
   // Transferencia entre plantillas (cláusula pagada a otro usuario): la jugadora entra en la
-  // plantilla compradora con una cláusula nueva igual al importe pagado.
+  // plantilla compradora con un nuevo periodo de protección de 14 días.
   receiveTransfer(team, asset, amountPaid) {
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, clause: amountPaid, acquiredAt: Date.now(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, acquiredAt: Date.now(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
   },
-  // Lado vendedor de una cláusula pagada: se libera la jugadora y se abona el importe recibido
-  // (baja su presupuesto gastado, es decir, sube su disponible).
+  // Lado vendedor de una cláusula pagada, de una venta directa a la liga, o de una oferta de
+  // compra aceptada: se libera la jugadora y se abona el importe recibido (baja su presupuesto
+  // gastado, es decir, sube su disponible).
   receiveSaleProceeds(team, assetId, amountReceived) {
     const released = teamService.removeAsset(team, assetId);
     return { ...released, budgetSpent: (released.budgetSpent || 0) - amountReceived };
   },
   getSquadEntry(team, assetId) { return (team?.squad || []).find(e => e.id === assetId) || null; },
+  // Marca/desmarca una jugadora "en venta" a la liga. Al desmarcarla se borra
+  // cualquier oferta pendiente que hubiera.
+  setForSale(team, assetId, forSale) {
+    const squad = (team.squad || []).map(e => e.id === assetId ? { ...e, forSale, saleOffer: forSale ? e.saleOffer : null } : e);
+    return { ...team, squad };
+  },
+  setSaleOffer(team, assetId, offer) {
+    const squad = (team.squad || []).map(e => e.id === assetId ? { ...e, saleOffer: offer } : e);
+    return { ...team, squad };
+  },
   removeAsset(team, assetId) {
     const nextSquad = (team.squad || []).filter(e => e.id !== assetId);
     const bench = team.lineup?.bench ? { ...team.lineup.bench } : { BASE: null, ALERO: null, PIVOT: null };
@@ -380,9 +396,13 @@ const clauseService = {
     if (buyerName === sellerName) return { ok: false, error: "Ya es tuya." };
     const entry = teamService.getSquadEntry(sellerTeam, asset.id);
     if (!entry) return { ok: false, error: "Esta jugadora ya no pertenece a esa plantilla." };
-    const clause = entry.clause || 0;
+    if (teamService.isClauseLocked(entry)) {
+      const d = new Date(teamService.clauseUnlockAt(entry));
+      return { ok: false, error: `Cláusula protegida hasta el ${d.toLocaleDateString("es-ES")}.` };
+    }
+    const clause = asset.basePrice || 1; // una vez abierta, la cláusula es el valor de mercado actual
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (amount < clause) return { ok: false, error: `Debes igualar o superar la cláusula: ${fmtCredits(clause)}.` };
+    if (amount < clause) return { ok: false, error: `Debes igualar o superar el valor de mercado: ${fmtCredits(clause)}.` };
     if (asset.position === "DT") {
       if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
     } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
@@ -396,6 +416,41 @@ const clauseService = {
     const nextSeller = teamService.receiveSaleProceeds(sellerTeam, asset.id, amount);
     const nextBuyer = teamService.receiveTransfer(buyerTeam, asset, amount);
     return { buyerTeam: nextBuyer, sellerTeam: nextSeller };
+  },
+};
+
+// --- offerService --------------------------------------------------------
+// Ofertas de compra directas entre usuarios: a diferencia de la cláusula (que
+// exige un mínimo y se ejecuta al instante), aquí el comprador propone
+// CUALQUIER importe y es la persona vendedora quien decide aceptar o
+// rechazar. Funcionan en cualquier momento, esté el mercado abierto o no, e
+// incluso mientras la jugadora sigue protegida por la cláusula de 14 días.
+const offerService = {
+  pendingForUser(offers, userId) {
+    return offers.filter(o => o.status === "pending" && (o.fromUser === userId || o.toUser === userId));
+  },
+  validateSend({ buyerName, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId, offers }) {
+    if (!buyerTeam || !sellerTeam) return { ok: false, error: "No se pudo leer alguna de las plantillas. Inténtalo de nuevo." };
+    if (buyerName === sellerName) return { ok: false, error: "Ya es tuya." };
+    const entry = teamService.getSquadEntry(sellerTeam, asset.id);
+    if (!entry) return { ok: false, error: "Esta jugadora ya no pertenece a esa plantilla." };
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
+    if (asset.position === "DT") {
+      if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
+    } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
+      return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras.` };
+    }
+    const available = auctionService.availableBudget(buyerTeam, bids || [], marketId, buyerName);
+    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
+    const already = offers.find(o => o.status === "pending" && o.fromUser === buyerName && o.assetId === asset.id && o.toUser === sellerName);
+    if (already) return { ok: false, error: "Ya tienes una oferta pendiente por esta jugadora." };
+    return { ok: true };
+  },
+  create(offers, { fromUser, toUser, assetId, amount }) {
+    return [...offers, { id: uid("of"), fromUser, toUser, assetId, amount, createdAt: Date.now(), status: "pending" }];
+  },
+  setStatus(offers, offerId, status) {
+    return offers.map(o => o.id === offerId ? { ...o, status } : o);
   },
 };
 
@@ -433,6 +488,30 @@ const marketService = {
     excludeIds.forEach(id => owned.add(id));
     const free = players.filter(p => !owned.has(p.id)).map(p => p.id);
     return shuffle(free).slice(0, count);
+  },
+  // Al generarse un mercado nuevo, cualquier jugadora marcada "en venta" que no
+  // tenga ya una oferta válida para ESTE mercado recibe una oferta nueva de la
+  // liga, por un importe aleatorio entre el 90% y el 110% de su valor actual.
+  // La oferta es válida solo hasta que se cierre este mercado.
+  refreshSaleOffers(teams, players, newMarket) {
+    const nextTeams = {};
+    let changed = false;
+    Object.entries(teams).forEach(([name, team]) => {
+      let teamChanged = false;
+      const squad = (team.squad || []).map(e => {
+        if (!e.forSale) return e;
+        if (e.saleOffer && e.saleOffer.marketId === newMarket.id) return e;
+        const player = players.find(p => p.id === e.id);
+        if (!player) return e;
+        const ratio = 0.9 + Math.random() * 0.2; // entre -10% y +10% del valor actual
+        const amount = Math.max(1, Math.round(player.basePrice * ratio));
+        teamChanged = true;
+        return { ...e, saleOffer: { amount, marketId: newMarket.id, expiresAt: newMarket.closesAt } };
+      });
+      if (teamChanged) { nextTeams[name] = { ...team, squad }; changed = true; }
+      else nextTeams[name] = team;
+    });
+    return { teams: nextTeams, changed };
   },
 };
 
@@ -1086,7 +1165,7 @@ function Onboarding({ onEnter }) {
           <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas?</label>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo"
             className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} maxLength={24} />
-          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 11 jugadoras al azar con un valor de equipo entre 90 y 100 M, y 100 M enteros para pujar en el mercado de esa liga desde el primer día.</p>
+          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 11 jugadoras al azar con un valor de equipo de entre 90.000.000 € y 100.000.000 €, y 100.000.000 € enteros para pujar en el mercado de esa liga desde el primer día.</p>
           <button disabled={!name.trim() || busy} onClick={async () => { setBusy(true); await onEnter(name.trim()); }}
             className="fl-body w-full mt-3 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
             {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Continuar
@@ -1120,6 +1199,7 @@ export default function App() {
   const [teams, setTeams] = useState({});
   const [market, setMarket] = useState(null);
   const [bids, setBids] = useState([]);
+  const [offers, setOffers] = useState([]);
   const [marketHistory, setMarketHistory] = useState([]);
   const [activity, setActivity] = useState([]);
 
@@ -1231,10 +1311,11 @@ export default function App() {
     if (!leagueId || resolvingRef.current) return;
     resolvingRef.current = true;
     try {
-      const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity] = await Promise.all([
+      const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity, freshOffers] = await Promise.all([
         readPlayers(), readAllTeams(leagueId), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
         readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
         readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
+        readShared(leagueKey(leagueId, "offers"), []),
       ]);
       if (freshTeamsOrNull === null) {
         // No pudimos leer con garantías TODOS los equipos de esta liga en este
@@ -1276,10 +1357,19 @@ export default function App() {
         const assetIds = marketService.buildAssets(playersNext, teamsNext, MARKET_ASSET_COUNT);
         marketNext = { id: uid("mk"), opensAt: window_.opensAt, closesAt: window_.closesAt, assetIds, resolved: false };
         await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
+
+        // Genera ofertas de la liga por las jugadoras marcadas "en venta" que
+        // todavía no tengan una oferta válida para este mercado nuevo.
+        const { teams: teamsWithOffers, changed } = marketService.refreshSaleOffers(teamsNext, playersNext, marketNext);
+        if (changed) {
+          teamsNext = teamsWithOffers;
+          const changedNames = Object.keys(teamsNext).filter((name) => teamsNext[name] !== freshTeams[name]);
+          await Promise.all(changedNames.map((name) => writeTeam(leagueId, name, teamsNext[name])));
+        }
       }
 
       setPlayers(playersNext); setTeams(teamsNext); setBids(bidsNext); setMarketHistory(historyNext); setActivity(activityNext);
-      setMarketConfig(freshConfig); setMarket(marketNext);
+      setMarketConfig(freshConfig); setMarket(marketNext); setOffers(freshOffers);
     } finally {
       resolvingRef.current = false;
     }
@@ -1348,6 +1438,77 @@ export default function App() {
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
     return { ok: true };
   }, [profile, players, bids, market, activeLeagueId]);
+
+  // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
+  const sellImmediate = useCallback(async (assetId) => {
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const player = players.find(p => p.id === assetId);
+    if (!player) return { ok: false, error: "Jugadora no encontrada." };
+    const amount = Math.max(1, Math.round((player.basePrice || 1) * 0.5));
+    const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    return { ok: true, amount };
+  }, [profile, players, activeLeagueId]);
+
+  // Marca/desmarca una jugadora como "en venta" a la liga. La oferta en sí se
+  // genera sola la próxima vez que se abra un mercado nuevo (ver syncMarket).
+  const toggleForSale = useCallback(async (assetId, forSale) => {
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const nextTeam = teamService.setForSale(fresh, assetId, forSale);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+  }, [profile, activeLeagueId]);
+
+  // Acepta la oferta de compra que ha hecho la liga por una jugadora en venta.
+  const acceptSaleOffer = useCallback(async (assetId) => {
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const entry = teamService.getSquadEntry(fresh, assetId);
+    if (!entry?.saleOffer) return { ok: false, error: "Esta jugadora ya no tiene una oferta activa." };
+    if (entry.saleOffer.expiresAt && Date.now() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
+    const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, entry.saleOffer.amount);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    return { ok: true };
+  }, [profile, activeLeagueId]);
+
+  // Ofertas de compra directas a otra persona: se pueden enviar en cualquier
+  // momento (mercado abierto o cerrado, jugadora protegida por cláusula o no).
+  const sendOffer = useCallback(async (sellerName, asset, amount) => {
+    const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
+    const freshOffers = await readShared(leagueKey(activeLeagueId, "offers"), offers);
+    const check = offerService.validateSend({
+      buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId: market?.id, offers: freshOffers,
+    });
+    if (!check.ok) return check;
+    const nextOffers = offerService.create(freshOffers, { fromUser: profile.name, toUser: sellerName, assetId: asset.id, amount });
+    await writeShared(leagueKey(activeLeagueId, "offers"), nextOffers);
+    setOffers(nextOffers);
+    return { ok: true };
+  }, [profile, players, bids, market, offers, activeLeagueId]);
+
+  // Responde (acepta/rechaza) una oferta recibida, o cancela una enviada.
+  const respondOffer = useCallback(async (offerId, action) => {
+    const freshOffers = await readShared(leagueKey(activeLeagueId, "offers"), offers);
+    const offer = freshOffers.find(o => o.id === offerId && o.status === "pending");
+    if (!offer) return { ok: false, error: "Esta oferta ya no está disponible." };
+    if (action === "accept") {
+      const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, offer.fromUser), readTeam(activeLeagueId, offer.toUser)]);
+      const asset = players.find(p => p.id === offer.assetId);
+      if (!asset || !buyerTeam || !sellerTeam) return { ok: false, error: "No se pudo completar la operación." };
+      const entry = teamService.getSquadEntry(sellerTeam, asset.id);
+      if (!entry) return { ok: false, error: "Ya no tienes esta jugadora." };
+      const nextSeller = teamService.receiveSaleProceeds(sellerTeam, asset.id, offer.amount);
+      const nextBuyer = teamService.receiveTransfer(buyerTeam, asset, offer.amount);
+      await Promise.all([writeTeam(activeLeagueId, offer.fromUser, nextBuyer), writeTeam(activeLeagueId, offer.toUser, nextSeller)]);
+      setTeams(t => ({ ...t, [offer.fromUser]: nextBuyer, [offer.toUser]: nextSeller }));
+    }
+    const nextStatus = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "cancelled";
+    const nextOffers = offerService.setStatus(freshOffers, offerId, nextStatus);
+    await writeShared(leagueKey(activeLeagueId, "offers"), nextOffers);
+    setOffers(nextOffers);
+    return { ok: true };
+  }, [players, offers, activeLeagueId]);
 
   // El horario del mercado sigue siendo GLOBAL (igual para todas las ligas).
   const saveMarketConfig = useCallback(async (cfg) => {
@@ -1430,14 +1591,16 @@ export default function App() {
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSaveLineup={saveLineup} />
+              onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} />
           )}
           {tab === "mercado" && (
             <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory}
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
               budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
+              offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
               jornadas={jornadas}
-              favoritos={favoritos} onToggleFavorite={toggleFavorito} />
+              favoritos={favoritos} onToggleFavorite={toggleFavorito}
+              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} />
           )}
           {tab === "mas" && (
             <MasTab activity={activity} players={players} jornadas={jornadas} />
@@ -2015,8 +2178,11 @@ function ValorHistoricoModal({ player, onClose }) {
 // media de la temporada, chips de jornadas (J1, J2…) y, debajo, el desglose
 // estadística a estadística de la jornada seleccionada con el sistema de
 // Puntos SWISH, igual que el modelo de referencia.
-function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, onClose }) {
+function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onClose }) {
   const [showHistorico, setShowHistorico] = useState(false);
+  const [busyAction, setBusyAction] = useState(null); // "sell" | "forsale" | "offer" | null
+  const [actionMsg, setActionMsg] = useState("");
+  const [confirmSell, setConfirmSell] = useState(false);
 
   const seasonRows = useMemo(() => jornadas.map((j, i) => {
     const stats = j.stats?.[player.id];
@@ -2087,6 +2253,73 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           </button>
         </div>
 
+        {isOwned && entry && (() => {
+          const locked = teamService.isClauseLocked(entry);
+          const unlockDate = new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES");
+          const sellAmount = Math.max(1, Math.round((player.basePrice || 1) * 0.5));
+          const offer = entry.saleOffer;
+          const offerExpired = offer && offer.expiresAt && Date.now() > offer.expiresAt;
+          return (
+            <div className="px-4 pt-3">
+              <div className="fl-row p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Lock size={12} color={locked ? C.muted : C.gold} />
+                  <span className="fl-mono text-[11px]" style={{ color: locked ? C.muted : C.gold }}>
+                    {locked ? `Cláusula protegida hasta el ${unlockDate}` : "Cláusula abierta — cualquiera puede pujar al valor de mercado"}
+                  </span>
+                </div>
+
+                {entry.forSale && (
+                  <div className="mb-2 p-2 rounded-md" style={{ background: C.principalSoft }}>
+                    {offer && !offerExpired ? (
+                      <>
+                        <div className="fl-body text-xs" style={{ color: C.white }}>Oferta de la liga: <span className="font-semibold">{fmtCredits(offer.amount)}</span></div>
+                        <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Válida hasta que cierre este mercado</div>
+                        <button disabled={busyAction === "offer"} onClick={async () => {
+                          setBusyAction("offer"); setActionMsg("");
+                          const res = await onAcceptSaleOffer(player.id);
+                          setBusyAction(null);
+                          if (res.ok) onClose(); else setActionMsg(res.error);
+                        }} className="fl-tap w-full mt-2 rounded-md py-2 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
+                          {busyAction === "offer" ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar oferta"}
+                        </button>
+                      </>
+                    ) : (
+                      <div className="fl-body text-xs" style={{ color: C.muted }}>En venta — recibirás una oferta de la liga cuando se abra el próximo mercado.</div>
+                    )}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button disabled={busyAction === "forsale"} onClick={async () => {
+                    setBusyAction("forsale"); setActionMsg("");
+                    await onToggleForSale(player.id, !entry.forSale);
+                    setBusyAction(null);
+                  }} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
+                    {entry.forSale ? "Quitar de venta" : "Poner en venta"}
+                  </button>
+                  {!confirmSell ? (
+                    <button onClick={() => setConfirmSell(true)} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ background: C.negative, color: C.white }}>
+                      Venta inmediata
+                    </button>
+                  ) : (
+                    <button disabled={busyAction === "sell"} onClick={async () => {
+                      setBusyAction("sell"); setActionMsg("");
+                      const res = await onSellImmediate(player.id);
+                      setBusyAction(null);
+                      if (res.ok) onClose(); else setActionMsg(res.error);
+                    }} className="fl-tap rounded-md py-2 text-xs font-semibold" style={{ background: C.negative, color: C.white }}>
+                      {busyAction === "sell" ? <Loader2 size={13} className="animate-spin mx-auto" /> : `Confirmar (${fmtCredits(sellAmount)})`}
+                    </button>
+                  )}
+                </div>
+                <p className="fl-body text-[10px] mt-2" style={{ color: C.muted }}>La venta inmediata te paga el 50% del valor de mercado actual, al instante.</p>
+                {actionMsg && <div className="fl-mono text-[10px] mt-1" style={{ color: C.negative }}>{actionMsg}</div>}
+              </div>
+            </div>
+          );
+        })()}
+
         {showHistorico && <ValorHistoricoModal player={player} onClose={() => setShowHistorico(false)} />}
 
         {seasonRows.length === 0 ? (
@@ -2155,7 +2388,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -2198,19 +2431,30 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
           ) : allSquad.map(p => {
             const entry = myTeam.squad.find(e => e.id === p.id);
             const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
+            const locked = teamService.isClauseLocked(entry || {});
             return (
               <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-2.5 px-3 py-2.5 text-left">
                 <PlayerPhoto url={p.photo} size={40} />
                 <div className="flex-1 min-w-0">
-                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</div>
+                  <div className="fl-body text-sm font-medium truncate flex items-center gap-1.5" style={{ color: C.white }}>
+                    {p.name}
+                    {entry?.forSale && <span className="fl-mono text-[9px] px-1 py-0.5 rounded" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
+                  </div>
                   <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team} · {role}</div>
                 </div>
                 <PositionBadge posKey={p.position} />
-                <div className="text-right" style={{ minWidth: 62 }}>
+                <div className="text-right" style={{ minWidth: 78 }}>
                   <div className="fl-mono text-[9px]" style={{ color: C.muted }}>VALOR</div>
                   <div className="fl-mono text-xs" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                  <div className="fl-mono text-[9px] mt-0.5" style={{ color: C.muted }}>CLÁUSULA</div>
-                  <div className="fl-mono text-xs font-semibold flex items-center gap-0.5 justify-end" style={{ color: C.gold }}><Lock size={9} /> {fmtCredits(entry?.clause || 0)}</div>
+                  {locked ? (
+                    <div className="fl-mono text-[9px] font-semibold flex items-center gap-0.5 justify-end mt-0.5" style={{ color: C.muted }}>
+                      <Lock size={9} /> hasta {new Date(teamService.clauseUnlockAt(entry || {})).toLocaleDateString("es-ES")}
+                    </div>
+                  ) : (
+                    <div className="fl-mono text-[9px] font-semibold flex items-center gap-0.5 justify-end mt-0.5" style={{ color: C.gold }}>
+                      <Lock size={9} /> abierta
+                    </div>
+                  )}
                 </div>
               </button>
             );
@@ -2236,8 +2480,9 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
         if (!p) return null;
         const entry = myTeam.squad.find(e => e.id === p.id);
         return (
-          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas}
+          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas} isOwned
             isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => onToggleFavorite(p.id)}
+            onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
             onClose={() => setDetailPlayerId(null)} />
         );
       })()}
@@ -2604,7 +2849,7 @@ function DropdownItem({ active, onClick, children }) {
 
 // Buscador global de jugadoras y entrenadoras/es: nombre, favoritos, equipo
 // real, posición y orden — igual estructura que el buscador de referencia.
-function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onClose }) {
+function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onClose }) {
   const [query, setQuery] = useState("");
   const [onlyFav, setOnlyFav] = useState(false);
   const [teamFilter, setTeamFilter] = useState("");
@@ -2713,31 +2958,43 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
 
       {detailPlayer && (
         <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
+          entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={favSet.has(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
     </div>
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, jornadas, favoritos, onToggleFavorite }) {
+function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer }) {
   const [sub, setSub] = useState("mercado");
-  const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset, clause }
+  const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
+  const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset }
   const [detailPlayer, setDetailPlayer] = useState(null);
   const [showSearch, setShowSearch] = useState(false);
   const assets = (market.assetIds || []).map(id => players.find(p => p.id === id)).filter(Boolean);
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
+  const pendingOffersCount = (offers || []).filter(o => o.status === "pending" && (o.fromUser === profile.name || o.toUser === profile.name)).length;
+
+  if (clauseTarget) {
+    return (
+      <ClauseOfferScreen target={clauseTarget} budgetAvailable={budgetAvailable}
+        onBack={() => setClauseTarget(null)}
+        onConfirm={async (amount) => {
+          const res = await onBuyClause(clauseTarget.sellerName, clauseTarget.asset, amount);
+          if (res.ok) setClauseTarget(null);
+          return res;
+        }} />
+    );
+  }
 
   if (offerTarget) {
     return (
-      <ClauseOfferScreen target={offerTarget} budgetAvailable={budgetAvailable}
+      <OfferScreen target={offerTarget} budgetAvailable={budgetAvailable}
         onBack={() => setOfferTarget(null)}
-        onConfirm={async (amount) => {
-          const res = await onBuyClause(offerTarget.sellerName, offerTarget.asset, amount);
-          if (res.ok) setOfferTarget(null);
-          return res;
-        }} />
+        onConfirm={(amount) => onSendOffer(offerTarget.sellerName, offerTarget.asset, amount)} />
     );
   }
 
@@ -2753,7 +3010,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
         </div>
       </div>
       <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
-        {[["mercado", "Mercado"], ["plantillas", "Plantillas"], ["operaciones", "Mis pujas"], ["historico", "Histórico"]].map(([k, l]) => (
+        {[["mercado", "Mercado"], ["plantillas", "Plantillas"], ["ofertas", `Ofertas${pendingOffersCount > 0 ? ` (${pendingOffersCount})` : ""}`], ["operaciones", "Mis pujas"], ["historico", "Histórico"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
             style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
             {l.toUpperCase()}
@@ -2773,8 +3030,14 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       )}
 
       {sub === "plantillas" && (
-        <RivalRosters teams={teams} players={players} me={profile.name} onSelect={(sellerName, asset, clause) => setOfferTarget({ sellerName, asset, clause })}
+        <RivalRosters teams={teams} players={players} me={profile.name}
+          onSelectClause={(sellerName, asset) => setClauseTarget({ sellerName, asset })}
+          onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
           onOpenPlayer={setDetailPlayer} />
+      )}
+
+      {sub === "ofertas" && (
+        <OfertasTab offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
       )}
 
       {sub === "operaciones" && (
@@ -2804,13 +3067,17 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
 
       {detailPlayer && (
         <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
+          entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
 
       {showSearch && (
         <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam}
-          favoritos={favoritos} onToggleFavorite={onToggleFavorite} onClose={() => setShowSearch(false)} />
+          favoritos={favoritos} onToggleFavorite={onToggleFavorite}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer}
+          onClose={() => setShowSearch(false)} />
       )}
     </div>
   );
@@ -2819,9 +3086,9 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
 // Plantillas rivales: solo aquí se puede pujar por una jugadora que ya pertenece a otra
 // persona, pagando (como mínimo) su cláusula. Los jugadores del mercado general NUNCA
 // muestran cláusula porque, mientras están libres, no la tienen.
-function RivalRosters({ teams, players, me, onSelect, onOpenPlayer }) {
+function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpenPlayer }) {
   const rivals = Object.entries(teams || {}).filter(([name]) => name !== me);
-  if (rivals.length === 0) return <EmptyState title="Todavía no hay otras plantillas" text="En cuanto más gente entre en la liga podrás ver sus jugadoras clausuladas aquí." />;
+  if (rivals.length === 0) return <EmptyState title="Todavía no hay otras plantillas" text="En cuanto más gente entre en la liga podrás ver sus jugadoras aquí." />;
   return (
     <div className="space-y-4">
       {rivals.map(([name, team]) => {
@@ -2833,23 +3100,38 @@ function RivalRosters({ teams, players, me, onSelect, onOpenPlayer }) {
           <div key={name}>
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>{name.toUpperCase()}</div>
             <div className="space-y-1.5">
-              {rows.map(({ entry, player }) => (
-                <div key={player.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
-                  <button onClick={() => onOpenPlayer(player)} className="fl-tap flex items-center gap-2.5 flex-1 min-w-0 text-left">
-                    <PlayerPhoto url={player.photo} size={40} />
-                    <div className="flex-1 min-w-0 text-left">
-                      <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
-                      <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{player.team} · Valor {fmtCredits(player.basePrice)}</div>
+              {rows.map(({ entry, player }) => {
+                const locked = teamService.isClauseLocked(entry);
+                return (
+                  <div key={player.id} className="fl-row flex items-center gap-2 px-3 py-2.5">
+                    <button onClick={() => onOpenPlayer(player)} className="fl-tap flex items-center gap-2.5 flex-1 min-w-0 text-left">
+                      <PlayerPhoto url={player.photo} size={40} />
+                      <div className="flex-1 min-w-0 text-left">
+                        <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                        <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{player.team} · Valor {fmtCredits(player.basePrice)}</div>
+                      </div>
+                    </button>
+                    <PositionBadge posKey={player.position} />
+                    <div className="flex flex-col gap-1 flex-shrink-0">
+                      {locked ? (
+                        <span className="fl-mono text-[10px] flex items-center gap-1" style={{ color: C.muted }}>
+                          <Lock size={10} /> hasta {new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES")}
+                        </span>
+                      ) : (
+                        <button onClick={() => onSelectClause(name, player)}
+                          className="fl-tap flex items-center gap-1 fl-mono text-[11px] font-semibold rounded-md px-2 py-1"
+                          style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
+                          <Lock size={10} /> {fmtCredits(player.basePrice)}
+                        </button>
+                      )}
+                      <button onClick={() => onSelectOffer(name, player)}
+                        className="fl-tap fl-mono text-[10px] font-medium rounded-md px-2 py-1" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                        Hacer oferta
+                      </button>
                     </div>
-                  </button>
-                  <PositionBadge posKey={player.position} />
-                  <button onClick={() => onSelect(name, player, entry.clause || 0)}
-                    className="fl-tap flex items-center gap-1 fl-mono text-xs font-semibold rounded-md px-2 py-1.5 flex-shrink-0"
-                    style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
-                    <Lock size={11} /> {fmtCredits(entry.clause || 0)}
-                  </button>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         );
@@ -2858,9 +3140,151 @@ function RivalRosters({ teams, players, me, onSelect, onOpenPlayer }) {
   );
 }
 
+// Pantalla de oferta de compra directa a otra persona: cualquier importe, la
+// otra persona decide si la acepta. Disponible siempre, incluso con la
+// jugadora todavía protegida por cláusula.
+function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
+  const { sellerName, asset } = target;
+  const [amount, setAmount] = useState(String(Math.round((asset.basePrice || 1) * 0.8)));
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    const res = await onConfirm(Number(amount));
+    setBusy(false);
+    if (!res.ok) setError(res.error); else setSent(true);
+  };
+
+  if (sent) {
+    return (
+      <div className="fixed inset-0 z-20 flex flex-col items-center justify-center px-6" style={{ background: C.navy900 }}>
+        <CircleCheck size={40} color={C.positive} />
+        <div className="fl-body text-sm mt-3 text-center" style={{ color: C.white }}>Oferta enviada a {sellerName}.</div>
+        <button onClick={onBack} className="fl-tap mt-4 rounded-md px-5 py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>Volver</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-20 flex flex-col" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta a {sellerName}</div>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 py-6">
+        <div className="flex justify-center mb-6">
+          <div className="rounded-full p-1" style={{ border: `2px solid ${C.line}` }}>
+            <PlayerPhoto url={asset.photo} size={92} rounded={999} />
+          </div>
+        </div>
+        <div className="text-center fl-body text-sm font-medium mb-4" style={{ color: C.white }}>{asset.name}</div>
+        <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>TU OFERTA</label>
+        <input type="number" min={1} value={amount} onChange={e => setAmount(e.target.value)}
+          className="w-full rounded-md px-3 py-2.5 text-sm fl-mono" style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }} />
+        <p className="fl-body text-[11px] mt-2" style={{ color: C.muted }}>{sellerName} decidirá si acepta o rechaza tu oferta. Puedes ofrecer cualquier importe, incluso si la jugadora todavía está protegida por cláusula.</p>
+        {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
+      </div>
+      <div className="px-5 pb-3">
+        <button onClick={submit} disabled={busy || !Number(amount) || Number(amount) <= 0}
+          className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
+          style={{ background: C.principal, color: C.white }}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar oferta"}
+        </button>
+        <div className="text-center fl-mono text-[11px] mt-2.5 pb-2" style={{ color: C.muted }}>
+          Tu saldo: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(budgetAvailable)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Ofertas de compra: las que has enviado (pendientes de que respondan) y las
+// que has recibido por tus jugadoras (para aceptar o rechazar).
+function OfertasTab({ offers, players, me, onRespond }) {
+  const [busyId, setBusyId] = useState(null);
+  const received = offers.filter(o => o.status === "pending" && o.toUser === me);
+  const sent = offers.filter(o => o.status === "pending" && o.fromUser === me);
+
+  const respond = async (id, action) => {
+    setBusyId(id);
+    await onRespond(id, action);
+    setBusyId(null);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS RECIBIDAS</div>
+        {received.length === 0 ? (
+          <EmptyState compact title="Sin ofertas recibidas" text="Aquí verás las ofertas que te hagan por tus jugadoras." />
+        ) : (
+          <div className="space-y-1.5">
+            {received.map(o => {
+              const asset = players.find(p => p.id === o.assetId);
+              if (!asset) return null;
+              return (
+                <div key={o.id} className="fl-row px-3 py-2.5">
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <PlayerPhoto url={asset.photo} size={36} />
+                    <div className="flex-1 min-w-0">
+                      <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
+                      <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{o.fromUser} ofrece {fmtCredits(o.amount)}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button disabled={busyId === o.id} onClick={() => respond(o.id, "reject")}
+                      className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
+                      Rechazar
+                    </button>
+                    <button disabled={busyId === o.id} onClick={() => respond(o.id, "accept")}
+                      className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
+                      {busyId === o.id ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div>
+        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS ENVIADAS</div>
+        {sent.length === 0 ? (
+          <EmptyState compact title="Sin ofertas enviadas" text="Las ofertas que hagas a otras personas aparecerán aquí." />
+        ) : (
+          <div className="space-y-1.5">
+            {sent.map(o => {
+              const asset = players.find(p => p.id === o.assetId);
+              if (!asset) return null;
+              return (
+                <div key={o.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+                  <PlayerPhoto url={asset.photo} size={36} />
+                  <div className="flex-1 min-w-0">
+                    <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>A {o.toUser} · {fmtCredits(o.amount)}</div>
+                  </div>
+                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "cancel")}
+                    className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+                    Cancelar
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Pantalla de oferta por cláusula, a pantalla completa (estilo de referencia).
+// La cláusula ya no es un importe fijo guardado: una vez abierta (pasados los
+// 14 días de protección), es siempre el valor de mercado ACTUAL de la jugadora.
 function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
-  const { sellerName, asset, clause } = target;
+  const { sellerName, asset } = target;
+  const clause = asset.basePrice || 1;
   const [amount, setAmount] = useState(String(clause));
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState("");
