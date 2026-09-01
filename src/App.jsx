@@ -32,15 +32,6 @@ const C = {
   gold: "#FFC83D",
   positive: "#35E59A",
   negative: "#FF5C7A",
-  // Tonos añadidos para igualar brillos/degradados de la maqueta:
-  heroFrom: "#55093B",       // vino/magenta oscuro (esquina superior-izq. de las tarjetas hero)
-  heroTo: "#FF4E1E",         // naranja-rojo fuego (esquina inferior-dcha.)
-  tabFrom: "#FFB347",        // naranja claro de las pestañas activas
-  tabTo: "#FF5500",          // naranja-rojo de las pestañas activas
-  courtLine: "rgba(214,158,66,0.45)",  // líneas ámbar de la cancha (3 puntos, círculo, etc.)
-  courtRed: "#FF2E55",       // borde rojo/carmín de la zona (pintura) y huecos vacíos
-  slotEmptyBg: "rgba(255,46,85,0.10)",
-  slotEmptyIcon: "rgba(255,46,95,0.95)",
 };
 
 /* =============================================================================
@@ -477,15 +468,17 @@ const rankingService = {
 
 /* =============================================================================
    ALMACENAMIENTO (Supabase)
-   Dos almacenes distintos:
-   - "players": tabla REAL de Supabase (id, name, team, position, base_price,
-     photo, prev_base_price, price_history). Se gestiona por completo desde el
-     Table Editor de Supabase (altas, bajas y ediciones). La app SOLO lee esta
-     tabla y, automáticamente, actualiza el valor/histórico de cada jugadora
-     al cerrar una jornada.
-   - "kv_store" (key text, value jsonb): almacén clave-valor genérico para
-     todo lo demás que es COMPARTIDO por la liga (jornadas, mercado, pujas,
-     equipos fantasy, escudos...).
+   Varias tablas reales, cada una gestionable desde el Table Editor de Supabase:
+   - "players": jugadoras/entrenadoras (id, name, team, position, base_price,
+     photo, prev_base_price, price_history).
+   - "jornadas" + "partidos" + "jornada_stats": calendario, marcadores y
+     estadísticas de cada jugadora por jornada.
+   - "market_config": hora de apertura/cierre del mercado.
+   - "team_crests": escudo de cada equipo real.
+   Y "kv_store" (key text, value jsonb): almacén clave-valor genérico solo
+   para el ESTADO DE JUEGO EN DIRECTO, que genera la propia app (no se edita
+   a mano): equipos fantasy de cada persona, mercado actual, pujas, histórico
+   de mercado y actividad reciente.
    Lo PERSONAL (perfil del dispositivo, favoritos) todavía no tiene login real
    (eso llega en el siguiente paso), así que de momento vive en localStorage,
    solo en este navegador.
@@ -550,6 +543,133 @@ async function readPersonal(key, fallback) {
 async function writePersonal(key, value) {
   try { localStorage.setItem(`fl_personal_${key}`, JSON.stringify(value)); return true; }
   catch { return false; }
+}
+
+/* -----------------------------------------------------------------------
+   JORNADAS / PARTIDOS / ESTADÍSTICAS — tablas reales de Supabase.
+   Se gestionan por completo desde la propia app (Admin → Jornadas), pero
+   viven en tablas "jornadas", "partidos" y "jornada_stats" para que también
+   se puedan consultar o corregir a mano desde el Table Editor de Supabase.
+   ----------------------------------------------------------------------- */
+function jornadaNumberFromName(name) {
+  const m = /(\d+)/.exec(name || "");
+  return m ? Number(m[1]) : 0;
+}
+
+async function readJornadas() {
+  try {
+    const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }] = await Promise.all([
+      supabase.from("jornadas").select("*"),
+      supabase.from("partidos").select("*"),
+      supabase.from("jornada_stats").select("*"),
+    ]);
+    if (e1) throw e1; if (e2) throw e2; if (e3) throw e3;
+
+    const partidosByJornada = {};
+    (pRows || []).forEach((p) => {
+      const list = partidosByJornada[p.jornada_id] || (partidosByJornada[p.jornada_id] = []);
+      list.push({
+        id: p.id, local: p.local, visitante: p.visitante,
+        fecha: p.fecha || "", hora: p.hora || "",
+        marcadorLocal: p.marcador_local ?? "", marcadorVisitante: p.marcador_visitante ?? "",
+      });
+    });
+    const statsByJornada = {};
+    (sRows || []).forEach((s) => {
+      const map = statsByJornada[s.jornada_id] || (statsByJornada[s.jornada_id] = {});
+      map[s.player_id] = {
+        minutos: s.minutos || 0, puntos: s.puntos || 0, t3: s.t3 || 0, tlibre: s.tlibre || 0,
+        rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
+        robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
+        jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
+      };
+    });
+    return (jRows || [])
+      .map((j) => ({
+        id: j.id, name: j.name,
+        partidos: partidosByJornada[j.id] || [],
+        stats: statsByJornada[j.id] || {},
+        lineups: j.lineups || {},
+      }))
+      .sort((a, b) => jornadaNumberFromName(a.name) - jornadaNumberFromName(b.name));
+  } catch {
+    return [];
+  }
+}
+
+// Guarda una jornada completa: cabecera + partidos (se reemplazan todos, es
+// más simple y fiable que hacer un upsert selectivo) + estadísticas.
+async function writeJornada(jornada) {
+  try {
+    const { id, name, lineups, partidos, stats } = jornada;
+    await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {} });
+
+    await supabase.from("partidos").delete().eq("jornada_id", id);
+    if (partidos && partidos.length > 0) {
+      const rows = partidos.map((p) => ({
+        id: p.id, jornada_id: id, local: p.local, visitante: p.visitante,
+        fecha: p.fecha || null, hora: p.hora || null,
+        marcador_local: (p.marcadorLocal === "" || p.marcadorLocal == null) ? null : Number(p.marcadorLocal),
+        marcador_visitante: (p.marcadorVisitante === "" || p.marcadorVisitante == null) ? null : Number(p.marcadorVisitante),
+      }));
+      await supabase.from("partidos").insert(rows);
+    }
+
+    const statsEntries = Object.entries(stats || {});
+    if (statsEntries.length > 0) {
+      const rows = statsEntries.map(([playerId, s]) => ({
+        jornada_id: id, player_id: playerId,
+        minutos: s.minutos || 0, puntos: s.puntos || 0, t3: s.t3 || 0, tlibre: s.tlibre || 0,
+        rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
+        robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
+        jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
+      }));
+      await supabase.from("jornada_stats").upsert(rows, { onConflict: "jornada_id,player_id" });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function deleteJornadaRow(id) {
+  try { await supabase.from("jornadas").delete().eq("id", id); return true; }
+  catch { return false; }
+}
+
+/* -----------------------------------------------------------------------
+   CONFIGURACIÓN DEL MERCADO y ESCUDOS DE EQUIPOS REALES — tablas reales.
+   ----------------------------------------------------------------------- */
+async function readMarketConfig() {
+  try {
+    const { data, error } = await supabase.from("market_config").select("*").eq("id", "singleton").maybeSingle();
+    if (error) throw error;
+    return data ? { openHour: data.open_hour, closeHour: data.close_hour } : null;
+  } catch { return null; }
+}
+async function writeMarketConfig(cfg) {
+  try {
+    const { error } = await supabase.from("market_config").upsert({ id: "singleton", open_hour: cfg.openHour, close_hour: cfg.closeHour });
+    if (error) throw error;
+    return true;
+  } catch { return false; }
+}
+
+async function readTeamCrests() {
+  try {
+    const { data, error } = await supabase.from("team_crests").select("*");
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((r) => { map[r.team_name] = r.url; });
+    return map;
+  } catch { return {}; }
+}
+async function writeTeamCrestRow(teamName, url) {
+  try {
+    const { error } = await supabase.from("team_crests").upsert({ team_name: teamName, url });
+    if (error) throw error;
+    return true;
+  } catch { return false; }
 }
 
 /* -----------------------------------------------------------------------
@@ -748,10 +868,10 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
       <div className="relative flex items-center justify-center overflow-hidden"
         style={{
           width: size, height: size, borderRadius: size * 0.28,
-          background: empty ? C.slotEmptyBg : C.navy700,
-          border: empty ? `1.5px dashed ${C.slotEmptyIcon}` : `1.5px solid ${C.line}`,
+          background: empty ? "rgba(255,61,127,0.06)" : C.navy700,
+          border: empty ? "1.5px dashed rgba(255,61,127,0.55)" : `1.5px solid ${C.line}`,
         }}>
-        {empty ? <PlayerSilhouette size={size * 0.52} color={C.slotEmptyIcon} />
+        {empty ? <PlayerSilhouette size={size * 0.52} color="rgba(255,61,127,0.55)" />
           : (player.photo ? <img src={player.photo} alt="" className="w-full h-full object-cover" /> : <ImageOff size={size * 0.4} color={C.muted} />)}
         {!empty && (
           <span className="absolute flex items-center justify-center"
@@ -767,7 +887,7 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
         )}
       </div>
       <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded truncate"
-        style={{ background: empty && !label ? "transparent" : C.navy900, color: C.white, maxWidth: size + 20 }}>
+        style={{ background: empty && !label ? "transparent" : C.navy900, color: empty ? C.muted : C.white, maxWidth: size + 20 }}>
         {text}
       </span>
     </button>
@@ -777,11 +897,11 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
 // Cancha de baloncesto (media pista) dibujada en SVG: línea de fondo, tablero
 // y aro, zona restringida, pintura, círculo de tiros libres y línea de 3.
 function BasketballCourt() {
-  const line = C.courtLine;
+  const line = "rgba(255,255,255,0.24)";
   return (
     <svg viewBox="0 0 320 300" className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
       {/* pintura / zona de 3 segundos */}
-      <rect x="110" y="4" width="100" height="122" fill="none" stroke={C.courtRed} strokeWidth="1.75" />
+      <rect x="110" y="4" width="100" height="122" fill="none" stroke={line} strokeWidth="1.5" />
       {/* círculo de tiros libres */}
       <circle cx="160" cy="126" r="42" fill="none" stroke={line} strokeWidth="1.5" strokeDasharray="5 5" />
       {/* zona restringida bajo el aro */}
@@ -789,7 +909,7 @@ function BasketballCourt() {
       {/* línea de 3 puntos */}
       <path d="M26 4 L26 94 A138 138 0 0 0 294 94 L294 4" fill="none" stroke={line} strokeWidth="1.5" />
       {/* tablero */}
-      <rect x="138" y="6" width="44" height="3.5" fill={C.gold} opacity="0.9" />
+      <rect x="138" y="6" width="44" height="3.5" fill={C.gold} opacity="0.85" />
       {/* aro */}
       <circle cx="160" cy="20" r="6.5" fill="none" stroke={C.gold} strokeWidth="2.5" />
       {/* asomo del círculo central, media pista */}
@@ -822,29 +942,20 @@ function CountdownChip({ closesAt, opensAt, isOpen }) {
   const target = isOpen ? closesAt : opensAt;
   const remaining = target - now;
   const closing = isOpen && remaining < 5 * 60 * 1000;
-  const chipColor = closing ? C.negative : C.principal;
   return (
-    <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: chipColor, textShadow: `0 0 10px ${chipColor}55` }}>
+    <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: closing ? C.negative : C.baby }}>
       <Clock size={13} className={closing ? "fl-pulse" : ""} />
       <span>{isOpen ? "Cierra en" : "Abre en"} {fmtHMS(Math.max(0, remaining))}</span>
     </div>
   );
 }
 
-function EmptyState({ title, text, compact, icon, accent, hero }) {
-  const Icon = icon || Users;
-  const iconColor = accent || C.muted;
-  const iconSize = compact ? 18 : (accent ? 46 : 24);
-  const heroStyle = hero ? {
-    background: `radial-gradient(130px 100px at 15% 20%, rgba(255,61,127,0.35), transparent 60%), radial-gradient(170px 140px at 90% 90%, rgba(255,138,0,0.45), transparent 62%), linear-gradient(135deg, ${C.heroFrom} 0%, ${C.heroTo} 100%)`,
-    border: `1px solid ${C.principal}55`,
-    boxShadow: `0 10px 30px rgba(255,78,30,0.25), 0 0 40px ${C.principal}22`,
-  } : undefined;
+function EmptyState({ title, text, compact }) {
   return (
-    <div className={`${hero ? "" : "fl-row"} text-center ${compact ? "py-4 px-3" : "py-10 px-4"}`} style={heroStyle && { ...heroStyle, borderRadius: 12 }}>
-      <Icon size={iconSize} style={{ color: iconColor, margin: "0 auto 8px", filter: accent ? `drop-shadow(0 0 10px ${accent}aa) drop-shadow(0 0 3px ${accent})` : "none" }} />
+    <div className={`fl-row text-center ${compact ? "py-4 px-3" : "py-10 px-4"}`}>
+      <Users size={compact ? 18 : 24} style={{ color: C.muted, margin: "0 auto 8px" }} />
       <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{title}</div>
-      <div className="fl-body text-xs mt-1" style={{ color: hero ? "rgba(255,255,255,0.75)" : C.muted }}>{text}</div>
+      <div className="fl-body text-xs mt-1" style={{ color: C.muted }}>{text}</div>
     </div>
   );
 }
@@ -933,17 +1044,17 @@ export default function App() {
       const p = await readPersonal("profile", null);
       const fav = await readPersonal("favoritos", []);
       const [pl, jo, tm, cfg, mk, bd, hist, act, crests] = await Promise.all([
-        readPlayers(), readShared("jornadas", []), readAllTeams(),
-        readShared("marketConfig", null), readShared("currentMarket", null),
+        readPlayers(), readJornadas(), readAllTeams(),
+        readMarketConfig(), readShared("currentMarket", null),
         readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
-        readShared("teamCrests", {}),
+        readTeamCrests(),
       ]);
       setPlayers(pl); setJornadas(jo); setTeams(tm || {}); setBids(bd); setMarketHistory(hist); setActivity(act);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
       const config = cfg || DEFAULT_MARKET_CONFIG;
       setMarketConfig(config);
-      if (!cfg) await writeShared("marketConfig", config);
+      if (!cfg) await writeMarketConfig(config);
       setMarket(mk);
       setProfile(p);
     })();
@@ -958,7 +1069,7 @@ export default function App() {
     resolvingRef.current = true;
     try {
       const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity] = await Promise.all([
-        readPlayers(), readAllTeams(), readShared("marketConfig", DEFAULT_MARKET_CONFIG),
+        readPlayers(), readAllTeams(), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
         readShared("currentMarket", null), readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
       ]);
       if (freshTeamsOrNull === null) {
@@ -1134,7 +1245,7 @@ export default function App() {
   }, [profile, players, bids, market]);
 
   const saveMarketConfig = useCallback(async (cfg) => {
-    await writeShared("marketConfig", cfg);
+    await writeMarketConfig(cfg);
     setMarketConfig(cfg);
     await syncMarket();
   }, [syncMarket]);
@@ -1147,17 +1258,16 @@ export default function App() {
   }, [market, syncMarket]);
 
   const saveJornada = useCallback(async (jornada) => {
-    const freshJ = await readShared("jornadas", []);
+    const freshJ = await readJornadas();
     // Solo lectura (para copiar alineaciones y calcular movimiento de mercado);
     // si falla, usamos {} en vez de bloquear — nunca escribimos "teams" aquí.
     const freshT = (await readAllTeams()) || {};
-    const idx = freshJ.findIndex(j => j.id === jornada.id);
-    const existing = idx >= 0 ? freshJ[idx] : null;
+    const existing = freshJ.find(j => j.id === jornada.id);
     const lineups = { ...(existing?.lineups || {}) };
     Object.entries(freshT).forEach(([name, t]) => { if (!lineups[name] && t.lineup) lineups[name] = t.lineup; });
     const jornadaToSave = { ...jornada, lineups };
-    const nextJ = idx >= 0 ? freshJ.map(j => j.id === jornada.id ? jornadaToSave : j) : [...freshJ, jornadaToSave];
-    await writeShared("jornadas", nextJ);
+    await writeJornada(jornadaToSave);
+    const nextJ = await readJornadas();
     setJornadas(nextJ);
 
     const freshP = await readPlayers();
@@ -1167,19 +1277,16 @@ export default function App() {
   }, []);
 
   const deleteJornada = useCallback(async (id) => {
-    const fresh = await readShared("jornadas", []);
-    const next = fresh.filter(j => j.id !== id);
-    await writeShared("jornadas", next);
+    await deleteJornadaRow(id);
+    const next = await readJornadas();
     setJornadas(next);
   }, []);
 
-  // Escudo de un equipo real: mapa { nombre de equipo -> URL de imagen }, compartido
-  // para toda la liga (lo sube quien administra desde Equipos reales).
+  // Escudo de un equipo real: fila en la tabla "team_crests" (equipo -> URL),
+  // compartida para toda la liga (lo sube quien administra desde Equipos reales).
   const saveTeamCrest = useCallback(async (teamName, url) => {
-    const fresh = await readShared("teamCrests", {});
-    const next = { ...fresh, [teamName]: url };
-    await writeShared("teamCrests", next);
-    setTeamCrests(next);
+    await writeTeamCrestRow(teamName, url);
+    setTeamCrests(prev => ({ ...prev, [teamName]: url }));
   }, []);
 
   // Vuelve a leer la tabla real "players" de Supabase (por si se ha
@@ -1273,7 +1380,7 @@ function BottomNav({ tab, setTab, isAdmin }) {
         const accent = accentFor(it.key);
         return (
           <button key={it.key} onClick={() => setTab(it.key)} className="fl-tap flex-1 flex flex-col items-center gap-0.5 py-1.5">
-            <Icon size={19} color={active ? accent : C.muted} style={active ? { filter: `drop-shadow(0 0 6px ${accent}88)` } : undefined} />
+            <Icon size={19} color={active ? accent : C.muted} />
             <span className="fl-mono text-[9px]" style={{ color: active ? accent : C.muted }}>{it.label}</span>
           </button>
         );
@@ -1396,18 +1503,14 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
 
   return (
     <div className="space-y-4">
-      <div className="fl-row p-4" style={{
-        background: `radial-gradient(130px 100px at 12% 15%, rgba(255,61,127,0.38), transparent 60%), radial-gradient(170px 140px at 92% 95%, rgba(255,138,0,0.45), transparent 62%), linear-gradient(135deg, ${C.heroFrom} 0%, ${C.heroTo} 100%)`,
-        border: `1px solid ${C.principal}55`,
-        boxShadow: `0 10px 30px rgba(255,78,30,0.25), 0 0 40px ${C.principal}22`,
-      }}>
+      <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
         <div className="flex items-center justify-between">
           <div>
             <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>TU LIGA</div>
             <div className="fl-display text-lg uppercase" style={{ color: C.white }}>{profile.name}</div>
           </div>
           <div className="text-right">
-            <div className="fl-mono text-2xl font-semibold" style={{ color: C.gold, textShadow: `0 0 16px ${C.gold}88` }}>{myRow ? `#${myRow.rank}` : "—"}</div>
+            <div className="fl-mono text-2xl font-semibold" style={{ color: C.white }}>{myRow ? `#${myRow.rank}` : "—"}</div>
             <div className="fl-mono text-[9px]" style={{ color: "rgba(255,255,255,0.75)" }}>POSICIÓN</div>
           </div>
         </div>
@@ -1447,7 +1550,7 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
       <div>
         <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
         {jornadas.length === 0 ? (
-          <EmptyState hero icon={Users} accent={C.principal} title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
+          <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
         ) : (
           <div className="fl-row p-3.5 flex items-center justify-between">
             <span className="fl-body text-sm" style={{ color: C.white }}>{lastJornada.name}</span>
@@ -1542,11 +1645,7 @@ function ClasificacionTab({ teams, players, jornadas, me }) {
       {rows.length === 0 ? <EmptyState title="Todavía no hay participantes" text="En cuanto alguien entre en la liga aparecerá aquí." /> : (
         <div className="space-y-1.5">
           {rows.map(r => (
-            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={r.name === me ? {
-                border: "2px solid transparent",
-                borderImage: `linear-gradient(135deg, ${C.gold}, ${C.principal}) 1`,
-                boxShadow: `0 0 18px ${C.principal}44`,
-              } : { border: `1px solid ${C.line}` }}>
+            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
@@ -1846,12 +1945,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       <div className="flex gap-1.5 mb-3">
         {[["alineacion", "Alineación"], ["plantilla", "Plantilla"], ["puntos", "Puntos"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
-            style={{
-              background: sub === k ? `linear-gradient(135deg, ${C.tabFrom} 0%, ${C.tabTo} 100%)` : "transparent",
-              color: sub === k ? C.white : C.muted,
-              border: sub === k ? "none" : `1px solid ${C.line}`,
-              boxShadow: sub === k ? "0 4px 14px rgba(255,106,0,0.45)" : "none",
-            }}>
+            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
             {l.toUpperCase()}
           </button>
         ))}
@@ -2132,7 +2226,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         <div className="relative flex-1">
           <button onClick={() => setFormationOpen(o => !o)}
             className="fl-tap w-full flex items-center justify-center gap-1.5 fl-mono text-xs font-bold rounded-md py-2"
-            style={{ background: `linear-gradient(135deg, rgba(92,14,48,0.85) 0%, rgba(50,8,18,0.85) 100%)`, border: `1px solid ${C.principal}33`, color: C.white }}>
+            style={{ background: C.baby, color: C.ink }}>
             {formationKey.split("-").join(" · ")}
             {formationOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -2150,7 +2244,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         </div>
         <button onClick={() => setShowCaptainPicker(true)}
           className="fl-tap flex-1 flex items-center justify-center gap-1.5 fl-mono text-xs font-medium rounded-md py-2"
-          style={{ background: C.navy700, border: `1px solid ${C.gold}66`, boxShadow: `0 0 10px ${C.gold}22`, color: C.white }}>
+          style={{ background: C.navy700, border: `1px solid ${C.line}`, color: C.white }}>
           <Star size={13} color={C.gold} /> Asignar capitán
         </button>
       </div>
@@ -2429,19 +2523,14 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
         {[["mercado", "Mercado"], ["plantillas", "Plantillas"], ["operaciones", "Mis pujas"], ["historico", "Histórico"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
-            style={{
-              background: sub === k ? `linear-gradient(135deg, ${C.tabFrom} 0%, ${C.tabTo} 100%)` : "transparent",
-              color: sub === k ? C.white : C.muted,
-              border: sub === k ? "none" : `1px solid ${C.line}`,
-              boxShadow: sub === k ? "0 4px 14px rgba(255,106,0,0.45)" : "none",
-            }}>
+            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
             {l.toUpperCase()}
           </button>
         ))}
       </div>
 
       {sub === "mercado" && (
-        assets.length === 0 ? <EmptyState icon={Gavel} accent={C.baby} title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
+        assets.length === 0 ? <EmptyState title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
           <div className="space-y-2.5">
             {assets.map(asset => (
               <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
