@@ -32,6 +32,15 @@ const C = {
   gold: "#FFC83D",
   positive: "#35E59A",
   negative: "#FF5C7A",
+  // Tonos añadidos para igualar brillos/degradados de la maqueta:
+  heroFrom: "#55093B",       // vino/magenta oscuro (esquina superior-izq. de las tarjetas hero)
+  heroTo: "#FF4E1E",         // naranja-rojo fuego (esquina inferior-dcha.)
+  tabFrom: "#FFB347",        // naranja claro de las pestañas activas
+  tabTo: "#FF5500",          // naranja-rojo de las pestañas activas
+  courtLine: "rgba(214,158,66,0.45)",  // líneas ámbar de la cancha (3 puntos, círculo, etc.)
+  courtRed: "#FF2E55",       // borde rojo/carmín de la zona (pintura) y huecos vacíos
+  slotEmptyBg: "rgba(255,46,85,0.10)",
+  slotEmptyIcon: "rgba(255,46,95,0.95)",
 };
 
 /* =============================================================================
@@ -739,10 +748,10 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
       <div className="relative flex items-center justify-center overflow-hidden"
         style={{
           width: size, height: size, borderRadius: size * 0.28,
-          background: empty ? "rgba(255,61,127,0.06)" : C.navy700,
-          border: empty ? "1.5px dashed rgba(255,61,127,0.55)" : `1.5px solid ${C.line}`,
+          background: empty ? C.slotEmptyBg : C.navy700,
+          border: empty ? `1.5px dashed ${C.slotEmptyIcon}` : `1.5px solid ${C.line}`,
         }}>
-        {empty ? <PlayerSilhouette size={size * 0.52} color="rgba(255,61,127,0.55)" />
+        {empty ? <PlayerSilhouette size={size * 0.52} color={C.slotEmptyIcon} />
           : (player.photo ? <img src={player.photo} alt="" className="w-full h-full object-cover" /> : <ImageOff size={size * 0.4} color={C.muted} />)}
         {!empty && (
           <span className="absolute flex items-center justify-center"
@@ -758,7 +767,7 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
         )}
       </div>
       <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded truncate"
-        style={{ background: empty && !label ? "transparent" : C.navy900, color: empty ? C.muted : C.white, maxWidth: size + 20 }}>
+        style={{ background: empty && !label ? "transparent" : C.navy900, color: C.white, maxWidth: size + 20 }}>
         {text}
       </span>
     </button>
@@ -768,11 +777,11 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
 // Cancha de baloncesto (media pista) dibujada en SVG: línea de fondo, tablero
 // y aro, zona restringida, pintura, círculo de tiros libres y línea de 3.
 function BasketballCourt() {
-  const line = "rgba(255,255,255,0.24)";
+  const line = C.courtLine;
   return (
     <svg viewBox="0 0 320 300" className="absolute inset-0 w-full h-full" preserveAspectRatio="none">
       {/* pintura / zona de 3 segundos */}
-      <rect x="110" y="4" width="100" height="122" fill="none" stroke={line} strokeWidth="1.5" />
+      <rect x="110" y="4" width="100" height="122" fill="none" stroke={C.courtRed} strokeWidth="1.75" />
       {/* círculo de tiros libres */}
       <circle cx="160" cy="126" r="42" fill="none" stroke={line} strokeWidth="1.5" strokeDasharray="5 5" />
       {/* zona restringida bajo el aro */}
@@ -780,7 +789,7 @@ function BasketballCourt() {
       {/* línea de 3 puntos */}
       <path d="M26 4 L26 94 A138 138 0 0 0 294 94 L294 4" fill="none" stroke={line} strokeWidth="1.5" />
       {/* tablero */}
-      <rect x="138" y="6" width="44" height="3.5" fill={C.gold} opacity="0.85" />
+      <rect x="138" y="6" width="44" height="3.5" fill={C.gold} opacity="0.9" />
       {/* aro */}
       <circle cx="160" cy="20" r="6.5" fill="none" stroke={C.gold} strokeWidth="2.5" />
       {/* asomo del círculo central, media pista */}
@@ -813,20 +822,29 @@ function CountdownChip({ closesAt, opensAt, isOpen }) {
   const target = isOpen ? closesAt : opensAt;
   const remaining = target - now;
   const closing = isOpen && remaining < 5 * 60 * 1000;
+  const chipColor = closing ? C.negative : C.principal;
   return (
-    <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: closing ? C.negative : C.baby }}>
+    <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: chipColor, textShadow: `0 0 10px ${chipColor}55` }}>
       <Clock size={13} className={closing ? "fl-pulse" : ""} />
       <span>{isOpen ? "Cierra en" : "Abre en"} {fmtHMS(Math.max(0, remaining))}</span>
     </div>
   );
 }
 
-function EmptyState({ title, text, compact }) {
+function EmptyState({ title, text, compact, icon, accent, hero }) {
+  const Icon = icon || Users;
+  const iconColor = accent || C.muted;
+  const iconSize = compact ? 18 : (accent ? 46 : 24);
+  const heroStyle = hero ? {
+    background: `radial-gradient(130px 100px at 15% 20%, rgba(255,61,127,0.35), transparent 60%), radial-gradient(170px 140px at 90% 90%, rgba(255,138,0,0.45), transparent 62%), linear-gradient(135deg, ${C.heroFrom} 0%, ${C.heroTo} 100%)`,
+    border: `1px solid ${C.principal}55`,
+    boxShadow: `0 10px 30px rgba(255,78,30,0.25), 0 0 40px ${C.principal}22`,
+  } : undefined;
   return (
-    <div className={`fl-row text-center ${compact ? "py-4 px-3" : "py-10 px-4"}`}>
-      <Users size={compact ? 18 : 24} style={{ color: C.muted, margin: "0 auto 8px" }} />
+    <div className={`${hero ? "" : "fl-row"} text-center ${compact ? "py-4 px-3" : "py-10 px-4"}`} style={heroStyle && { ...heroStyle, borderRadius: 12 }}>
+      <Icon size={iconSize} style={{ color: iconColor, margin: "0 auto 8px", filter: accent ? `drop-shadow(0 0 10px ${accent}aa) drop-shadow(0 0 3px ${accent})` : "none" }} />
       <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{title}</div>
-      <div className="fl-body text-xs mt-1" style={{ color: C.muted }}>{text}</div>
+      <div className="fl-body text-xs mt-1" style={{ color: hero ? "rgba(255,255,255,0.75)" : C.muted }}>{text}</div>
     </div>
   );
 }
@@ -1255,7 +1273,7 @@ function BottomNav({ tab, setTab, isAdmin }) {
         const accent = accentFor(it.key);
         return (
           <button key={it.key} onClick={() => setTab(it.key)} className="fl-tap flex-1 flex flex-col items-center gap-0.5 py-1.5">
-            <Icon size={19} color={active ? accent : C.muted} />
+            <Icon size={19} color={active ? accent : C.muted} style={active ? { filter: `drop-shadow(0 0 6px ${accent}88)` } : undefined} />
             <span className="fl-mono text-[9px]" style={{ color: active ? accent : C.muted }}>{it.label}</span>
           </button>
         );
@@ -1378,14 +1396,18 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
 
   return (
     <div className="space-y-4">
-      <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
+      <div className="fl-row p-4" style={{
+        background: `radial-gradient(130px 100px at 12% 15%, rgba(255,61,127,0.38), transparent 60%), radial-gradient(170px 140px at 92% 95%, rgba(255,138,0,0.45), transparent 62%), linear-gradient(135deg, ${C.heroFrom} 0%, ${C.heroTo} 100%)`,
+        border: `1px solid ${C.principal}55`,
+        boxShadow: `0 10px 30px rgba(255,78,30,0.25), 0 0 40px ${C.principal}22`,
+      }}>
         <div className="flex items-center justify-between">
           <div>
             <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>TU LIGA</div>
             <div className="fl-display text-lg uppercase" style={{ color: C.white }}>{profile.name}</div>
           </div>
           <div className="text-right">
-            <div className="fl-mono text-2xl font-semibold" style={{ color: C.white }}>{myRow ? `#${myRow.rank}` : "—"}</div>
+            <div className="fl-mono text-2xl font-semibold" style={{ color: C.gold, textShadow: `0 0 16px ${C.gold}88` }}>{myRow ? `#${myRow.rank}` : "—"}</div>
             <div className="fl-mono text-[9px]" style={{ color: "rgba(255,255,255,0.75)" }}>POSICIÓN</div>
           </div>
         </div>
@@ -1425,7 +1447,7 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
       <div>
         <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
         {jornadas.length === 0 ? (
-          <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
+          <EmptyState hero icon={Users} accent={C.principal} title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
         ) : (
           <div className="fl-row p-3.5 flex items-center justify-between">
             <span className="fl-body text-sm" style={{ color: C.white }}>{lastJornada.name}</span>
@@ -1520,7 +1542,11 @@ function ClasificacionTab({ teams, players, jornadas, me }) {
       {rows.length === 0 ? <EmptyState title="Todavía no hay participantes" text="En cuanto alguien entre en la liga aparecerá aquí." /> : (
         <div className="space-y-1.5">
           {rows.map(r => (
-            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
+            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={r.name === me ? {
+                border: "2px solid transparent",
+                borderImage: `linear-gradient(135deg, ${C.gold}, ${C.principal}) 1`,
+                boxShadow: `0 0 18px ${C.principal}44`,
+              } : { border: `1px solid ${C.line}` }}>
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
@@ -1820,7 +1846,12 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       <div className="flex gap-1.5 mb-3">
         {[["alineacion", "Alineación"], ["plantilla", "Plantilla"], ["puntos", "Puntos"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
-            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
+            style={{
+              background: sub === k ? `linear-gradient(135deg, ${C.tabFrom} 0%, ${C.tabTo} 100%)` : "transparent",
+              color: sub === k ? C.white : C.muted,
+              border: sub === k ? "none" : `1px solid ${C.line}`,
+              boxShadow: sub === k ? "0 4px 14px rgba(255,106,0,0.45)" : "none",
+            }}>
             {l.toUpperCase()}
           </button>
         ))}
@@ -2101,7 +2132,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         <div className="relative flex-1">
           <button onClick={() => setFormationOpen(o => !o)}
             className="fl-tap w-full flex items-center justify-center gap-1.5 fl-mono text-xs font-bold rounded-md py-2"
-            style={{ background: C.baby, color: C.ink }}>
+            style={{ background: `linear-gradient(135deg, rgba(92,14,48,0.85) 0%, rgba(50,8,18,0.85) 100%)`, border: `1px solid ${C.principal}33`, color: C.white }}>
             {formationKey.split("-").join(" · ")}
             {formationOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
@@ -2119,7 +2150,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         </div>
         <button onClick={() => setShowCaptainPicker(true)}
           className="fl-tap flex-1 flex items-center justify-center gap-1.5 fl-mono text-xs font-medium rounded-md py-2"
-          style={{ background: C.navy700, border: `1px solid ${C.line}`, color: C.white }}>
+          style={{ background: C.navy700, border: `1px solid ${C.gold}66`, boxShadow: `0 0 10px ${C.gold}22`, color: C.white }}>
           <Star size={13} color={C.gold} /> Asignar capitán
         </button>
       </div>
@@ -2398,14 +2429,19 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
         {[["mercado", "Mercado"], ["plantillas", "Plantillas"], ["operaciones", "Mis pujas"], ["historico", "Histórico"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
-            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
+            style={{
+              background: sub === k ? `linear-gradient(135deg, ${C.tabFrom} 0%, ${C.tabTo} 100%)` : "transparent",
+              color: sub === k ? C.white : C.muted,
+              border: sub === k ? "none" : `1px solid ${C.line}`,
+              boxShadow: sub === k ? "0 4px 14px rgba(255,106,0,0.45)" : "none",
+            }}>
             {l.toUpperCase()}
           </button>
         ))}
       </div>
 
       {sub === "mercado" && (
-        assets.length === 0 ? <EmptyState title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
+        assets.length === 0 ? <EmptyState icon={Gavel} accent={C.baby} title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
           <div className="space-y-2.5">
             {assets.map(asset => (
               <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
