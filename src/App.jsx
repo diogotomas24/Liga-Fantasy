@@ -1291,8 +1291,11 @@ function groupPartidosByFecha(partidos) {
   return order.map(key => ({ fecha: key, partidos: map.get(key) }));
 }
 
-// Fila de un partido: escudo+nombre a cada lado, hora/"VS" en el centro.
+// Fila de un partido: escudo+nombre a cada lado, marcador (si ya se jugó) o
+// hora/"VS" en el centro.
 function PartidoRow({ m, teamCrests }) {
+  const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
+    m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
   return (
     <div className="px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
       <div className="flex-1 flex items-center gap-2 justify-end text-right min-w-0">
@@ -1300,7 +1303,9 @@ function PartidoRow({ m, teamCrests }) {
         <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={28} />
       </div>
       <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 52 }}>
-        {m.hora
+        {played ? (
+          <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+        ) : m.hora
           ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
           : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
       </div>
@@ -1443,7 +1448,9 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
                   <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.local}</span>
                 </button>
                 <div className="flex flex-col items-center px-1">
-                  {(m.fecha || m.hora) ? (
+                  {(m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "") ? (
+                    <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+                  ) : (m.fecha || m.hora) ? (
                     <>
                       {m.fecha && <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{m.fecha}</span>}
                       {m.hora && <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>}
@@ -2765,6 +2772,10 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
     setDirty(true);
   };
   const removePartido = (id) => { setPartidos(ms => ms.filter(m => m.id !== id)); setDirty(true); };
+  const setResultado = (id, field, value) => {
+    setPartidos(ms => ms.map(m => m.id === id ? { ...m, [field]: value } : m));
+    setDirty(true);
+  };
   const jugadoras = players.filter(p => p.position !== "DT");
   const entrenadoras = players.filter(p => p.position === "DT");
   const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
@@ -2777,9 +2788,22 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
           <div className="space-y-1.5 mb-2.5">
             {partidos.map(m => (
               <div key={m.id} className="flex items-center gap-2 px-2.5 py-2 rounded-md" style={{ background: C.navy900, border: `1px solid ${C.lineSoft}` }}>
-                <span className="fl-body text-xs flex-1 truncate" style={{ color: C.white }}>{m.local} <span style={{ color: C.muted }}>vs</span> {m.visitante}</span>
-                {(m.fecha || m.hora) && <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ")}</span>}
-                {isAdmin && <button onClick={() => removePartido(m.id)} className="p-1 rounded-md"><Trash2 size={13} color={C.negative} /></button>}
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-xs truncate" style={{ color: C.white }}>{m.local} <span style={{ color: C.muted }}>vs</span> {m.visitante}</div>
+                  {(m.fecha || m.hora) && <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ")}</div>}
+                </div>
+                {isAdmin ? (
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <input type="number" placeholder="-" value={m.marcadorLocal ?? ""} onChange={e => setResultado(m.id, "marcadorLocal", e.target.value)}
+                      className="w-11 text-center rounded-md py-1 text-xs" style={inputStyle} />
+                    <span className="fl-mono text-[10px]" style={{ color: C.muted }}>-</span>
+                    <input type="number" placeholder="-" value={m.marcadorVisitante ?? ""} onChange={e => setResultado(m.id, "marcadorVisitante", e.target.value)}
+                      className="w-11 text-center rounded-md py-1 text-xs" style={inputStyle} />
+                  </div>
+                ) : (m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "") && (
+                  <div className="fl-mono text-xs font-bold flex-shrink-0" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</div>
+                )}
+                {isAdmin && <button onClick={() => removePartido(m.id)} className="p-1 rounded-md flex-shrink-0"><Trash2 size={13} color={C.negative} /></button>}
               </div>
             ))}
           </div>
