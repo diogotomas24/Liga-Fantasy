@@ -570,7 +570,10 @@ async function readAllTeamsGlobal() {
   } catch {
     return null;
   }
-} (id, name, invite_code, created_by).
+}
+
+/* -----------------------------------------------------------------------
+   LIGAS PRIVADAS — tabla real "leagues" (id, name, invite_code, created_by).
    Cada persona puede crear su propia liga (y se convierte automáticamente en
    la primera participante) o unirse a la de otra persona con un código de
    invitación. Todo lo demás de la partida (jugadoras, jornadas, resultados,
