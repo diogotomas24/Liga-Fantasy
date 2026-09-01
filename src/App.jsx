@@ -526,7 +526,7 @@ const marketService = {
         const player = players.find(p => p.id === e.id);
         if (!player) return e;
         const ratio = 0.9 + Math.random() * 0.2; // entre -10% y +10% del valor actual
-        const amount = Math.max(1, Math.round(player.basePrice * ratio));
+        const amount = Math.max(0.01, player.basePrice * ratio);
         teamChanged = true;
         return { ...e, saleOffer: { amount, marketId: newMarket.id, expiresAt: newMarket.closesAt } };
       });
@@ -1046,6 +1046,35 @@ function findCurrentJornada(jornadas) {
   return (upcoming || dated[dated.length - 1]).j;
 }
 
+// Estado de la cláusula de una jugadora, visible para toda la liga: en ROJO
+// mientras está bloqueada (con los días que faltan, o la cuenta atrás
+// HH:MM:SS cuando queda menos de un día), y en VERDE en cuanto se abre.
+function ClauseBadge({ entry, size = "sm" }) {
+  const [now, setNow] = useState(Date.now());
+  const locked = teamService.isClauseLocked(entry);
+  useEffect(() => {
+    if (!locked) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [locked]);
+  const textSize = size === "sm" ? "text-[10px]" : "text-[11px]";
+  if (!locked) {
+    return (
+      <span className={`fl-mono ${textSize} font-semibold flex items-center gap-1`} style={{ color: C.positive }}>
+        <Lock size={size === "sm" ? 9 : 11} /> Abierta
+      </span>
+    );
+  }
+  const remaining = Math.max(0, teamService.clauseUnlockAt(entry) - now);
+  const oneDay = 24 * 3600 * 1000;
+  const label = remaining > oneDay ? `${Math.ceil(remaining / oneDay)} días` : fmtHMS(remaining);
+  return (
+    <span className={`fl-mono ${textSize} font-semibold flex items-center gap-1`} style={{ color: C.negative }}>
+      <Lock size={size === "sm" ? 9 : 11} /> {label}
+    </span>
+  );
+}
+
 // Hueco de la alineación (titular o banquillo): foto + check si hay jugadora,
 // silueta ("sombra") en tono apagado si el hueco está vacío. `label` fuerza el
 // texto bajo el hueco (p. ej. la posición en el banquillo); si no se indica,
@@ -1466,7 +1495,7 @@ export default function App() {
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const player = players.find(p => p.id === assetId);
     if (!player) return { ok: false, error: "Jugadora no encontrada." };
-    const amount = Math.max(1, Math.round((player.basePrice || 1) * 0.5));
+    const amount = Math.max(0.01, (player.basePrice || 0) * 0.5);
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
@@ -2417,8 +2446,6 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
         </div>
 
         {isOwned && entry && (() => {
-          const locked = teamService.isClauseLocked(entry);
-          const unlockDate = new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES");
           const clauseValue = entry.clause || player.basePrice || 0;
           const offer = entry.saleOffer;
           const offerExpired = offer && offer.expiresAt && Date.now() > offer.expiresAt;
@@ -2426,12 +2453,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
             <div className="px-4 pt-3">
               <div className="fl-row p-3">
                 <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-1.5">
-                    <Lock size={12} color={locked ? C.muted : C.gold} />
-                    <span className="fl-mono text-[11px]" style={{ color: locked ? C.muted : C.gold }}>
-                      {locked ? `Protegida hasta el ${unlockDate}` : "Cláusula abierta"}
-                    </span>
-                  </div>
+                  <ClauseBadge entry={entry} size="md" />
                   <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{fmtCredits(clauseValue)}</span>
                 </div>
 
@@ -2480,7 +2502,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           <ActionSheet onClose={() => setConfirmSell(false)} title="Venta inmediata">
             <div className="px-4 pb-3">
               <p className="fl-body text-sm" style={{ color: C.white }}>
-                Recibirás <span className="font-semibold">{fmtCredits(Math.max(1, Math.round((player.basePrice || 1) * 0.5)))}</span> (50% del valor de mercado) al instante.
+                Recibirás <span className="font-semibold">{fmtCredits(Math.max(0.01, (player.basePrice || 0) * 0.5))}</span> (50% del valor de mercado) al instante.
               </p>
             </div>
             <ActionSheetItem
@@ -2606,7 +2628,6 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
           ) : allSquad.map(p => {
             const entry = myTeam.squad.find(e => e.id === p.id);
             const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
-            const locked = teamService.isClauseLocked(entry || {});
             return (
               <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-2.5 px-3 py-2.5 text-left">
                 <PlayerPhoto url={p.photo} size={40} />
@@ -2621,15 +2642,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
                 <div className="text-right" style={{ minWidth: 78 }}>
                   <div className="fl-mono text-[9px]" style={{ color: C.muted }}>VALOR</div>
                   <div className="fl-mono text-xs" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                  {locked ? (
-                    <div className="fl-mono text-[9px] font-semibold flex items-center gap-0.5 justify-end mt-0.5" style={{ color: C.muted }}>
-                      <Lock size={9} /> hasta {new Date(teamService.clauseUnlockAt(entry || {})).toLocaleDateString("es-ES")}
-                    </div>
-                  ) : (
-                    <div className="fl-mono text-[9px] font-semibold flex items-center gap-0.5 justify-end mt-0.5" style={{ color: C.gold }}>
-                      <Lock size={9} /> abierta
-                    </div>
-                  )}
+                  <div className="flex justify-end mt-0.5"><ClauseBadge entry={entry || {}} /></div>
                 </div>
               </button>
             );
@@ -2638,16 +2651,8 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       )}
 
       {sub === "puntos" && (
-        jornadas.length === 0 ? <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." /> : (
-          <div className="space-y-1.5">
-            {history.map(h => (
-              <div key={h.id} className="fl-row flex items-center justify-between px-3 py-2.5">
-                <span className="text-sm" style={{ color: C.white }}>{h.name}</span>
-                <span className="fl-mono text-sm font-semibold" style={{ color: h.pts >= 0 ? C.positive : C.negative }}>{h.pts > 0 ? `+${h.pts}` : h.pts}</span>
-              </div>
-            ))}
-          </div>
-        )
+        <PuntosJornadaView jornadas={jornadas} history={history} leagueId={leagueId} teamName={teamName}
+          players={players} lineup={lineup} />
       )}
 
       {detailPlayerId && (() => {
@@ -2661,6 +2666,136 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
             onClose={() => setDetailPlayerId(null)} />
         );
       })()}
+    </div>
+  );
+}
+
+// Vista de "Puntos" por jornada: chips J1, J2... para elegir la jornada, y
+// debajo la alineación GUARDADA en esa jornada concreta (titulares, banquillo
+// y entrenadora/or), cada una con los puntos que hizo ese día.
+function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup }) {
+  const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
+  if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
+
+  const jornada = jornadas[selectedIdx];
+  const savedLineup = jornada?.lineups?.[`${leagueId}::${teamName}`] || null;
+  const usedLineup = savedLineup || lineup; // si no hay snapshot guardado, se cae a la alineación actual (mejor que nada)
+  const total = history[selectedIdx]?.pts ?? 0;
+
+  const findPlayer = (id) => players.find(p => p.id === id) || null;
+  const pointsFor = (id) => {
+    const p = findPlayer(id);
+    if (!p) return 0;
+    const stats = jornada.stats?.[id];
+    if (!stats) return 0;
+    const pts = calcPointsBreakdown(stats, p.position).total;
+    return id === usedLineup?.captainId ? pts * 2 : pts;
+  };
+
+  const req = FORMATIONS[usedLineup?.formation || "2-2-1"];
+  const byPos = (posKey) => (usedLineup?.starters || []).filter(id => findPlayer(id)?.position === posKey);
+  const rows = [
+    { pos: POSITIONS[2], ids: byPos("PIVOT"), need: req.PIVOT },
+    { pos: POSITIONS[1], ids: byPos("ALERO"), need: req.ALERO },
+    { pos: POSITIONS[0], ids: byPos("BASE"), need: req.BASE },
+  ];
+  const bench = usedLineup?.bench || { BASE: null, ALERO: null, PIVOT: null };
+  const coachId = usedLineup?.titularCoach || null;
+
+  return (
+    <div>
+      <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
+        {jornadas.map((j, i) => (
+          <button key={j.id} onClick={() => setSelectedIdx(i)}
+            className="fl-tap flex-shrink-0 rounded-full flex flex-col items-center justify-center fl-mono text-[10px] font-semibold"
+            style={{
+              width: 44, height: 44,
+              background: i === selectedIdx ? C.baby : C.navy800,
+              color: i === selectedIdx ? C.ink : C.muted,
+              border: `1px solid ${i === selectedIdx ? C.baby : C.line}`,
+            }}>
+            J{i + 1}
+            <span style={{ fontSize: 9 }}>{history[i]?.pts ?? "–"}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="fl-row p-3 mb-3 flex items-center justify-between">
+        <span className="fl-display text-sm uppercase" style={{ color: C.white }}>{jornada.name}</span>
+        <span className="fl-mono text-lg font-bold" style={{ color: total >= 0 ? C.positive : C.negative }}>{total > 0 ? `+${total}` : total}</span>
+      </div>
+
+      {!usedLineup || (usedLineup.starters || []).length === 0 ? (
+        <EmptyState compact title="Sin alineación guardada" text="No se guardó una alineación para esta jornada." />
+      ) : (
+        <>
+          <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, aspectRatio: "320 / 300" }}>
+            <BasketballCourt />
+            <div className="relative h-full flex flex-col justify-between py-4 px-1">
+              {rows.map(({ pos, ids, need }) => {
+                const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
+                const isWing = pos.key === "ALERO";
+                return (
+                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-4"}`}>
+                    {slots.map((id, i) => {
+                      const p = id ? findPlayer(id) : null;
+                      return (
+                        <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center" style={{ width: 74 }}>
+                          <div className="relative">
+                            <CourtSlot player={p} size={54} isCaptain={!!id && usedLineup.captainId === id} />
+                            {p && (
+                              <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                                style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
+                                {pointsFor(id)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mb-3">
+            <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>BANQUILLO</div>
+            <div className="fl-row flex items-center justify-around gap-2 py-3 px-2">
+              {POSITIONS.map(pos => {
+                const id = bench[pos.key];
+                const p = id ? findPlayer(id) : null;
+                return (
+                  <div key={pos.key} className="relative">
+                    <CourtSlot player={p} size={46} label={pos.label} />
+                    {p && (
+                      <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                        style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
+                        {pointsFor(id)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
+            <div className="fl-row flex items-center justify-center py-3 px-2">
+              <div className="relative">
+                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={50} label={coachId ? undefined : "DT"} />
+                {coachId && findPlayer(coachId) && (
+                  <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                    style={{ background: C.navy900, color: pointsFor(coachId) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
+                    {pointsFor(coachId)}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -3144,6 +3279,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
 
 function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
   const [sub, setSub] = useState("mercado");
+  const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
   const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset }
   const [detailPlayer, setDetailPlayer] = useState(null);
@@ -3151,7 +3287,8 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
   const assets = (market.assetIds || []).map(id => players.find(p => p.id === id)).filter(Boolean);
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
-  const pendingOffersCount = (offers || []).filter(o => o.status === "pending" && (o.fromUser === profile.name || o.toUser === profile.name)).length;
+  const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length;
+  const sentOffersCount = (offers || []).filter(o => o.status === "pending" && o.fromUser === profile.name).length;
 
   if (clauseTarget) {
     return (
@@ -3184,9 +3321,9 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
           </button>
         </div>
       </div>
-      <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
-        {[["mercado", "Mercado"], ["plantillas", "Plantillas"], ["ofertas", `Ofertas${pendingOffersCount > 0 ? ` (${pendingOffersCount})` : ""}`], ["operaciones", "Mis pujas"], ["historico", "Histórico"]].map(([k, l]) => (
-          <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
+      <div className="flex gap-1.5 mb-3">
+        {[["mercado", "Mercado"], ["operaciones", "Mis operaciones"], ["historico", "Histórico"]].map(([k, l]) => (
+          <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
             style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
             {l.toUpperCase()}
           </button>
@@ -3194,50 +3331,74 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       </div>
 
       {sub === "mercado" && (
-        assets.length === 0 ? <EmptyState title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
-          <div className="space-y-2.5">
-            {assets.map(asset => (
-              <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
-                isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} />
-            ))}
-          </div>
-        )
-      )}
-
-      {sub === "mercado" && (
-        <EnVentaSection teams={teams} players={players} onOpenPlayer={setDetailPlayer} />
-      )}
-
-      {sub === "plantillas" && (
-        <RivalRosters teams={teams} players={players} me={profile.name}
-          onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
-          onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
-          onOpenPlayer={setDetailPlayer} />
-      )}
-
-      {sub === "ofertas" && (
-        <OfertasTab offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+        <>
+          {assets.length === 0 ? <EmptyState title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
+            <div className="space-y-2.5">
+              {assets.map(asset => (
+                <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
+                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} />
+              ))}
+            </div>
+          )}
+          <EnVentaSection teams={teams} players={players} onOpenPlayer={setDetailPlayer} />
+        </>
       )}
 
       {sub === "operaciones" && (
-        myActiveBids.length === 0 ? <EmptyState title="No tienes pujas activas" text="Puja por una jugadora o entrenadora/or desde la pestaña Mercado." /> : (
-          <div className="space-y-1.5">
-            {myActiveBids.map(b => {
-              const asset = players.find(p => p.id === b.assetId);
-              if (!asset) return null;
-              return (
-                <button key={b.id} onClick={() => setDetailPlayer(asset)} className="fl-tap w-full fl-row flex items-center gap-2.5 px-3 py-2.5 text-left">
-                  <PlayerPhoto url={asset.photo} size={38} />
-                  <div className="flex-1 min-w-0">
-                    <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
-                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Tu puja: {fmtCredits(b.amount)}</div>
-                  </div>
-                  <BidStatusPill status="active" />
-                </button>
-              );
-            })}
+        <div>
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <button onClick={() => setOpSub("compra")} className="fl-tap rounded-md py-2 text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{ background: opSub === "compra" ? C.babySoft : "transparent", border: `1px solid ${opSub === "compra" ? C.baby : C.line}`, color: opSub === "compra" ? C.baby : C.muted }}>
+              Compra{sentOffersCount > 0 ? ` (${sentOffersCount})` : ""}
+            </button>
+            <button onClick={() => setOpSub("venta")} className="fl-tap rounded-md py-2 text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{ background: opSub === "venta" ? C.negative + "22" : "transparent", border: `1px solid ${opSub === "venta" ? C.negative : C.line}`, color: opSub === "venta" ? C.negative : C.muted }}>
+              Venta{receivedOffersCount > 0 ? ` (${receivedOffersCount})` : ""}
+            </button>
           </div>
-        )
+
+          {opSub === "compra" && (
+            <div className="space-y-4">
+              <div>
+                <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>MIS PUJAS ACTIVAS</div>
+                {myActiveBids.length === 0 ? (
+                  <EmptyState compact title="Sin pujas activas" text="Puja por una jugadora desde la pestaña Mercado." />
+                ) : (
+                  <div className="space-y-1.5">
+                    {myActiveBids.map(b => {
+                      const asset = players.find(p => p.id === b.assetId);
+                      if (!asset) return null;
+                      return (
+                        <button key={b.id} onClick={() => setDetailPlayer(asset)} className="fl-tap w-full fl-row flex items-center gap-2.5 px-3 py-2.5 text-left">
+                          <PlayerPhoto url={asset.photo} size={38} />
+                          <div className="flex-1 min-w-0">
+                            <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
+                            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Tu puja: {fmtCredits(b.amount)}</div>
+                          </div>
+                          <BidStatusPill status="active" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <OfertasEnviadasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+            </div>
+          )}
+
+          {opSub === "venta" && (
+            <div className="space-y-4">
+              <OfertasRecibidasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+              <div>
+                <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>PLANTILLAS DE LA LIGA</div>
+                <RivalRosters teams={teams} players={players} me={profile.name}
+                  onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
+                  onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
+                  onOpenPlayer={setDetailPlayer} />
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {sub === "historico" && (
@@ -3323,12 +3484,9 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
                       </div>
                     </button>
                     <PositionBadge posKey={player.position} />
-                    <div className="flex flex-col gap-1 flex-shrink-0">
-                      {locked ? (
-                        <span className="fl-mono text-[10px] flex items-center gap-1" style={{ color: C.muted }}>
-                          <Lock size={10} /> hasta {new Date(teamService.clauseUnlockAt(entry)).toLocaleDateString("es-ES")}
-                        </span>
-                      ) : (
+                    <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                      <ClauseBadge entry={entry} />
+                      {!locked && (
                         <button onClick={() => onSelectClause(name, player, entry)}
                           className="fl-tap flex items-center gap-1 fl-mono text-[11px] font-semibold rounded-md px-2 py-1"
                           style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
@@ -3413,79 +3571,78 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
 
 // Ofertas de compra: las que has enviado (pendientes de que respondan) y las
 // que has recibido por tus jugadoras (para aceptar o rechazar).
-function OfertasTab({ offers, players, me, onRespond }) {
+function OfertasRecibidasList({ offers, players, me, onRespond }) {
   const [busyId, setBusyId] = useState(null);
   const received = offers.filter(o => o.status === "pending" && o.toUser === me);
-  const sent = offers.filter(o => o.status === "pending" && o.fromUser === me);
-
-  const respond = async (id, action) => {
-    setBusyId(id);
-    await onRespond(id, action);
-    setBusyId(null);
-  };
-
+  const respond = async (id, action) => { setBusyId(id); await onRespond(id, action); setBusyId(null); };
   return (
-    <div className="space-y-5">
-      <div>
-        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS RECIBIDAS</div>
-        {received.length === 0 ? (
-          <EmptyState compact title="Sin ofertas recibidas" text="Aquí verás las ofertas que te hagan por tus jugadoras." />
-        ) : (
-          <div className="space-y-1.5">
-            {received.map(o => {
-              const asset = players.find(p => p.id === o.assetId);
-              if (!asset) return null;
-              return (
-                <div key={o.id} className="fl-row px-3 py-2.5">
-                  <div className="flex items-center gap-2.5 mb-2">
-                    <PlayerPhoto url={asset.photo} size={36} />
-                    <div className="flex-1 min-w-0">
-                      <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
-                      <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{o.fromUser} ofrece {fmtCredits(o.amount)}</div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button disabled={busyId === o.id} onClick={() => respond(o.id, "reject")}
-                      className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
-                      Rechazar
-                    </button>
-                    <button disabled={busyId === o.id} onClick={() => respond(o.id, "accept")}
-                      className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
-                      {busyId === o.id ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <div>
-        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS ENVIADAS</div>
-        {sent.length === 0 ? (
-          <EmptyState compact title="Sin ofertas enviadas" text="Las ofertas que hagas a otras personas aparecerán aquí." />
-        ) : (
-          <div className="space-y-1.5">
-            {sent.map(o => {
-              const asset = players.find(p => p.id === o.assetId);
-              if (!asset) return null;
-              return (
-                <div key={o.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+    <div>
+      <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS RECIBIDAS</div>
+      {received.length === 0 ? (
+        <EmptyState compact title="Sin ofertas recibidas" text="Aquí verás las ofertas que te hagan por tus jugadoras." />
+      ) : (
+        <div className="space-y-1.5">
+          {received.map(o => {
+            const asset = players.find(p => p.id === o.assetId);
+            if (!asset) return null;
+            return (
+              <div key={o.id} className="fl-row px-3 py-2.5">
+                <div className="flex items-center gap-2.5 mb-2">
                   <PlayerPhoto url={asset.photo} size={36} />
                   <div className="flex-1 min-w-0">
                     <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
-                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>A {o.toUser} · {fmtCredits(o.amount)}</div>
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{o.fromUser} ofrece {fmtCredits(o.amount)}</div>
                   </div>
-                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "cancel")}
-                    className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
-                    Cancelar
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "reject")}
+                    className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
+                    Rechazar
+                  </button>
+                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "accept")}
+                    className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
+                    {busyId === o.id ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar"}
                   </button>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OfertasEnviadasList({ offers, players, me, onRespond }) {
+  const [busyId, setBusyId] = useState(null);
+  const sent = offers.filter(o => o.status === "pending" && o.fromUser === me);
+  const respond = async (id, action) => { setBusyId(id); await onRespond(id, action); setBusyId(null); };
+  return (
+    <div>
+      <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS ENVIADAS</div>
+      {sent.length === 0 ? (
+        <EmptyState compact title="Sin ofertas enviadas" text="Las ofertas que hagas a otras personas aparecerán aquí." />
+      ) : (
+        <div className="space-y-1.5">
+          {sent.map(o => {
+            const asset = players.find(p => p.id === o.assetId);
+            if (!asset) return null;
+            return (
+              <div key={o.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+                <PlayerPhoto url={asset.photo} size={36} />
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
+                  <div className="fl-mono text-[10px]" style={{ color: C.muted }}>A {o.toUser} · {fmtCredits(o.amount)}</div>
+                </div>
+                <button disabled={busyId === o.id} onClick={() => respond(o.id, "cancel")}
+                  className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+                  Cancelar
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
