@@ -1180,11 +1180,11 @@ function EmptyState({ title, text, compact }) {
   );
 }
 
-function StatChip({ label, value, accent }) {
+function StatChip({ label, value, accent, compact }) {
   return (
-    <div className="fl-row p-2.5 text-center">
-      <div className="fl-mono text-base font-semibold" style={{ color: accent || C.white }}>{value}</div>
-      <div className="fl-mono text-[9px] mt-0.5" style={{ color: C.muted }}>{label.toUpperCase()}</div>
+    <div className={`fl-row text-center ${compact ? "py-1.5 px-1.5" : "p-2.5"}`}>
+      <div className={`fl-mono font-semibold ${compact ? "text-xs" : "text-base"}`} style={{ color: accent || C.white }}>{value}</div>
+      <div className={`fl-mono mt-0.5 ${compact ? "text-[7px]" : "text-[9px]"}`} style={{ color: C.muted }}>{label.toUpperCase()}</div>
     </div>
   );
 }
@@ -1677,7 +1677,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} jornadas={jornadas} />
+            <MasTab activity={activity} players={players} />
           )}
         </div>
       </main>
@@ -2596,15 +2596,12 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
   return (
     <div>
-      <div className="grid grid-cols-2 gap-2 mb-2">
-        <StatChip label="Fichas" value={`${myTeam.squad.length}/${MAX_SQUAD_JUGADORAS + MAX_COACHES}`} />
-        <StatChip label="Valor plantilla" value={fmtCredits(valorPlantilla)} />
+      <div className="grid grid-cols-4 gap-1.5 mb-3">
+        <StatChip label="Fichas" value={`${myTeam.squad.length}/${MAX_SQUAD_JUGADORAS + MAX_COACHES}`} compact />
+        <StatChip label="Valor plantilla" value={fmtCredits(valorPlantilla)} compact />
+        <StatChip label="Disponible" value={fmtCredits(budgetAvailable)} accent={C.baby} compact />
+        <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} compact />
       </div>
-      <div className="grid grid-cols-2 gap-2 mb-3">
-        <StatChip label="Disponible mercado" value={fmtCredits(budgetAvailable)} accent={C.baby} />
-        <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} />
-      </div>
-      <p className="fl-body text-[10px] mb-3" style={{ color: C.muted }}>El valor de plantilla y el presupuesto de mercado son independientes.</p>
       <div className="flex gap-1.5 mb-3">
         {[["alineacion", "Alineación"], ["plantilla", "Plantilla"], ["puntos", "Puntos"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
@@ -2619,27 +2616,26 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       )}
 
       {sub === "plantilla" && (
-        <div className="space-y-1.5">
+        <div className="space-y-3">
           {allSquad.length === 0 ? (
             <EmptyState title="Aún no tienes plantilla" text="Consigue jugadoras y entrenadora/or pujando en el mercado." />
           ) : allSquad.map(p => {
             const entry = myTeam.squad.find(e => e.id === p.id);
             const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
             return (
-              <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-2.5 px-3 py-2.5 text-left">
-                <PlayerPhoto url={p.photo} size={40} />
+              <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-3.5 px-4 py-3.5 text-left">
+                <PlayerPhoto url={p.photo} size={68} rounded={16} />
                 <div className="flex-1 min-w-0">
-                  <div className="fl-body text-sm font-medium truncate flex items-center gap-1.5" style={{ color: C.white }}>
-                    {p.name}
-                    {entry?.forSale && <span className="fl-mono text-[9px] px-1 py-0.5 rounded" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
+                  <div className="flex items-center gap-1.5">
+                    <PositionBadge posKey={p.position} size="md" />
+                    <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{p.name}</span>
                   </div>
-                  <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team} · {role}</div>
+                  <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{p.team} · {role}</div>
+                  {entry?.forSale && <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded mt-1 inline-block" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
                 </div>
-                <PositionBadge posKey={p.position} />
-                <div className="text-right" style={{ minWidth: 78 }}>
-                  <div className="fl-mono text-[9px]" style={{ color: C.muted }}>VALOR</div>
-                  <div className="fl-mono text-xs" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                  <div className="flex justify-end mt-0.5"><ClauseBadge entry={entry || {}} /></div>
+                <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
+                  <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
+                  <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
                 </div>
               </button>
             );
@@ -2715,11 +2711,6 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
             <span style={{ fontSize: 9 }}>{history[i]?.pts ?? "–"}</span>
           </button>
         ))}
-      </div>
-
-      <div className="fl-row p-3 mb-3 flex items-center justify-between">
-        <span className="fl-display text-sm uppercase" style={{ color: C.white }}>{jornada.name}</span>
-        <span className="fl-mono text-lg font-bold" style={{ color: total >= 0 ? C.positive : C.negative }}>{total > 0 ? `+${total}` : total}</span>
       </div>
 
       {!usedLineup || (usedLineup.starters || []).length === 0 ? (
@@ -3323,14 +3314,10 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
               ))}
             </div>
           )}
-          <EnVentaSection teams={teams} players={players} onOpenPlayer={setDetailPlayer} />
-          <div className="mt-4">
-            <SectionTitle>Plantillas de la liga</SectionTitle>
-            <RivalRosters teams={teams} players={players} me={profile.name}
-              onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
-              onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
-              onOpenPlayer={setDetailPlayer} />
-          </div>
+          <EnVentaSection teams={teams} players={players}
+            onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
+            onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
+            onOpenPlayer={setDetailPlayer} />
         </>
       )}
 
@@ -3409,7 +3396,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
 // muestran cláusula porque, mientras están libres, no la tienen.
 // Jugadoras marcadas "en venta" por cualquier equipo de la liga, visibles
 // directamente en el Mercado (no solo dentro de su ficha).
-function EnVentaSection({ teams, players, onOpenPlayer }) {
+function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer }) {
   const rows = [];
   Object.entries(teams || {}).forEach(([name, team]) => {
     (team.squad || []).forEach(entry => {
@@ -3422,18 +3409,40 @@ function EnVentaSection({ teams, players, onOpenPlayer }) {
   return (
     <div className="mt-4">
       <SectionTitle>En venta</SectionTitle>
-      <div className="space-y-2">
-        {rows.map(({ owner, entry, player }) => (
-          <button key={player.id} onClick={() => onOpenPlayer(player)} className="fl-tap w-full fl-row flex items-center gap-3 px-4 py-3.5 text-left">
-            <PlayerPhoto url={player.photo} size={56} rounded={14} />
-            <div className="flex-1 min-w-0">
-              <div className="fl-body text-base font-medium truncate" style={{ color: C.white }}>{player.name}</div>
-              <div className="fl-mono text-xs" style={{ color: C.muted }}>{owner} · {player.team}</div>
+      <div className="space-y-3">
+        {rows.map(({ owner, entry, player }) => {
+          const locked = teamService.isClauseLocked(entry);
+          return (
+            <div key={player.id} className="fl-row p-4 fl-pop">
+              <div className="flex items-center gap-3.5">
+                <button onClick={() => onOpenPlayer(player)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
+                  <PlayerPhoto url={player.photo} size={68} rounded={16} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <PositionBadge posKey={player.position} size="md" />
+                      <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{player.name}</span>
+                    </div>
+                    <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{player.team}</div>
+                    <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>De {owner}</div>
+                    <div className="mt-1.5"><ClauseBadge entry={entry} /></div>
+                  </div>
+                </button>
+                <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                  {!locked && (
+                    <button onClick={() => onSelectClause(owner, player, entry)}
+                      className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
+                      {fmtCredits(entry.clause || player.basePrice)}
+                    </button>
+                  )}
+                  <button onClick={() => onSelectOffer(owner, player)}
+                    className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                    Hacer oferta
+                  </button>
+                </div>
+              </div>
             </div>
-            <PositionBadge posKey={player.position} size="md" />
-            <div className="fl-mono text-sm font-semibold" style={{ color: C.principal }}>{fmtCredits(entry.clause || player.basePrice)}</div>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -3798,22 +3807,10 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids }) {
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, jornadas }) {
-  const [sub, setSub] = useState("actividad");
-
+function MasTab({ activity, players }) {
   return (
     <div>
-      <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
-        {[["actividad", "Actividad"], ["jornadas", "Jornadas"]].map(([k, l]) => (
-          <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
-            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
-            {l.toUpperCase()}
-          </button>
-        ))}
-      </div>
-
-      {sub === "actividad" && <ActividadFeed activity={activity} players={players} />}
-      {sub === "jornadas" && <JornadasPanel jornadas={jornadas} players={players} />}
+      <ActividadFeed activity={activity} players={players} />
     </div>
   );
 }
