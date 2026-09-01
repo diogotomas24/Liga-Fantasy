@@ -690,6 +690,42 @@ function realTeamsFrom(players, jornadas) {
   return [...set].sort((a, b) => a.localeCompare(b, "es"));
 }
 
+// Parsea una fecha en formato "DD/MM/AAAA" (el que usan los partidos). Si el
+// texto no tiene ese formato, devuelve null.
+function parseFechaDDMMYYYY(str) {
+  if (!str) return null;
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str.trim());
+  if (!m) return null;
+  const [, d, mo, y] = m;
+  const date = new Date(Number(y), Number(mo) - 1, Number(d));
+  return isNaN(date.getTime()) ? null : date;
+}
+
+// Fecha "de referencia" de una jornada: la de su primer partido (todos los
+// partidos de una misma jornada comparten fecha en el calendario oficial).
+function jornadaDate(jornada) {
+  return parseFechaDDMMYYYY(jornada?.partidos?.[0]?.fecha);
+}
+
+// Jornada "vigente" para la portada: la más próxima cuya fecha todavía no ha
+// pasado del todo (fecha >= hoy). En cuanto esa fecha queda atrás, al día
+// siguiente se pasa automáticamente a la siguiente jornada. Si todas las
+// jornadas con fecha ya pasaron, se muestra la última. Si ninguna jornada
+// tiene una fecha reconocible, se cae al comportamiento anterior (la última
+// creada), para no romper nada si el admin las crea a mano sin fechas.
+function findCurrentJornada(jornadas) {
+  if (!jornadas || jornadas.length === 0) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dated = jornadas
+    .map(j => ({ j, date: jornadaDate(j) }))
+    .filter(x => x.date)
+    .sort((a, b) => a.date - b.date);
+  if (dated.length === 0) return jornadas[jornadas.length - 1];
+  const upcoming = dated.find(x => x.date >= today);
+  return (upcoming || dated[dated.length - 1]).j;
+}
+
 // Hueco de la alineación (titular o banquillo): foto + check si hay jugadora,
 // silueta ("sombra") en tono apagado si el hueco está vacío. `label` fuerza el
 // texto bajo el hueco (p. ej. la posición en el banquillo); si no se indica,
@@ -1330,9 +1366,9 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
   const [showCalendar, setShowCalendar] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas), [teams, players, jornadas]);
   const myRow = standings.find(r => r.name === profile.name);
-  const nextJornada = jornadas.length + 1;
   const marketAssets = (market.assetIds || []).length;
-  const lastJornada = jornadas.length > 0 ? jornadas[jornadas.length - 1] : null;
+  const lastJornada = findCurrentJornada(jornadas);
+  const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
   const partidos = lastJornada?.partidos || [];
 
   return (
@@ -1382,7 +1418,7 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
       </button>
 
       <div>
-        <SectionTitle>Jornada {jornadas.length > 0 ? jornadas.length : nextJornada}</SectionTitle>
+        <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
         {jornadas.length === 0 ? (
           <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
         ) : (
