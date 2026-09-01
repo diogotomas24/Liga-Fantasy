@@ -440,12 +440,16 @@ const marketService = {
 const rankingService = {
   // `filterJornadaId`: null/"total" para el acumulado de toda la temporada (comportamiento
   // de siempre); o el id de una jornada concreta para ver solo los puntos de esa jornada.
-  computeStandings(teams, players, jornadas, filterJornadaId = null) {
+  // `leagueId`: las jornadas son compartidas por TODAS las ligas, así que el snapshot de
+  // alineaciones de cada jornada se guarda con una clave compuesta "liga::equipo" para que
+  // dos ligas distintas con un mismo nombre de equipo nunca se mezclen entre sí.
+  computeStandings(teams, players, jornadas, leagueId, filterJornadaId = null) {
+    const lineupKey = (teamName) => `${leagueId}::${teamName}`;
     const totalUpTo = (teamName, lineup, upToIdx) =>
-      jornadas.slice(0, upToIdx).reduce((s, j) => s + computeTeamJornadaPoints(j, teamName, lineup, players), 0);
+      jornadas.slice(0, upToIdx).reduce((s, j) => s + computeTeamJornadaPoints(j, lineupKey(teamName), lineup, players), 0);
     const singleJornada = filterJornadaId ? jornadas.find(j => j.id === filterJornadaId) : null;
     const pointsFor = (teamName, lineup) => singleJornada
-      ? computeTeamJornadaPoints(singleJornada, teamName, lineup, players)
+      ? computeTeamJornadaPoints(singleJornada, lineupKey(teamName), lineup, players)
       : totalUpTo(teamName, lineup, jornadas.length);
     const rows = Object.entries(teams).map(([name, t]) => {
       const squad = t.squad || [];
@@ -543,6 +547,84 @@ async function readPersonal(key, fallback) {
 async function writePersonal(key, value) {
   try { localStorage.setItem(`fl_personal_${key}`, JSON.stringify(value)); return true; }
   catch { return false; }
+}
+
+// Lee TODOS los equipos de TODAS las ligas a la vez (con clave compuesta
+// "liga::nombre"). Se usa solo para cosas que son globales por diseño: el
+// snapshot de alineaciones al guardar una jornada, y el cálculo de demanda
+// para el movimiento de precios de las jugadoras (que también es global).
+async function readAllTeamsGlobal() {
+  try {
+    const { data, error } = await supabase.from("kv_store").select("key,value").like("key", `${TEAM_KEY_PREFIX}%`);
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((row) => {
+      const t = row.value;
+      const rest = row.key.slice(TEAM_KEY_PREFIX.length); // "<leagueId>_<slug>"
+      const sep = rest.indexOf("_");
+      const leagueId = sep >= 0 ? rest.slice(0, sep) : rest;
+      const name = t?.name || (sep >= 0 ? rest.slice(sep + 1) : rest);
+      map[`${leagueId}::${name}`] = { ...t, name, leagueId };
+    });
+    return map;
+  } catch {
+    return null;
+  }
+} (id, name, invite_code, created_by).
+   Cada persona puede crear su propia liga (y se convierte automáticamente en
+   la primera participante) o unirse a la de otra persona con un código de
+   invitación. Todo lo demás de la partida (jugadoras, jornadas, resultados,
+   horario del mercado) es compartido por TODAS las ligas; lo único que
+   cambia entre ligas es quién participa, su mercado, sus pujas y sus equipos.
+   ----------------------------------------------------------------------- */
+function generateInviteCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sin caracteres ambiguos (0/O, 1/I...)
+  let code = "";
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function createLeagueRow(name, creatorName) {
+  const id = uid("lg");
+  const invite_code = generateInviteCode();
+  try {
+    const { error } = await supabase.from("leagues").insert({ id, name, invite_code, created_by: creatorName });
+    if (error) throw error;
+    return { id, name, invite_code, created_by: creatorName };
+  } catch {
+    return null;
+  }
+}
+
+async function findLeagueByCode(code) {
+  try {
+    const { data, error } = await supabase.from("leagues").select("*").eq("invite_code", (code || "").trim().toUpperCase()).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  } catch {
+    return null;
+  }
+}
+
+async function readLeaguesByIds(ids) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    const { data, error } = await supabase.from("leagues").select("*").in("id", ids);
+    if (error) throw error;
+    return data || [];
+  } catch {
+    return [];
+  }
+}
+
+// Lista local (en este dispositivo) de las ligas en las que participa esta
+// persona. Al no haber login real, es lo más simple para poder estar en
+// varias ligas a la vez, como pide el diseño de "Mis ligas".
+async function readMyLeagueIds() { return await readPersonal("myLeagues", []); }
+async function addMyLeagueId(id) {
+  const ids = await readMyLeagueIds();
+  if (!ids.includes(id)) { const next = [...ids, id]; await writePersonal("myLeagues", next); return next; }
+  return ids;
 }
 
 /* -----------------------------------------------------------------------
@@ -673,28 +755,32 @@ async function writeTeamCrestRow(teamName, url) {
 }
 
 /* -----------------------------------------------------------------------
-   Cada equipo vive en SU PROPIA fila ("team_<slug>") en vez de todos
-   compartiendo un único blob "teams". Así, guardar una alineación, liberar
-   una jugadora o resolver el mercado son lecturas/escrituras que solo tocan
-   la fila del equipo afectado, y dos operaciones sobre EQUIPOS DISTINTOS
-   ya no pueden pisarse la una a la otra (el read-modify-write de un cliente
-   ya no puede sobrescribir el trabajo de otro cliente sobre un equipo distinto).
+   Cada equipo vive en SU PROPIA fila ("team_<liga>_<slug>") en vez de todos
+   compartiendo un único blob. Así, guardar una alineación, liberar una
+   jugadora o resolver el mercado son lecturas/escrituras que solo tocan la
+   fila del equipo afectado, y dos operaciones sobre EQUIPOS DISTINTOS (o de
+   LIGAS DISTINTAS) ya no pueden pisarse la una a la otra.
+   El resto de datos "en directo" de una liga (mercado actual, pujas,
+   histórico de mercado, actividad) usan la misma idea: una clave de
+   kv_store por liga, con el id de la liga metido en el nombre de la clave.
    ----------------------------------------------------------------------- */
 const TEAM_KEY_PREFIX = "team_";
-function teamKey(name) { return `${TEAM_KEY_PREFIX}${slug(name) || "x"}`; }
+function teamKey(leagueId, name) { return `${TEAM_KEY_PREFIX}${leagueId}_${slug(name) || "x"}`; }
+function leagueKey(leagueId, base) { return `${base}_${leagueId}`; }
 
-async function readTeam(name) {
-  return await readShared(teamKey(name), null);
+async function readTeam(leagueId, name) {
+  return await readShared(teamKey(leagueId, name), null);
 }
-async function writeTeam(name, team) {
+async function writeTeam(leagueId, name, team) {
   // Guardamos el nombre dentro del propio registro para poder reconstruir
   // el mapa { nombre -> equipo } sin depender de un índice compartido aparte.
-  return await writeShared(teamKey(name), { ...team, name });
+  return await writeShared(teamKey(leagueId, name), { ...team, name });
 }
-// Lee TODOS los equipos, pero como una sola consulta filtrando por prefijo de
-// clave, nunca como un read-modify-write sobre un blob compartido. Se usa solo
-// para mostrar datos (clasificación, mercado, ids ocupados, etc.), nunca como
-// base para luego escribir de vuelta un blob completo.
+// Lee TODOS los equipos DE UNA LIGA, pero como una sola consulta filtrando
+// por prefijo de clave, nunca como un read-modify-write sobre un blob
+// compartido. Se usa solo para mostrar datos (clasificación, mercado, ids
+// ocupados, etc.), nunca como base para luego escribir de vuelta un blob
+// completo.
 //
 // IMPORTANTE: si algo falla, esta función devuelve `null`, NUNCA un mapa
 // vacío o a medias. Un mapa vacío/parcial es indistinguible de "esta gente no
@@ -703,14 +789,15 @@ async function writeTeam(name, team) {
 // trataría como un equipo nuevo vacío y se perdería su plantilla y su
 // presupuesto gastado. Devolver `null` obliga a quien llama a tratarlo como
 // "inténtalo en el siguiente ciclo", no como "no había nada".
-async function readAllTeams() {
+async function readAllTeams(leagueId) {
   try {
-    const { data, error } = await supabase.from("kv_store").select("key,value").like("key", `${TEAM_KEY_PREFIX}%`);
+    const prefix = `${TEAM_KEY_PREFIX}${leagueId}_`;
+    const { data, error } = await supabase.from("kv_store").select("key,value").like("key", `${prefix}%`);
     if (error) throw error;
     const map = {};
     (data || []).forEach((row) => {
       const t = row.value;
-      const name = t?.name || row.key.slice(TEAM_KEY_PREFIX.length);
+      const name = t?.name || row.key.slice(prefix.length);
       map[name] = t;
     });
     return map;
@@ -989,17 +1076,17 @@ function Onboarding({ onEnter }) {
       <GlobalStyle />
       <div className="w-full max-w-sm">
         <div className="text-center mb-6">
-          <div className="fl-mono text-[11px] tracking-[0.2em]" style={{ color: C.baby }}>TEMPORADA 2025/26 · GRUPO A2 · BALONCESTO</div>
+          <div className="fl-mono text-[11px] tracking-[0.2em]" style={{ color: C.principal }}>TEMPORADA 2025/26 · GRUPO A2 · BALONCESTO</div>
           <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fantasy Liga<br />Femenina Aragón</h1>
         </div>
         <div className="fl-card p-5">
-          <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas en la liga?</label>
+          <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas?</label>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo"
             className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} maxLength={24} />
-          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>Al entrar recibirás 11 jugadoras al azar con un valor de equipo entre 90 y 100 M, y además tendrás 100 M enteros disponibles para pujar en el mercado desde el primer día. Solo podrás alinear 5 titulares y 3 en el banquillo; el resto queda en reserva. Tus pujas en el mercado son siempre privadas.</p>
+          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 11 jugadoras al azar con un valor de equipo entre 90 y 100 M, y 100 M enteros para pujar en el mercado de esa liga desde el primer día.</p>
           <button disabled={!name.trim() || busy} onClick={async () => { setBusy(true); await onEnter(name.trim()); }}
             className="fl-body w-full mt-3 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
-            {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Entrar en la liga
+            {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Continuar
           </button>
         </div>
       </div>
@@ -1014,14 +1101,25 @@ export default function App() {
   const [profile, setProfile] = useState(undefined);
   const [players, setPlayers] = useState([]);
   const [jornadas, setJornadas] = useState([]);
-  const [teams, setTeams] = useState({});
   const [marketConfig, setMarketConfig] = useState(DEFAULT_MARKET_CONFIG);
+  const [teamCrests, setTeamCrests] = useState({});
+  const [favoritos, setFavoritos] = useState([]);
+
+  // Ligas: "Mis ligas" (las que esta persona ha creado o se ha unido, en este
+  // dispositivo) y cuál está activa ahora mismo. `undefined` = todavía
+  // cargando; `null` = ya cargado pero sin ninguna liga elegida (pantalla
+  // "Mis ligas").
+  const [myLeagues, setMyLeagues] = useState([]);
+  const [activeLeagueId, setActiveLeagueId] = useState(undefined);
+  const activeLeague = myLeagues.find(l => l.id === activeLeagueId) || null;
+
+  // Todo esto es SIEMPRE relativo a la liga activa.
+  const [teams, setTeams] = useState({});
   const [market, setMarket] = useState(null);
   const [bids, setBids] = useState([]);
   const [marketHistory, setMarketHistory] = useState([]);
   const [activity, setActivity] = useState([]);
-  const [teamCrests, setTeamCrests] = useState({});
-  const [favoritos, setFavoritos] = useState([]);
+
   const [tab, setTab] = useState("inicio");
   const [saving, setSaving] = useState(false);
   const resolvingRef = useRef(false);
@@ -1038,47 +1136,114 @@ export default function App() {
     });
   }, []);
 
-  // Carga inicial
+  // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
+  // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
+  // de qué liga se elija después.
   useEffect(() => {
     (async () => {
       const p = await readPersonal("profile", null);
       const fav = await readPersonal("favoritos", []);
-      const [pl, jo, tm, cfg, mk, bd, hist, act, crests] = await Promise.all([
-        readPlayers(), readJornadas(), readAllTeams(),
-        readMarketConfig(), readShared("currentMarket", null),
-        readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
-        readTeamCrests(),
+      const [pl, jo, cfg, crests] = await Promise.all([
+        readPlayers(), readJornadas(), readMarketConfig(), readTeamCrests(),
       ]);
-      setPlayers(pl); setJornadas(jo); setTeams(tm || {}); setBids(bd); setMarketHistory(hist); setActivity(act);
+      setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
       const config = cfg || DEFAULT_MARKET_CONFIG;
       setMarketConfig(config);
       if (!cfg) await writeMarketConfig(config);
-      setMarket(mk);
       setProfile(p);
     })();
   }, []);
 
-  // Sincroniza el mercado: resuelve la ventana cerrada y genera la siguiente.
+  // En cuanto hay un nombre elegido, cargamos "Mis ligas" (las que este
+  // dispositivo tiene guardadas) y recuperamos cuál era la última liga activa.
+  useEffect(() => {
+    if (!profile) return;
+    (async () => {
+      const ids = await readMyLeagueIds();
+      const leagues = await readLeaguesByIds(ids);
+      setMyLeagues(leagues);
+      const savedActive = await readPersonal("activeLeagueId", null);
+      setActiveLeagueId(savedActive && leagues.some(l => l.id === savedActive) ? savedActive : null);
+    })();
+  }, [profile]);
+
+  // Se asegura de que la persona tiene un equipo creado dentro de esa liga
+  // (reparto inicial de 11 jugadoras al azar, sin tocar el presupuesto de
+  // mercado). Idempotente: si ya existe, no hace nada.
+  const ensureTeamInLeague = useCallback(async (leagueId, name) => {
+    const existing = await readTeam(leagueId, name);
+    if (existing) return existing;
+    const freshPlayers = await readPlayers();
+    const fresh = (await readAllTeams(leagueId)) || {};
+    const ownedIds = new Set();
+    Object.values(fresh).forEach(t => teamService.squadIds(t).forEach(id => ownedIds.add(id)));
+    const freeJugadoras = freshPlayers.filter(p => p.position !== "DT" && !ownedIds.has(p.id));
+    const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, MAX_SQUAD_JUGADORAS);
+    const team = teamService.addInitialSquad(teamService.emptyTeam(), draft);
+    await writeTeam(leagueId, name, team);
+    return team;
+  }, []);
+
+  const selectLeague = useCallback(async (leagueId) => {
+    if (profile) await ensureTeamInLeague(leagueId, profile.name);
+    await writePersonal("activeLeagueId", leagueId);
+    setActiveLeagueId(leagueId);
+    setTab("inicio");
+  }, [profile, ensureTeamInLeague]);
+
+  const backToLeagues = useCallback(async () => {
+    await writePersonal("activeLeagueId", null);
+    setActiveLeagueId(null);
+  }, []);
+
+  const createLeague = useCallback(async (name) => {
+    const league = await createLeagueRow(name.trim(), profile.name);
+    if (!league) return { ok: false, error: "No se pudo crear la liga. Inténtalo de nuevo." };
+    await addMyLeagueId(league.id);
+    setMyLeagues(prev => [...prev, league]);
+    await selectLeague(league.id);
+    return { ok: true, league };
+  }, [profile, selectLeague]);
+
+  const joinLeagueByCode = useCallback(async (code) => {
+    const league = await findLeagueByCode(code);
+    if (!league) return { ok: false, error: "Código no encontrado. Revísalo e inténtalo de nuevo." };
+    await addMyLeagueId(league.id);
+    setMyLeagues(prev => prev.some(l => l.id === league.id) ? prev : [...prev, league]);
+    await selectLeague(league.id);
+    return { ok: true, league };
+  }, [selectLeague]);
+
+  const completeOnboarding = useCallback(async (name) => {
+    const prof = { name, isAdmin: false };
+    await writePersonal("profile", prof);
+    setProfile(prof);
+  }, []);
+
+  // Sincroniza el mercado DE LA LIGA ACTIVA: resuelve la ventana cerrada y genera la
+  // siguiente. Cada liga tiene su propio mercado, con jugadoras elegidas al azar de forma
+  // independiente (mismo precio de salida y mismo histórico de valor, que son globales).
   // Nota: esta comprobación corre en el cliente a intervalos como sustituto temporal
   // de un job programado en servidor; la resolución de la subasta y el descuento del
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
-  const syncMarket = useCallback(async () => {
-    if (resolvingRef.current) return;
+  const syncMarket = useCallback(async (leagueId) => {
+    if (!leagueId || resolvingRef.current) return;
     resolvingRef.current = true;
     try {
       const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity] = await Promise.all([
-        readPlayers(), readAllTeams(), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
-        readShared("currentMarket", null), readShared("bids", []), readShared("marketHistory", []), readShared("activity", []),
+        readPlayers(), readAllTeams(leagueId), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
+        readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
+        readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
       ]);
       if (freshTeamsOrNull === null) {
-        // No pudimos leer con garantías TODOS los equipos en este ciclo (p. ej.
-        // un fallo de red pasajero). NO seguimos: ni tocamos el estado local
-        // "teams", ni -sobre todo- resolvemos el mercado con datos incompletos,
-        // porque eso trataría a un equipo real como si no existiera y le
-        // borraría la plantilla y el presupuesto gastado. Se reintenta en el
-        // siguiente ciclo (15s) sin haber cambiado nada mientras tanto.
+        // No pudimos leer con garantías TODOS los equipos de esta liga en este
+        // ciclo (p. ej. un fallo de red pasajero). NO seguimos: ni tocamos el
+        // estado local "teams", ni -sobre todo- resolvemos el mercado con datos
+        // incompletos, porque eso trataría a un equipo real como si no
+        // existiera y le borraría la plantilla y el presupuesto gastado. Se
+        // reintenta en el siguiente ciclo (15s) sin haber cambiado nada.
         return;
       }
       const freshTeams = freshTeamsOrNull;
@@ -1088,33 +1253,21 @@ export default function App() {
       let teamsNext = freshTeams, bidsNext = freshBids, playersNext = freshPlayers, historyNext = freshHistory, activityNext = freshActivity;
       let marketNext = freshMarket;
 
-      // Un mercado ya está resuelto si ALGUNA de sus pujas dejó de estar "active"
-      // (resolveMarket las marca como "won"/"lost"). No usamos solo `market.resolved`
-      // porque, al no haber un servidor único, dos dispositivos pueden detectar el
-      // cierre casi a la vez; comprobar el estado real de las pujas hace que resolver
-      // dos veces el mismo mercado sea un no-op en vez de sobrescribir plantillas
-      // ajenas con una versión desactualizada (que es lo que hacía "desaparecer"
-      // fichajes recién hechos).
       const marketAlreadyResolved = (bidsList) => bidsList.some(b => b.marketId === freshMarket?.id && b.status !== "active");
       const needsResolution = freshMarket && !freshMarket.resolved && now >= freshMarket.closesAt && !marketAlreadyResolved(freshBids);
       if (needsResolution) {
-        // Segunda comprobación justo antes de escribir: si otro dispositivo ganó la
-        // carrera y ya resolvió este mercado en el instante entre nuestra lectura y
-        // ahora, abortamos sin tocar nada.
-        const confirmBids = await readShared("bids", freshBids);
+        const confirmBids = await readShared(leagueKey(leagueId, "bids"), freshBids);
         if (!marketAlreadyResolved(confirmBids)) {
           const { teams: t2, bids: b2, historyEntry, activityEntries } = auctionService.resolveMarket(freshMarket, confirmBids, freshPlayers, freshTeams);
           teamsNext = t2; bidsNext = b2;
           historyNext = [...freshHistory, historyEntry].slice(-40);
           activityNext = [...activityEntries, ...freshActivity].slice(0, 60);
-          // Solo escribimos los equipos que REALMENTE cambiaron (los que ganaron
-          // alguna puja), cada uno en su propia clave. Así la resolución del
-          // mercado nunca sobrescribe el equipo de alguien que no participó en
-          // esta puja, ni siquiera si esa persona guardó su alineación a la vez.
           const changedTeamNames = Object.keys(teamsNext).filter((name) => teamsNext[name] !== freshTeams[name]);
           await Promise.all([
-            ...changedTeamNames.map((name) => writeTeam(name, teamsNext[name])),
-            writeShared("bids", bidsNext), writeShared("marketHistory", historyNext), writeShared("activity", activityNext),
+            ...changedTeamNames.map((name) => writeTeam(leagueId, name, teamsNext[name])),
+            writeShared(leagueKey(leagueId, "bids"), bidsNext),
+            writeShared(leagueKey(leagueId, "marketHistory"), historyNext),
+            writeShared(leagueKey(leagueId, "activity"), activityNext),
           ]);
         }
       }
@@ -1123,7 +1276,7 @@ export default function App() {
       if (staleWindow) {
         const assetIds = marketService.buildAssets(playersNext, teamsNext, MARKET_ASSET_COUNT);
         marketNext = { id: uid("mk"), opensAt: window_.opensAt, closesAt: window_.closesAt, assetIds, resolved: false };
-        await writeShared("currentMarket", marketNext);
+        await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
       }
 
       setPlayers(playersNext); setTeams(teamsNext); setBids(bidsNext); setMarketHistory(historyNext); setActivity(activityNext);
@@ -1134,47 +1287,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (profile === undefined) return;
-    syncMarket();
-    const t = setInterval(syncMarket, 15000);
+    if (!activeLeagueId) return;
+    setMarket(null); // evita mostrar por un instante el mercado de la liga anterior
+    syncMarket(activeLeagueId);
+    const t = setInterval(() => syncMarket(activeLeagueId), 15000);
     return () => clearInterval(t);
-  }, [profile, syncMarket]);
-
-  const enterLeague = useCallback(async (name) => {
-    const prof = { name, isAdmin: false };
-    await writePersonal("profile", prof);
-    // Comprobamos si TU equipo ya existe leyendo DIRECTAMENTE su clave (una
-    // sola lectura), no el listado completo de equipos: así un fallo pasajero
-    // al listar/leer los equipos de otras personas nunca hace que te demos
-    // por "nueva/o" y te recreemos el equipo desde cero, perdiendo tu plantilla.
-    const existing = await readTeam(name);
-    if (existing) {
-      setTeams(t => ({ ...t, [name]: existing }));
-      setProfile(prof);
-      return;
-    }
-    const freshPlayers = await readPlayers();
-    // Para el reparto inicial sí necesitamos ver qué jugadoras están ya
-    // ocupadas por otros equipos; esto es solo lectura para no repetir
-    // jugadora, así que un fallo aquí (fresh = {}) es un problema menor
-    // (podría repetirse alguna jugadora en el reparto), nunca destructivo.
-    const fresh = (await readAllTeams()) || {};
-    {
-      let team = teamService.emptyTeam();
-      // Reparto inicial: hasta 11 jugadoras con un valor de equipo entre 90 y 100 M.
-      // No descuenta presupuesto: los 100 M para pujar en el mercado quedan intactos y aparte.
-      const ownedIds = new Set();
-      Object.values(fresh).forEach(t => teamService.squadIds(t).forEach(id => ownedIds.add(id)));
-      const freeJugadoras = freshPlayers.filter(p => p.position !== "DT" && !ownedIds.has(p.id));
-      const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, MAX_SQUAD_JUGADORAS);
-      team = teamService.addInitialSquad(team, draft);
-      // Crear tu equipo solo escribe TU clave (team_<slug>); nunca toca los
-      // equipos de las demás personas, así que no puede pisar su trabajo.
-      await writeTeam(name, team);
-      setTeams(t => ({ ...t, [name]: team }));
-    }
-    setProfile(prof);
-  }, []);
+  }, [activeLeagueId, syncMarket]);
 
   const toggleAdmin = useCallback(async () => {
     const next = { ...profile, isAdmin: !profile.isAdmin };
@@ -1190,88 +1308,85 @@ export default function App() {
   const budgetAvailable = profile ? auctionService.availableBudget(myTeam, bids, market?.id, profile.name) : BUDGET_TOTAL;
   const budgetCommitted = profile ? auctionService.committedByUser(bids, market?.id, profile.name) : 0;
 
-  const ownedIds = useMemo(() => {
-    const s = new Set();
-    Object.values(teams).forEach(t => teamService.squadIds(t).forEach(id => s.add(id)));
-    return s;
-  }, [teams]);
-
   const isMarketOpen = market ? (Date.now() >= market.opensAt && Date.now() < market.closesAt) : false;
 
   const saveLineup = useCallback(async (lineup) => {
     setSaving(true);
-    // Lee-modifica-escribe SOLO la clave de tu propio equipo: si el mercado
-    // se resuelve (o cualquier otra persona guarda algo) al mismo tiempo,
+    // Lee-modifica-escribe SOLO la clave de tu propio equipo EN ESTA LIGA: si el
+    // mercado se resuelve (o cualquier otra persona guarda algo) al mismo tiempo,
     // esa operación vive en otra clave y no puede perderse por esta escritura.
-    const fresh = await readTeam(profile.name) || teamService.emptyTeam();
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const nextTeam = { ...fresh, lineup };
-    await writeTeam(profile.name, nextTeam);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     setSaving(false);
-  }, [profile]);
+  }, [profile, activeLeagueId]);
 
   const releaseFromSquad = useCallback(async (assetId) => {
     setSaving(true);
-    const fresh = await readTeam(profile.name) || teamService.emptyTeam();
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const nextTeam = teamService.removeAsset(fresh, assetId);
-    await writeTeam(profile.name, nextTeam);
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     setSaving(false);
-  }, [profile]);
+  }, [profile, activeLeagueId]);
 
   const placeBid = useCallback(async (asset, amount) => {
-    const freshMarket = await readShared("currentMarket", market);
-    const freshBids = await readShared("bids", bids);
-    const team = (await readTeam(profile.name)) || teamService.emptyTeam();
+    const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
+    const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
+    const team = (await readTeam(activeLeagueId, profile.name)) || teamService.emptyTeam();
     const open = freshMarket && Date.now() >= freshMarket.opensAt && Date.now() < freshMarket.closesAt;
     const check = auctionService.validateBid({ team, players, asset, amount, marketOpen: open, bids: freshBids, marketId: freshMarket?.id, userId: profile.name });
     if (!check.ok) return check;
     const nextBids = auctionService.upsertBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name, amount });
-    await writeShared("bids", nextBids);
+    await writeShared(leagueKey(activeLeagueId, "bids"), nextBids);
     setBids(nextBids);
     return { ok: true };
-  }, [market, bids, players, profile]);
+  }, [market, bids, players, profile, activeLeagueId]);
 
   const buyClause = useCallback(async (sellerName, asset, amount) => {
-    const [buyerTeam, sellerTeam] = await Promise.all([readTeam(profile.name), readTeam(sellerName)]);
+    const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
     const check = clauseService.validateBuyout({
       buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId: market?.id,
     });
     if (!check.ok) return check;
     const { buyerTeam: nextBuyer, sellerTeam: nextSeller } = clauseService.execute(buyerTeam, sellerTeam, asset, amount);
-    await Promise.all([writeTeam(profile.name, nextBuyer), writeTeam(sellerName, nextSeller)]);
+    await Promise.all([writeTeam(activeLeagueId, profile.name, nextBuyer), writeTeam(activeLeagueId, sellerName, nextSeller)]);
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
     return { ok: true };
-  }, [profile, players, bids, market]);
+  }, [profile, players, bids, market, activeLeagueId]);
 
+  // El horario del mercado sigue siendo GLOBAL (igual para todas las ligas).
   const saveMarketConfig = useCallback(async (cfg) => {
     await writeMarketConfig(cfg);
     setMarketConfig(cfg);
-    await syncMarket();
-  }, [syncMarket]);
+    await syncMarket(activeLeagueId);
+  }, [syncMarket, activeLeagueId]);
 
   const forceResolveMarket = useCallback(async () => {
-    const freshMarket = await readShared("currentMarket", market);
+    const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     if (!freshMarket) return;
-    await writeShared("currentMarket", { ...freshMarket, closesAt: Date.now() - 1000 });
-    await syncMarket();
-  }, [market, syncMarket]);
+    await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+    await syncMarket(activeLeagueId);
+  }, [market, syncMarket, activeLeagueId]);
 
+  // Las jornadas son GLOBALES (compartidas por todas las ligas), así que el snapshot de
+  // alineaciones que se guarda con cada jornada recoge los equipos de TODAS las ligas a
+  // la vez (con clave compuesta "liga::equipo"), y el movimiento de precios de las
+  // jugadoras también se calcula con la demanda agregada de todas las ligas juntas.
   const saveJornada = useCallback(async (jornada) => {
     const freshJ = await readJornadas();
-    // Solo lectura (para copiar alineaciones y calcular movimiento de mercado);
-    // si falla, usamos {} en vez de bloquear — nunca escribimos "teams" aquí.
-    const freshT = (await readAllTeams()) || {};
+    const freshTGlobal = (await readAllTeamsGlobal()) || {};
     const existing = freshJ.find(j => j.id === jornada.id);
     const lineups = { ...(existing?.lineups || {}) };
-    Object.entries(freshT).forEach(([name, t]) => { if (!lineups[name] && t.lineup) lineups[name] = t.lineup; });
+    Object.entries(freshTGlobal).forEach(([key, t]) => { if (!lineups[key] && t.lineup) lineups[key] = t.lineup; });
     const jornadaToSave = { ...jornada, lineups };
     await writeJornada(jornadaToSave);
     const nextJ = await readJornadas();
     setJornadas(nextJ);
 
     const freshP = await readPlayers();
-    const updatedPlayers = applyMarketMovement(freshP, jornadaToSave, freshT);
+    const updatedPlayers = applyMarketMovement(freshP, jornadaToSave, freshTGlobal);
     await writePlayersAfterJornada(updatedPlayers, jornadaToSave);
     setPlayers(updatedPlayers);
   }, []);
@@ -1296,26 +1411,31 @@ export default function App() {
     setPlayers(fresh);
   }, []);
 
-  if (profile === undefined || !market) return <Loading />;
-  if (profile === null) return <Onboarding onEnter={enterLeague} />;
+  if (profile === undefined) return <Loading />;
+  if (profile === null) return <Onboarding onEnter={completeOnboarding} />;
+  if (activeLeagueId === undefined) return <Loading />;
+  if (activeLeagueId === null) {
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} />;
+  }
+  if (!market) return <Loading />;
 
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <Header profile={profile} saving={saving} onToggleAdmin={toggleAdmin} />
+      <Header profile={profile} saving={saving} onToggleAdmin={toggleAdmin} activeLeague={activeLeague} onBackToLeagues={backToLeagues} />
       <main className="px-4 fl-safe-bottom" style={{ minHeight: "70vh" }}>
         <div className="pt-3">
           {tab === "inicio" && (
-            <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas}
+            <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas} leagueId={activeLeagueId}
               myTeam={myTeam} budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               market={market} isMarketOpen={isMarketOpen} onGoTo={setTab} onOpenRealTeam={openRealTeam}
               teamCrests={teamCrests} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
-              jornadas={jornadas} players={players} teamName={profile.name} isAdmin={profile.isAdmin}
+              jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId} isAdmin={profile.isAdmin}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
               onSaveLineup={saveLineup} onRelease={releaseFromSquad} />
           )}
@@ -1343,21 +1463,137 @@ export default function App() {
 }
 
 /* =============================================================================
+   MIS LIGAS
+   ========================================================================== */
+function MisLigasScreen({ leagues, onSelect, onCreate, onJoin }) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [showJoin, setShowJoin] = useState(false);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [justCreated, setJustCreated] = useState(null); // liga recién creada, para mostrar su código
+
+  const submitCreate = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setError("");
+    const res = await onCreate(name);
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    setJustCreated(res.league);
+  };
+
+  const submitJoin = async () => {
+    if (!code.trim()) return;
+    setBusy(true); setError("");
+    const res = await onJoin(code);
+    setBusy(false);
+    if (!res.ok) setError(res.error);
+  };
+
+  return (
+    <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
+      <GlobalStyle />
+      <header className="px-4 pt-6 pb-4 text-center" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
+        <h1 className="fl-display text-2xl uppercase mt-0.5" style={{ color: C.white }}>Mis Ligas</h1>
+      </header>
+
+      <div className="px-4 pt-4 pb-10 max-w-sm mx-auto">
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          <button onClick={() => { setShowCreate(true); setShowJoin(false); setError(""); }}
+            className="fl-tap rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-1.5" style={{ background: C.baby, color: C.ink }}>
+            <Plus size={15} /> Crear liga
+          </button>
+          <button onClick={() => { setShowJoin(true); setShowCreate(false); setError(""); }}
+            className="fl-tap rounded-md py-2.5 text-sm font-semibold" style={{ background: "transparent", border: `1.5px solid ${C.principal}`, color: C.principal }}>
+            Unirme con código
+          </button>
+        </div>
+
+        {showCreate && (
+          <div className="fl-row p-3.5 mb-4">
+            {justCreated ? (
+              <div className="text-center py-2">
+                <div className="fl-body text-sm font-medium mb-1" style={{ color: C.white }}>¡Liga "{justCreated.name}" creada!</div>
+                <div className="fl-body text-xs mb-2" style={{ color: C.muted }}>Comparte este código con tus amigos para que se unan:</div>
+                <div className="fl-mono text-2xl font-bold tracking-[0.3em] py-2" style={{ color: C.principal }}>{justCreated.invite_code}</div>
+                <button onClick={() => { setShowCreate(false); setJustCreated(null); setName(""); }}
+                  className="fl-tap w-full mt-2 rounded-md py-2 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
+                  Entendido
+                </button>
+              </div>
+            ) : (
+              <>
+                <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>NOMBRE DE LA LIGA</label>
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej. Los Piratas" maxLength={30}
+                  className="w-full rounded-md px-3 py-2 text-sm mb-2" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
+                <button disabled={!name.trim() || busy} onClick={submitCreate}
+                  className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
+                  {busy ? <Loader2 size={14} className="animate-spin" /> : "Crear y entrar"}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {showJoin && (
+          <div className="fl-row p-3.5 mb-4">
+            <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>CÓDIGO DE INVITACIÓN</label>
+            <input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="Ej. AB3XQZ" maxLength={8}
+              className="w-full rounded-md px-3 py-2 text-sm mb-2 fl-mono tracking-widest" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
+            <button disabled={!code.trim() || busy} onClick={submitJoin}
+              className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
+              {busy ? <Loader2 size={14} className="animate-spin" /> : "Unirme"}
+            </button>
+          </div>
+        )}
+
+        {error && <div className="fl-mono text-xs mb-4 text-center" style={{ color: C.negative }}>{error}</div>}
+
+        <div className="fl-mono text-[10px] mb-2" style={{ color: C.muted }}>MIS LIGAS</div>
+        {leagues.length === 0 ? (
+          <EmptyState title="Todavía no estás en ninguna liga" text="Crea la tuya o pide un código de invitación a algún amigo." />
+        ) : (
+          <div className="space-y-1.5">
+            {leagues.map(l => (
+              <button key={l.id} onClick={() => onSelect(l.id)} className="fl-tap w-full fl-row flex items-center justify-between px-3.5 py-3">
+                <div className="text-left">
+                  <div className="fl-body text-sm font-medium" style={{ color: C.white }}>{l.name}</div>
+                  <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Código {l.invite_code}</div>
+                </div>
+                <ChevronRight size={16} color={C.muted} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =============================================================================
    NAVEGACIÓN
    ========================================================================== */
-function Header({ profile, saving, onToggleAdmin }) {
+function Header({ profile, saving, onToggleAdmin, activeLeague, onBackToLeagues }) {
   return (
-    <header className="px-4 pt-5 pb-3 flex items-center justify-between" style={{ borderBottom: `1px solid ${C.line}` }}>
-      <div>
-        <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
-        <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
-        <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
-      </div>
-      <button onClick={onToggleAdmin} className="fl-tap flex items-center justify-center w-9 h-9 rounded-full"
-        style={{ background: profile.isAdmin ? C.principalSoft : "transparent", border: `1.5px solid ${C.principal}`, boxShadow: `0 0 14px ${C.principal}55` }}
-        title="Solo activa esto si organizas la liga">
-        <ShieldAlert size={16} color={C.principal} />
+    <header className="px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 mb-1.5 -ml-0.5">
+        <ChevronLeft size={14} color={C.muted} />
+        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
       </button>
+      <div className="flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="fl-mono text-[10px] tracking-[0.2em] truncate" style={{ color: C.principal }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</div>
+          <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
+          <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
+        </div>
+        <button onClick={onToggleAdmin} className="fl-tap flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
+          style={{ background: profile.isAdmin ? C.principalSoft : "transparent", border: `1.5px solid ${C.principal}`, boxShadow: `0 0 14px ${C.principal}55` }}
+          title="Solo activa esto si organizas la liga">
+          <ShieldAlert size={16} color={C.principal} />
+        </button>
+      </div>
     </header>
   );
 }
@@ -1492,9 +1728,9 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, onOpenRealTeam, teamCrests }) {
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, onOpenRealTeam, teamCrests }) {
   const [showCalendar, setShowCalendar] = useState(false);
-  const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas), [teams, players, jornadas]);
+  const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const marketAssets = (market.assetIds || []).length;
   const lastJornada = findCurrentJornada(jornadas);
@@ -1555,7 +1791,7 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
           <div className="fl-row p-3.5 flex items-center justify-between">
             <span className="fl-body text-sm" style={{ color: C.white }}>{lastJornada.name}</span>
             <span className="fl-mono text-sm font-semibold" style={{ color: C.positive }}>
-              +{computeTeamJornadaPoints(lastJornada, profile.name, myTeam.lineup, players)}
+              +{computeTeamJornadaPoints(lastJornada, `${leagueId}::${profile.name}`, myTeam.lineup, players)}
             </span>
           </div>
         )}
@@ -1612,10 +1848,10 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
-function ClasificacionTab({ teams, players, jornadas, me }) {
+function ClasificacionTab({ teams, players, jornadas, me, leagueId }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
-  const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadas, filterJornadaId), [teams, players, jornadas, filterJornadaId]);
+  const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId, filterJornadaId), [teams, players, jornadas, leagueId, filterJornadaId]);
   const options = [{ id: null, label: "Total" }, ...[...jornadas].reverse().map(j => ({ id: j.id, label: j.name }))];
   const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "Total";
 
@@ -1919,7 +2155,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isAdmin, isOwned, isFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, isAdmin, favoritos, onToggleFavorite, onSaveLineup, onRelease }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, isAdmin, favoritos, onToggleFavorite, onSaveLineup, onRelease }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -1927,7 +2163,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
   const startersSet = new Set(lineup.starters || []);
   const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
   const reserva = allSquad.filter(p => !startersSet.has(p.id) && !benchIds.has(p.id) && p.id !== lineup.titularCoach);
-  const history = jornadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, teamName, lineup, players) }));
+  const history = jornadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
 
   const valorPlantilla = (myTeam.squad || []).reduce((s, e) => s + (e.pricePaid || 0), 0);
 
