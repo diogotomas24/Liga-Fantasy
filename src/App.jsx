@@ -2859,6 +2859,9 @@ function JornadasPanel({ jornadas, players, isAdmin, onSave, onDelete }) {
   };
   return (
     <div>
+      <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
+        Los marcadores también se pueden editar directamente en la tabla <span style={{ color: C.white }}>partidos</span> de Supabase (columnas marcador_local / marcador_visitante).
+      </p>
       {isAdmin && (
         <div className="flex gap-2 mb-3">
           <input placeholder={`Jornada ${jornadas.length + 1}`} value={draftName} onChange={e => setDraftName(e.target.value)}
