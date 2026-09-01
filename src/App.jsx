@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
-  ShieldCheck, ShieldAlert, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
+  ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
@@ -1126,10 +1126,6 @@ export default function App() {
   const [tab, setTab] = useState("inicio");
   const [saving, setSaving] = useState(false);
   const resolvingRef = useRef(false);
-  // Equipo real que el/la admin quiere abrir (p. ej. al tocar un rival en "Partidos de la
-  // jornada") para ir directamente a su plantilla dentro de Admin > Equipos reales.
-  const [focusRealTeam, setFocusRealTeam] = useState(null);
-  const openRealTeam = useCallback((name) => { setFocusRealTeam({ name, key: Date.now() }); setTab("mas"); }, []);
   // Favoritos: se guardan por persona (no compartidos), como una simple lista de ids.
   const toggleFavorito = useCallback((playerId) => {
     setFavoritos(prev => {
@@ -1220,7 +1216,7 @@ export default function App() {
   }, [selectLeague]);
 
   const completeOnboarding = useCallback(async (name) => {
-    const prof = { name, isAdmin: false };
+    const prof = { name };
     await writePersonal("profile", prof);
     setProfile(prof);
   }, []);
@@ -1296,12 +1292,6 @@ export default function App() {
     const t = setInterval(() => syncMarket(activeLeagueId), 15000);
     return () => clearInterval(t);
   }, [activeLeagueId, syncMarket]);
-
-  const toggleAdmin = useCallback(async () => {
-    const next = { ...profile, isAdmin: !profile.isAdmin };
-    setProfile(next);
-    await writePersonal("profile", next);
-  }, [profile]);
 
   const myTeam = profile ? (teams[profile.name] || teamService.emptyTeam()) : teamService.emptyTeam();
   const mySquadIds = useMemo(() => teamService.squadIds(myTeam), [myTeam]);
@@ -1425,42 +1415,36 @@ export default function App() {
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <Header profile={profile} saving={saving} onToggleAdmin={toggleAdmin} activeLeague={activeLeague} onBackToLeagues={backToLeagues} />
+      <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} />
       <main className="px-4 fl-safe-bottom" style={{ minHeight: "70vh" }}>
         <div className="pt-3">
           {tab === "inicio" && (
             <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas} leagueId={activeLeagueId}
               myTeam={myTeam} budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
-              market={market} isMarketOpen={isMarketOpen} onGoTo={setTab} onOpenRealTeam={openRealTeam}
+              market={market} isMarketOpen={isMarketOpen} onGoTo={setTab}
               teamCrests={teamCrests} />
           )}
           {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
-              jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId} isAdmin={profile.isAdmin}
+              jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSaveLineup={saveLineup} onRelease={releaseFromSquad} />
+              onSaveLineup={saveLineup} />
           )}
           {tab === "mercado" && (
             <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory}
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
               budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
-              jornadas={jornadas} isAdmin={profile.isAdmin} onRelease={releaseFromSquad}
+              jornadas={jornadas}
               favoritos={favoritos} onToggleFavorite={toggleFavorito} />
           )}
           {tab === "mas" && (
-            <MasTab profile={profile} onToggleAdmin={toggleAdmin} activity={activity} teams={teams}
-              players={players} jornadas={jornadas} marketConfig={marketConfig} market={market} bids={bids}
-              onSaveConfig={saveMarketConfig} onForceResolve={forceResolveMarket}
-              onSaveJornada={saveJornada} onDeleteJornada={deleteJornada}
-              onRefreshPlayers={refreshPlayers}
-              focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={() => setFocusRealTeam(null)}
-              teamCrests={teamCrests} onSaveTeamCrest={saveTeamCrest} />
+            <MasTab activity={activity} players={players} jornadas={jornadas} />
           )}
         </div>
       </main>
-      <BottomNav tab={tab} setTab={setTab} isAdmin={profile.isAdmin} />
+      <BottomNav tab={tab} setTab={setTab} />
     </div>
   );
 }
@@ -1607,30 +1591,23 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
 /* =============================================================================
    NAVEGACIÓN
    ========================================================================== */
-function Header({ profile, saving, onToggleAdmin, activeLeague, onBackToLeagues }) {
+function Header({ profile, saving, activeLeague, onBackToLeagues }) {
   return (
     <header className="px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
       <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 mb-1.5 -ml-0.5">
         <ChevronLeft size={14} color={C.muted} />
         <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
       </button>
-      <div className="flex items-center justify-between">
-        <div className="min-w-0">
-          <div className="fl-mono text-[10px] tracking-[0.2em] truncate" style={{ color: C.principal }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</div>
-          <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
-          <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
-        </div>
-        <button onClick={onToggleAdmin} className="fl-tap flex items-center justify-center w-9 h-9 rounded-full flex-shrink-0"
-          style={{ background: profile.isAdmin ? C.principalSoft : "transparent", border: `1.5px solid ${C.principal}`, boxShadow: `0 0 14px ${C.principal}55` }}
-          title="Solo activa esto si organizas la liga">
-          <ShieldAlert size={16} color={C.principal} />
-        </button>
+      <div>
+        <div className="fl-mono text-[10px] tracking-[0.2em] truncate" style={{ color: C.principal }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</div>
+        <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
+        <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
       </div>
     </header>
   );
 }
 
-function BottomNav({ tab, setTab, isAdmin }) {
+function BottomNav({ tab, setTab }) {
   const items = [
     { key: "inicio", label: "Inicio", icon: Trophy },
     { key: "clasificacion", label: "Ranking", icon: Users },
@@ -1760,7 +1737,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, onOpenRealTeam, teamCrests }) {
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
@@ -1835,11 +1812,10 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
             {partidos.map(m => (
               <div key={m.id} className="px-3.5 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
-                <button onClick={() => profile.isAdmin && onOpenRealTeam(m.local)} disabled={!profile.isAdmin}
-                  className="fl-tap flex-1 flex flex-col items-center gap-1 text-center">
+                <div className="flex-1 flex flex-col items-center gap-1 text-center">
                   <TeamCrest name={m.local} photo={teamCrests?.[m.local]} />
                   <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.local}</span>
-                </button>
+                </div>
                 <div className="flex flex-col items-center px-1">
                   {(m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "") ? (
                     <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
@@ -1850,15 +1826,13 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
                     </>
                   ) : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
                 </div>
-                <button onClick={() => profile.isAdmin && onOpenRealTeam(m.visitante)} disabled={!profile.isAdmin}
-                  className="fl-tap flex-1 flex flex-col items-center gap-1 text-center">
+                <div className="flex-1 flex flex-col items-center gap-1 text-center">
                   <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} />
                   <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.visitante}</span>
-                </button>
+                </div>
               </div>
             ))}
           </div>
-          {profile.isAdmin && <p className="fl-body text-[10px] mt-1.5" style={{ color: C.muted }}>Toca un equipo para ver su plantilla.</p>}
         </div>
       )}
 
@@ -2041,7 +2015,7 @@ function ValorHistoricoModal({ player, onClose }) {
 // media de la temporada, chips de jornadas (J1, J2…) y, debajo, el desglose
 // estadística a estadística de la jornada seleccionada con el sistema de
 // Puntos SWISH, igual que el modelo de referencia.
-function PlayerDetailScreen({ player, entry, jornadas, isAdmin, isOwned, isFavorite, onToggleFavorite, onRelease, onClose }) {
+function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, onClose }) {
   const [showHistorico, setShowHistorico] = useState(false);
 
   const seasonRows = useMemo(() => jornadas.map((j, i) => {
@@ -2106,17 +2080,11 @@ function PlayerDetailScreen({ player, entry, jornadas, isAdmin, isOwned, isFavor
           </div>
         </div>
 
-        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: (isOwned && isAdmin) ? "1fr 1fr" : "1fr" }}>
+        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: "1fr" }}>
           <button onClick={() => setShowHistorico(true)} className="fl-tap rounded-md py-2.5 text-xs font-semibold"
             style={{ border: `1px solid ${C.line}`, color: C.white }}>
             Valor histórico
           </button>
-          {isOwned && isAdmin && (
-            <button onClick={() => { onRelease(player.id); onClose(); }} className="fl-tap rounded-md py-2.5 text-xs font-semibold"
-              style={{ background: C.negative, color: C.white }}>
-              Quitar
-            </button>
-          )}
         </div>
 
         {showHistorico && <ValorHistoricoModal player={player} onClose={() => setShowHistorico(false)} />}
@@ -2187,7 +2155,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isAdmin, isOwned, isFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, isAdmin, favoritos, onToggleFavorite, onSaveLineup, onRelease }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -2244,9 +2212,6 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
                   <div className="fl-mono text-[9px] mt-0.5" style={{ color: C.muted }}>CLÁUSULA</div>
                   <div className="fl-mono text-xs font-semibold flex items-center gap-0.5 justify-end" style={{ color: C.gold }}><Lock size={9} /> {fmtCredits(entry?.clause || 0)}</div>
                 </div>
-                {isAdmin && (
-                  <span onClick={(e) => { e.stopPropagation(); onRelease(p.id); }} className="p-1.5 rounded-md" title="Liberar (herramienta admin)"><Trash2 size={14} color={C.negative} /></span>
-                )}
               </button>
             );
           })}
@@ -2271,9 +2236,9 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
         if (!p) return null;
         const entry = myTeam.squad.find(e => e.id === p.id);
         return (
-          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas} isAdmin={isAdmin} isOwned={true}
+          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas}
             isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => onToggleFavorite(p.id)}
-            onRelease={onRelease} onClose={() => setDetailPlayerId(null)} />
+            onClose={() => setDetailPlayerId(null)} />
         );
       })()}
     </div>
@@ -2639,7 +2604,7 @@ function DropdownItem({ active, onClick, children }) {
 
 // Buscador global de jugadoras y entrenadoras/es: nombre, favoritos, equipo
 // real, posición y orden — igual estructura que el buscador de referencia.
-function PlayerSearchScreen({ players, jornadas, teams, myTeam, isAdmin, favoritos, onToggleFavorite, onRelease, onClose }) {
+function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onClose }) {
   const [query, setQuery] = useState("");
   const [onlyFav, setOnlyFav] = useState(false);
   const [teamFilter, setTeamFilter] = useState("");
@@ -2747,16 +2712,15 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, isAdmin, favorit
       </div>
 
       {detailPlayer && (
-        <PlayerDetailScreen player={detailPlayer} jornadas={jornadas} isAdmin={isAdmin}
-          isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
+        <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
           isFavorite={favSet.has(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
-          onRelease={onRelease} onClose={() => setDetailPlayer(null)} />
+          onClose={() => setDetailPlayer(null)} />
       )}
     </div>
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, jornadas, isAdmin, onRelease, favoritos, onToggleFavorite }) {
+function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, jornadas, favoritos, onToggleFavorite }) {
   const [sub, setSub] = useState("mercado");
   const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset, clause }
   const [detailPlayer, setDetailPlayer] = useState(null);
@@ -2839,15 +2803,14 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       )}
 
       {detailPlayer && (
-        <PlayerDetailScreen player={detailPlayer} jornadas={jornadas} isAdmin={isAdmin}
-          isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
+        <PlayerDetailScreen player={detailPlayer} jornadas={jornadas}
           isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
-          onRelease={onRelease} onClose={() => setDetailPlayer(null)} />
+          onClose={() => setDetailPlayer(null)} />
       )}
 
       {showSearch && (
-        <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam} isAdmin={isAdmin}
-          favoritos={favoritos} onToggleFavorite={onToggleFavorite} onRelease={onRelease} onClose={() => setShowSearch(false)} />
+        <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam}
+          favoritos={favoritos} onToggleFavorite={onToggleFavorite} onClose={() => setShowSearch(false)} />
       )}
     </div>
   );
@@ -3062,21 +3025,13 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids }) {
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ profile, onToggleAdmin, activity, teams, players, jornadas, marketConfig, market, bids,
-  onSaveConfig, onForceResolve, onSaveJornada, onDeleteJornada, onRefreshPlayers,
-  focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
+function MasTab({ activity, players, jornadas }) {
   const [sub, setSub] = useState("actividad");
-  const tabs = [["actividad", "Actividad"], ["jornadas", "Jornadas"]];
-  if (profile.isAdmin) tabs.push(["admin", "Admin"]);
-
-  // Si venimos de tocar un equipo en "Partidos de la jornada" (Inicio), saltamos
-  // directamente a la pestaña Admin para abrir ese equipo real.
-  useEffect(() => { if (focusRealTeam) setSub("admin"); }, [focusRealTeam]);
 
   return (
     <div>
       <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
-        {tabs.map(([k, l]) => (
+        {[["actividad", "Actividad"], ["jornadas", "Jornadas"]].map(([k, l]) => (
           <button key={k} onClick={() => setSub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
             style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
             {l.toUpperCase()}
@@ -3085,13 +3040,7 @@ function MasTab({ profile, onToggleAdmin, activity, teams, players, jornadas, ma
       </div>
 
       {sub === "actividad" && <ActividadFeed activity={activity} players={players} />}
-      {sub === "jornadas" && <JornadasPanel jornadas={jornadas} players={players} isAdmin={profile.isAdmin} onSave={onSaveJornada} onDelete={onDeleteJornada} />}
-      {sub === "admin" && profile.isAdmin && (
-        <AdminPanel teams={teams} players={players} jornadas={jornadas} marketConfig={marketConfig} market={market} bids={bids}
-          onSaveConfig={onSaveConfig} onForceResolve={onForceResolve} onRefreshPlayers={onRefreshPlayers}
-          focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={onConsumeFocusRealTeam}
-          teamCrests={teamCrests} onSaveTeamCrest={onSaveTeamCrest} />
-      )}
+      {sub === "jornadas" && <JornadasPanel jornadas={jornadas} players={players} />}
     </div>
   );
 }
@@ -3115,31 +3064,14 @@ function ActividadFeed({ activity, players }) {
   );
 }
 
-function JornadasPanel({ jornadas, players, isAdmin, onSave, onDelete }) {
+function JornadasPanel({ jornadas, players }) {
   const [openId, setOpenId] = useState(null);
-  const [draftName, setDraftName] = useState("");
-  const realTeams = useMemo(() => realTeamsFrom(players, jornadas), [players, jornadas]);
-  const createJornada = async () => {
-    const id = uid("j");
-    const name = draftName.trim() || `Jornada ${jornadas.length + 1}`;
-    await onSave({ id, name, stats: {}, partidos: [] });
-    setDraftName(""); setOpenId(id);
-  };
   return (
     <div>
       <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
-        Los marcadores también se pueden editar directamente en la tabla <span style={{ color: C.white }}>partidos</span> de Supabase (columnas marcador_local / marcador_visitante).
+        Las jornadas, los marcadores y las estadísticas se gestionan desde las tablas <span style={{ color: C.white }}>jornadas</span>, <span style={{ color: C.white }}>partidos</span> y <span style={{ color: C.white }}>jornada_stats</span> de Supabase. Esta pantalla es solo de consulta.
       </p>
-      {isAdmin && (
-        <div className="flex gap-2 mb-3">
-          <input placeholder={`Jornada ${jornadas.length + 1}`} value={draftName} onChange={e => setDraftName(e.target.value)}
-            className="flex-1 rounded-md px-2.5 py-1.5 text-sm" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
-          <button onClick={createJornada} className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-3 py-1.5" style={{ background: C.baby, color: C.ink }}>
-            <Plus size={13} /> Nueva jornada
-          </button>
-        </div>
-      )}
-      {jornadas.length === 0 && <EmptyState title="Sin jornadas todavía" text={isAdmin ? "Crea la primera jornada y registra los datos." : "Cuando se registre la primera jornada verás aquí los puntos."} />}
+      {jornadas.length === 0 && <EmptyState title="Sin jornadas todavía" text="Cuando se registre la primera jornada verás aquí los puntos." />}
       <div className="space-y-2">
         {[...jornadas].reverse().map(j => (
           <div key={j.id} className="fl-row overflow-hidden">
@@ -3147,7 +3079,7 @@ function JornadasPanel({ jornadas, players, isAdmin, onSave, onDelete }) {
               <span className="fl-display text-sm uppercase" style={{ color: C.white }}>{j.name}</span>
               <ChevronRight size={16} color={C.muted} style={{ transform: openId === j.id ? "rotate(90deg)" : "none" }} />
             </button>
-            {openId === j.id && <JornadaEditor jornada={j} players={players} realTeams={realTeams} isAdmin={isAdmin} onSave={onSave} onDelete={onDelete} />}
+            {openId === j.id && <JornadaDetail jornada={j} players={players} />}
           </div>
         ))}
       </div>
@@ -3155,66 +3087,34 @@ function JornadasPanel({ jornadas, players, isAdmin, onSave, onDelete }) {
   );
 }
 
-function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete }) {
-  const [stats, setStats] = useState(jornada.stats || {});
-  const [partidos, setPartidos] = useState(jornada.partidos || []);
-  const [draftMatch, setDraftMatch] = useState({ local: "", visitante: "", fecha: "", hora: "" });
-  const [dirty, setDirty] = useState(false);
-  const setField = (playerId, field, value) => { setStats(s => ({ ...s, [playerId]: { ...s[playerId], [field]: value } })); setDirty(true); };
-  const addPartido = () => {
-    if (!draftMatch.local.trim() || !draftMatch.visitante.trim()) return;
-    setPartidos(ms => [...ms, { id: uid("m"), ...draftMatch, local: draftMatch.local.trim(), visitante: draftMatch.visitante.trim() }]);
-    setDraftMatch({ local: "", visitante: "", fecha: "", hora: "" });
-    setDirty(true);
-  };
-  const removePartido = (id) => { setPartidos(ms => ms.filter(m => m.id !== id)); setDirty(true); };
-  const setResultado = (id, field, value) => {
-    setPartidos(ms => ms.map(m => m.id === id ? { ...m, [field]: value } : m));
-    setDirty(true);
-  };
+// Vista de solo lectura de una jornada: partidos con su marcador (si ya se
+// jugó) y la tabla de estadísticas de cada jugadora. Todo se edita en
+// Supabase; aquí solo se consulta.
+function JornadaDetail({ jornada, players }) {
+  const stats = jornada.stats || {};
+  const partidos = jornada.partidos || [];
   const jugadoras = players.filter(p => p.position !== "DT");
   const entrenadoras = players.filter(p => p.position === "DT");
-  const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
   return (
     <div className="px-3 pb-3" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
       <div className="mt-2">
-        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>PARTIDOS DE LA JORNADA (EQUIPOS REALES)</div>
-        {partidos.length === 0 && <div className="text-xs mb-2" style={{ color: C.muted }}>Todavía no hay partidos añadidos para esta jornada.</div>}
-        {partidos.length > 0 && (
+        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>PARTIDOS DE LA JORNADA</div>
+        {partidos.length === 0 ? (
+          <div className="text-xs mb-2" style={{ color: C.muted }}>Todavía no hay partidos añadidos para esta jornada.</div>
+        ) : (
           <div className="space-y-1.5 mb-2.5">
-            {partidos.map(m => (
-              <div key={m.id} className="flex items-center gap-2 px-2.5 py-2 rounded-md" style={{ background: C.navy900, border: `1px solid ${C.lineSoft}` }}>
-                <div className="flex-1 min-w-0">
-                  <div className="fl-body text-xs truncate" style={{ color: C.white }}>{m.local} <span style={{ color: C.muted }}>vs</span> {m.visitante}</div>
-                  {(m.fecha || m.hora) && <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ")}</div>}
-                </div>
-                {isAdmin ? (
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <input type="number" placeholder="-" value={m.marcadorLocal ?? ""} onChange={e => setResultado(m.id, "marcadorLocal", e.target.value)}
-                      className="w-11 text-center rounded-md py-1 text-xs" style={inputStyle} />
-                    <span className="fl-mono text-[10px]" style={{ color: C.muted }}>-</span>
-                    <input type="number" placeholder="-" value={m.marcadorVisitante ?? ""} onChange={e => setResultado(m.id, "marcadorVisitante", e.target.value)}
-                      className="w-11 text-center rounded-md py-1 text-xs" style={inputStyle} />
+            {partidos.map(m => {
+              const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
+              return (
+                <div key={m.id} className="flex items-center gap-2 px-2.5 py-2 rounded-md" style={{ background: C.navy900, border: `1px solid ${C.lineSoft}` }}>
+                  <div className="flex-1 min-w-0">
+                    <div className="fl-body text-xs truncate" style={{ color: C.white }}>{m.local} <span style={{ color: C.muted }}>vs</span> {m.visitante}</div>
+                    {(m.fecha || m.hora) && <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ")}</div>}
                   </div>
-                ) : (m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "") && (
-                  <div className="fl-mono text-xs font-bold flex-shrink-0" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</div>
-                )}
-                {isAdmin && <button onClick={() => removePartido(m.id)} className="p-1 rounded-md flex-shrink-0"><Trash2 size={13} color={C.negative} /></button>}
-              </div>
-            ))}
-          </div>
-        )}
-        {isAdmin && (
-          <div className="grid grid-cols-2 gap-1.5 mb-1">
-            <input list="fl-real-teams" placeholder="Equipo local" value={draftMatch.local} onChange={e => setDraftMatch({ ...draftMatch, local: e.target.value })} className="rounded-md px-2.5 py-1.5 text-xs" style={inputStyle} />
-            <input list="fl-real-teams" placeholder="Equipo visitante" value={draftMatch.visitante} onChange={e => setDraftMatch({ ...draftMatch, visitante: e.target.value })} className="rounded-md px-2.5 py-1.5 text-xs" style={inputStyle} />
-            <input placeholder="Fecha (opcional)" value={draftMatch.fecha} onChange={e => setDraftMatch({ ...draftMatch, fecha: e.target.value })} className="rounded-md px-2.5 py-1.5 text-xs" style={inputStyle} />
-            <input placeholder="Hora (opcional)" value={draftMatch.hora} onChange={e => setDraftMatch({ ...draftMatch, hora: e.target.value })} className="rounded-md px-2.5 py-1.5 text-xs" style={inputStyle} />
-            <datalist id="fl-real-teams">{realTeams.map(t => <option key={t} value={t} />)}</datalist>
-            <button onClick={addPartido} disabled={!draftMatch.local.trim() || !draftMatch.visitante.trim()}
-              className="col-span-2 fl-tap flex items-center justify-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-              <Plus size={13} /> Añadir partido
-            </button>
+                  {played && <div className="fl-mono text-xs font-bold flex-shrink-0" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</div>}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -3235,25 +3135,12 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
             <tbody>
               {jugadoras.map(p => {
                 const s = stats[p.id] || {}; const pts = calcPlayerPoints(s, p.position);
-                const num = (field, width = "w-9") => (
-                  <td className="text-center"><input disabled={!isAdmin} type="number" min={0} className={`${width} text-center rounded`} style={inputStyle}
-                    value={s[field] || 0} onChange={e => setField(p.id, field, Number(e.target.value))} /></td>
-                );
+                const num = (field) => <td className="text-center">{s[field] || 0}</td>;
                 return (
                   <tr key={p.id} style={{ borderTop: `1px solid ${C.lineSoft}` }}>
                     <td className="py-1.5 pr-2" style={{ color: C.white }}><div className="font-medium">{p.name}</div><PositionBadge posKey={p.position} /></td>
-                    {num("minutos", "w-10")}
-                    {num("puntos", "w-10")}
-                    {num("t3")}
-                    {num("tlibre")}
-                    {num("rebofen")}
-                    {num("rebdefe")}
-                    {num("asist")}
-                    {num("pd")}
-                    {num("robos")}
-                    {num("tap")}
-                    {num("faltas")}
-                    {num("valoracion", "w-10")}
+                    {num("minutos")}{num("puntos")}{num("t3")}{num("tlibre")}{num("rebofen")}{num("rebdefe")}
+                    {num("asist")}{num("pd")}{num("robos")}{num("tap")}{num("faltas")}{num("valoracion")}
                     <td className="text-right fl-mono font-semibold" style={{ color: pts >= 0 ? C.positive : C.negative }}>{pts}</td>
                   </tr>
                 );
@@ -3276,10 +3163,10 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
                 return (
                   <tr key={p.id} style={{ borderTop: `1px solid ${C.lineSoft}` }}>
                     <td className="py-1.5 pr-2" style={{ color: C.white }}><div className="font-medium">{p.name}</div><PositionBadge posKey={p.position} /></td>
-                    <td className="text-center"><input disabled={!isAdmin} type="checkbox" checked={!!s.jugo} onChange={e => setField(p.id, "jugo", e.target.checked)} /></td>
-                    <td className="text-center"><input disabled={!isAdmin} type="checkbox" checked={!!s.victoria} onChange={e => setField(p.id, "victoria", e.target.checked)} /></td>
-                    <td className="text-center"><input disabled={!isAdmin} type="number" className="w-14 text-center rounded" style={inputStyle} value={s.diferencia || 0} onChange={e => setField(p.id, "diferencia", Number(e.target.value))} /></td>
-                    <td className="text-center"><input disabled={!isAdmin} type="checkbox" checked={!!s.mvp} onChange={e => setField(p.id, "mvp", e.target.checked)} /></td>
+                    <td className="text-center">{s.jugo ? "Sí" : "No"}</td>
+                    <td className="text-center">{s.victoria ? "Sí" : "No"}</td>
+                    <td className="text-center">{s.diferencia || 0}</td>
+                    <td className="text-center">{s.mvp ? "Sí" : "No"}</td>
                     <td className="text-right fl-mono font-semibold" style={{ color: pts >= 0 ? C.positive : C.negative }}>{pts}</td>
                   </tr>
                 );
@@ -3288,264 +3175,6 @@ function JornadaEditor({ jornada, players, realTeams, isAdmin, onSave, onDelete 
           </table>
         </div>
       )}
-      {isAdmin && (
-        <div className="flex justify-between items-center mt-3">
-          <button onClick={() => onDelete(jornada.id)} className="fl-tap flex items-center gap-1 text-xs" style={{ color: C.negative }}><Trash2 size={13} /> Eliminar jornada</button>
-          <button onClick={async () => { await onSave({ ...jornada, stats, partidos }); setDirty(false); }} disabled={!dirty}
-            className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-3 py-1.5 disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-            <Check size={13} /> Guardar jornada
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* =============================================================================
-   ADMINISTRACIÓN
-   ========================================================================== */
-function AdminPanel({ teams, players, jornadas, marketConfig, market, bids, onSaveConfig, onForceResolve, onRefreshPlayers,
-  focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
-  const [asub, setAsub] = useState("mercado");
-
-  // Si venimos de "Partidos de la jornada" (Inicio), abrimos directamente
-  // la pestaña de equipos reales en el equipo tocado.
-  useEffect(() => { if (focusRealTeam) setAsub("equiposreales"); }, [focusRealTeam]);
-
-  return (
-    <div>
-      <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar">
-        {[["mercado", "Mercado"], ["jugadoras", "Jugadoras/DT"], ["equiposreales", "Equipos reales"], ["pujas", "Pujas"], ["equipos", "Equipos fantasy"]].map(([k, l]) => (
-          <button key={k} onClick={() => setAsub(k)} className="fl-tap whitespace-nowrap fl-mono text-[11px] px-3 py-2 rounded-lg"
-            style={{ background: asub === k ? C.baby : "transparent", color: asub === k ? C.ink : C.muted, border: asub === k ? "none" : `1px solid ${C.line}` }}>
-            {l.toUpperCase()}
-          </button>
-        ))}
-      </div>
-      {asub === "mercado" && <AdminMercado marketConfig={marketConfig} market={market} onSaveConfig={onSaveConfig} onForceResolve={onForceResolve} />}
-      {asub === "jugadoras" && <AdminJugadoras players={players} onRefresh={onRefreshPlayers} />}
-      {asub === "equiposreales" && (
-        <RealTeamsPanel players={players} jornadas={jornadas}
-          focusRealTeam={focusRealTeam} onConsumeFocusRealTeam={onConsumeFocusRealTeam}
-          teamCrests={teamCrests} onSaveTeamCrest={onSaveTeamCrest} />
-      )}
-      {asub === "pujas" && <AdminPujas market={market} bids={bids} players={players} />}
-      {asub === "equipos" && <AdminEquipos teams={teams} players={players} />}
-    </div>
-  );
-}
-
-// Equipos reales (los clubes a los que pertenecen las jugadoras en la vida real, no los
-// equipos fantasy). Lista cada equipo real con su plantilla (de solo lectura: las altas,
-// bajas y ediciones de jugadoras se hacen siempre desde el Table Editor de Supabase).
-function RealTeamsPanel({ players, jornadas, focusRealTeam, onConsumeFocusRealTeam, teamCrests, onSaveTeamCrest }) {
-  const teamsList = useMemo(() => realTeamsFrom(players, jornadas), [players, jornadas]);
-  const [selected, setSelected] = useState(null);
-
-  useEffect(() => {
-    if (focusRealTeam?.name) {
-      setSelected(focusRealTeam.name);
-      onConsumeFocusRealTeam && onConsumeFocusRealTeam();
-    }
-  }, [focusRealTeam, onConsumeFocusRealTeam]);
-
-  if (selected) {
-    return <RealTeamRoster teamName={selected} players={players.filter(p => p.team === selected)}
-      crestUrl={teamCrests?.[selected] || ""} onSaveCrest={(url) => onSaveTeamCrest(selected, url)}
-      onBack={() => setSelected(null)} />;
-  }
-
-  return (
-    <div>
-      <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
-        Las jugadoras y entrenadoras/es se gestionan desde la tabla <span style={{ color: C.white }}>players</span> en Supabase. Aquí solo puedes verlas agrupadas por equipo real y editar el escudo de cada equipo.
-      </p>
-      {teamsList.length === 0 ? (
-        <EmptyState title="Sin equipos reales todavía" text="En cuanto añadas jugadoras en Supabase con su columna 'team', aparecerán aquí agrupadas." />
-      ) : (
-        <div className="space-y-1.5">
-          {teamsList.map(name => {
-            const count = players.filter(p => p.team === name).length;
-            return (
-              <button key={name} onClick={() => setSelected(name)} className="fl-tap w-full fl-row flex items-center gap-2.5 px-3 py-2.5">
-                <TeamCrest name={name} size={36} photo={teamCrests?.[name]} />
-                <div className="flex-1 min-w-0 text-left">
-                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{name}</div>
-                  <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{count} jugadora{count === 1 ? "" : "s"}/DT dada{count === 1 ? "" : "s"} de alta</div>
-                </div>
-                <ChevronRight size={16} color={C.muted} />
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Plantilla de un equipo real concreto: escudo (URL editable) + listado de jugadoras/DT,
-// de solo lectura (las altas/bajas/ediciones se hacen en Supabase).
-function RealTeamRoster({ teamName, players, crestUrl, onSaveCrest, onBack }) {
-  const [crestDraft, setCrestDraft] = useState(crestUrl || "");
-  const [crestDirty, setCrestDirty] = useState(false);
-  const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <button onClick={onBack} className="fl-tap -ml-1.5 px-1.5 py-1" style={{ color: C.white }}><ChevronLeft size={20} /></button>
-        <TeamCrest name={teamName} size={30} photo={crestUrl} />
-        <div className="fl-display text-sm uppercase flex-1 truncate" style={{ color: C.white }}>{teamName}</div>
-      </div>
-
-      <div className="fl-row p-3 mb-3 flex items-center gap-2.5">
-        <TeamCrest name={teamName} size={44} photo={crestDirty ? crestDraft : crestUrl} />
-        <div className="flex-1 min-w-0">
-          <div className="fl-mono text-[10px] mb-1" style={{ color: C.muted }}>ESCUDO DEL EQUIPO (URL DE IMAGEN)</div>
-          <input placeholder="https://…" value={crestDraft} onChange={e => { setCrestDraft(e.target.value); setCrestDirty(true); }}
-            className="w-full rounded-md px-2.5 py-1.5 text-xs" style={inputStyle} />
-        </div>
-        <button onClick={async () => { await onSaveCrest(crestDraft.trim()); setCrestDirty(false); }} disabled={!crestDirty}
-          className="fl-tap rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
-          Guardar
-        </button>
-      </div>
-
-      {players.length === 0 ? (
-        <EmptyState title="Este equipo todavía no tiene jugadoras" text="Añádelas desde el Table Editor de Supabase (tabla players)." />
-      ) : (
-        <div className="space-y-1.5">
-          {players.map(p => (
-            <div key={p.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
-              <PlayerPhoto url={p.photo} size={38} />
-              <div className="flex-1 min-w-0">
-                <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</div>
-                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Valor {fmtCredits(p.basePrice)}</div>
-              </div>
-              <PositionBadge posKey={p.position} />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AdminMercado({ marketConfig, market, onSaveConfig, onForceResolve }) {
-  const [openHour, setOpenHour] = useState(marketConfig.openHour);
-  const [closeHour, setCloseHour] = useState(marketConfig.closeHour);
-  const [busy, setBusy] = useState(false);
-  const inputStyle = { background: C.navy900, border: `1px solid ${C.line}`, color: C.white };
-  return (
-    <div className="space-y-3">
-      <div className="fl-row p-3.5">
-        <div className="fl-display text-sm uppercase mb-2" style={{ color: C.white }}>Horario del mercado</div>
-        <p className="fl-body text-[11px] mb-2.5" style={{ color: C.muted }}>Todos los mercados abren y cierran siempre a esta hora, configurada aquí.</p>
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
-            <label className="fl-mono text-[10px] block mb-1" style={{ color: C.muted }}>APERTURA</label>
-            <input type="time" value={openHour} onChange={e => setOpenHour(e.target.value)} className="w-full rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          </div>
-          <div className="flex-1">
-            <label className="fl-mono text-[10px] block mb-1" style={{ color: C.muted }}>CIERRE</label>
-            <input type="time" value={closeHour} onChange={e => setCloseHour(e.target.value)} className="w-full rounded-md px-2.5 py-1.5 text-sm" style={inputStyle} />
-          </div>
-          <button onClick={async () => { setBusy(true); await onSaveConfig({ openHour, closeHour }); setBusy(false); }} disabled={busy}
-            className="fl-tap rounded-md px-3 py-1.5 text-sm font-medium" style={{ background: C.baby, color: C.ink }}>
-            {busy ? <Loader2 size={14} className="animate-spin" /> : "Guardar"}
-          </button>
-        </div>
-      </div>
-      <div className="fl-row p-3.5 flex items-center justify-between">
-        <div>
-          <div className="fl-body text-sm font-medium" style={{ color: C.white }}>Mercado actual</div>
-          <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{market.assetIds.length} activos · cierra {new Date(market.closesAt).toLocaleString("es-ES")}</div>
-        </div>
-        <button onClick={onForceResolve} className="fl-tap flex items-center gap-1 fl-mono text-[11px] font-medium rounded-md px-3 py-1.5" style={{ background: "transparent", border: `1px solid ${C.baby}`, color: C.baby }}>
-          <RefreshCw size={13} /> Cerrar y resolver ahora
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// Álbum de jugadoras/DT: de solo lectura. Las altas, bajas y ediciones se hacen
-// siempre desde el Table Editor de la tabla "players" en Supabase; este panel
-// solo refleja lo que haya en esa tabla, con un botón para releer los últimos cambios.
-function AdminJugadoras({ players, onRefresh }) {
-  const [busy, setBusy] = useState(false);
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3">
-        <div className="fl-mono text-[11px]" style={{ color: C.muted }}>{players.length} en el álbum</div>
-        <button onClick={async () => { setBusy(true); await onRefresh(); setBusy(false); }} disabled={busy}
-          className="fl-tap flex items-center gap-1 text-xs font-medium rounded-md px-2.5 py-1.5" style={{ background: "transparent", border: `1px solid ${C.baby}`, color: C.baby }}>
-          {busy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Releer de Supabase
-        </button>
-      </div>
-
-      <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>
-        Las jugadoras y entrenadoras/es se añaden, editan o eliminan directamente en la tabla <span style={{ color: C.white }}>players</span> de Supabase (columnas: id, name, team, position, base_price, photo). Esta pantalla es solo de consulta.
-      </p>
-
-      {players.length === 0 ? (
-        <EmptyState title="El álbum está vacío" text="Añade jugadoras y entrenadoras/es desde el Table Editor de Supabase." />
-      ) : (
-        <div className="space-y-1.5">
-          {players.map(p => (
-            <div key={p.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
-              <PlayerPhoto url={p.photo} size={38} />
-              <div className="flex-1 min-w-0">
-                <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</div>
-                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team} · Valor {fmtCredits(p.basePrice)}</div>
-              </div>
-              <PositionBadge posKey={p.position} />
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AdminPujas({ market, bids, players }) {
-  const rows = auctionService.activeBidsForMarket(bids, market.id).sort((a, b) => b.amount - a.amount);
-  if (rows.length === 0) return <EmptyState title="Sin pujas activas" text="Aquí verás, como administración, todas las pujas con su usuario." />;
-  return (
-    <div className="space-y-1.5">
-      <p className="fl-body text-[11px] mb-1" style={{ color: C.muted }}>Visible solo para administración. Los usuarios nunca ven esta información.</p>
-      {rows.map(b => {
-        const asset = players.find(p => p.id === b.assetId);
-        return (
-          <div key={b.id} className="fl-row flex items-center justify-between px-3 py-2.5">
-            <div>
-              <div className="fl-body text-sm font-medium" style={{ color: C.white }}>{asset?.name || b.assetId}</div>
-              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{b.userId} · {new Date(b.createdAt).toLocaleTimeString("es-ES")}</div>
-            </div>
-            <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(b.amount)}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function AdminEquipos({ teams, players }) {
-  const entries = Object.entries(teams);
-  if (entries.length === 0) return <EmptyState title="Sin equipos todavía" text="Aparecerán cuando alguien entre en la liga." />;
-  return (
-    <div className="space-y-1.5">
-      {entries.map(([name, t]) => {
-        const available = (t.budgetTotal || 0) - (t.budgetSpent || 0);
-        return (
-          <div key={name} className="fl-row px-3 py-2.5">
-            <div className="flex items-center justify-between">
-              <span className="fl-body text-sm font-medium" style={{ color: C.white }}>{name}</span>
-              <span className="fl-mono text-xs" style={{ color: C.baby }}>{fmtCredits(available)} disp.</span>
-            </div>
-            <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{(t.squad || []).length} fichajes · gastado {fmtCredits(t.budgetSpent || 0)}</div>
-          </div>
-        );
-      })}
     </div>
   );
 }
