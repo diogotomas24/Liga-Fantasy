@@ -1830,15 +1830,19 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
    ========================================================================== */
 function Header({ profile, saving, activeLeague, onBackToLeagues }) {
   return (
-    <header className="px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
-      <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 mb-1.5 -ml-0.5">
-        <ChevronLeft size={14} color={C.muted} />
-        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
-      </button>
-      <div>
-        <div className="fl-mono text-[10px] tracking-[0.2em] truncate" style={{ color: C.principal }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</div>
-        <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
-        <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
+    <header className="px-4 pt-3 pb-2.5" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center justify-between">
+        <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 -ml-0.5">
+          <ChevronLeft size={14} color={C.muted} />
+          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
+        </button>
+        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
+      </div>
+      <div className="flex items-baseline gap-2 mt-1">
+        <h1 className="fl-display text-2xl uppercase" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
+          Fantasy
+        </h1>
+        <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
       </div>
     </header>
   );
@@ -2430,6 +2434,12 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
             <div className="fl-mono text-[9px]" style={{ color: C.muted }}>PFSY</div>
             <div className="fl-mono text-3xl font-bold" style={{ color: C.baby }}>{totalSeason}</div>
             <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>MEDIA: {media.toFixed(1)}</div>
+            {isOwned && entry && (
+              <div className="flex items-center justify-end gap-1.5 mt-1">
+                <ClauseBadge entry={entry} />
+                <span className="fl-mono text-[10px] font-semibold" style={{ color: C.gold }}>{fmtCredits(entry.clause || player.basePrice || 0)}</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -2445,38 +2455,25 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           )}
         </div>
 
-        {isOwned && entry && (() => {
-          const clauseValue = entry.clause || player.basePrice || 0;
+        {isOwned && entry && entry.forSale && (() => {
           const offer = entry.saleOffer;
           const offerExpired = offer && offer.expiresAt && Date.now() > offer.expiresAt;
+          if (!offer || offerExpired) return null;
           return (
             <div className="px-4 pt-3">
               <div className="fl-row p-3">
-                <div className="flex items-center justify-between mb-1">
-                  <ClauseBadge entry={entry} size="md" />
-                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{fmtCredits(clauseValue)}</span>
+                <div className="p-2 rounded-md" style={{ background: C.principalSoft }}>
+                  <div className="fl-body text-xs" style={{ color: C.white }}>Oferta de la liga: <span className="font-semibold">{fmtCredits(offer.amount)}</span></div>
+                  <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Válida hasta que cierre este mercado</div>
+                  <button disabled={busyAction === "offer"} onClick={async () => {
+                    setBusyAction("offer"); setActionMsg("");
+                    const res = await onAcceptSaleOffer(player.id);
+                    setBusyAction(null);
+                    if (res.ok) onClose(); else setActionMsg(res.error);
+                  }} className="fl-tap w-full mt-2 rounded-md py-2 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
+                    {busyAction === "offer" ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar oferta"}
+                  </button>
                 </div>
-
-                {entry.forSale && (
-                  <div className="mt-2 p-2 rounded-md" style={{ background: C.principalSoft }}>
-                    {offer && !offerExpired ? (
-                      <>
-                        <div className="fl-body text-xs" style={{ color: C.white }}>Oferta de la liga: <span className="font-semibold">{fmtCredits(offer.amount)}</span></div>
-                        <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Válida hasta que cierre este mercado</div>
-                        <button disabled={busyAction === "offer"} onClick={async () => {
-                          setBusyAction("offer"); setActionMsg("");
-                          const res = await onAcceptSaleOffer(player.id);
-                          setBusyAction(null);
-                          if (res.ok) onClose(); else setActionMsg(res.error);
-                        }} className="fl-tap w-full mt-2 rounded-md py-2 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
-                          {busyAction === "offer" ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar oferta"}
-                        </button>
-                      </>
-                    ) : (
-                      <div className="fl-body text-xs" style={{ color: C.muted }}>En el mercado — recibirás una oferta de la liga cuando se abra el próximo mercado.</div>
-                    )}
-                  </div>
-                )}
                 {actionMsg && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{actionMsg}</div>}
               </div>
             </div>
@@ -3086,20 +3083,6 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         </div>
       </div>
 
-      {reserva.length > 0 && (
-        <div className="mb-3">
-          <div className="fl-mono text-[10px] mb-1" style={{ color: C.muted }}>RESERVA (NO ALINEABLES ESTA JORNADA)</div>
-          <div className="flex gap-1.5 flex-wrap">
-            {reserva.map(p => (
-              <div key={p.id} className="fl-row px-2.5 py-1.5 flex items-center gap-1.5" style={{ opacity: 0.6 }}>
-                <PositionBadge posKey={p.position} />
-                <span className="fl-body text-xs font-medium" style={{ color: C.white }}>{p.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       <button disabled={!canSave} onClick={async () => { await onSave({ formation: formationKey, starters, bench, titularCoach, captainId }); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500); }}
         className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
         {savedFlash ? "Alineación guardada ✓" : "Guardar alineación"}
@@ -3333,7 +3316,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       {sub === "mercado" && (
         <>
           {assets.length === 0 ? <EmptyState title="Sin activos en este mercado" text="El siguiente mercado se generará automáticamente al cerrar este." /> : (
-            <div className="space-y-2.5">
+            <div className="space-y-3">
               {assets.map(asset => (
                 <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
                   isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} />
@@ -3341,6 +3324,13 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
             </div>
           )}
           <EnVentaSection teams={teams} players={players} onOpenPlayer={setDetailPlayer} />
+          <div className="mt-4">
+            <SectionTitle>Plantillas de la liga</SectionTitle>
+            <RivalRosters teams={teams} players={players} me={profile.name}
+              onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
+              onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
+              onOpenPlayer={setDetailPlayer} />
+          </div>
         </>
       )}
 
@@ -3387,16 +3377,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
           )}
 
           {opSub === "venta" && (
-            <div className="space-y-4">
-              <OfertasRecibidasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
-              <div>
-                <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>PLANTILLAS DE LA LIGA</div>
-                <RivalRosters teams={teams} players={players} me={profile.name}
-                  onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
-                  onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
-                  onOpenPlayer={setDetailPlayer} />
-              </div>
-            </div>
+            <OfertasRecibidasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
           )}
         </div>
       )}
@@ -3441,16 +3422,16 @@ function EnVentaSection({ teams, players, onOpenPlayer }) {
   return (
     <div className="mt-4">
       <SectionTitle>En venta</SectionTitle>
-      <div className="space-y-1.5">
+      <div className="space-y-2">
         {rows.map(({ owner, entry, player }) => (
-          <button key={player.id} onClick={() => onOpenPlayer(player)} className="fl-tap w-full fl-row flex items-center gap-2.5 px-3 py-2.5 text-left">
-            <PlayerPhoto url={player.photo} size={38} />
+          <button key={player.id} onClick={() => onOpenPlayer(player)} className="fl-tap w-full fl-row flex items-center gap-3 px-4 py-3.5 text-left">
+            <PlayerPhoto url={player.photo} size={56} rounded={14} />
             <div className="flex-1 min-w-0">
-              <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
-              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{owner} · {player.team}</div>
+              <div className="fl-body text-base font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+              <div className="fl-mono text-xs" style={{ color: C.muted }}>{owner} · {player.team}</div>
             </div>
-            <PositionBadge posKey={player.position} />
-            <div className="fl-mono text-xs font-semibold" style={{ color: C.principal }}>{fmtCredits(entry.clause || player.basePrice)}</div>
+            <PositionBadge posKey={player.position} size="md" />
+            <div className="fl-mono text-sm font-semibold" style={{ color: C.principal }}>{fmtCredits(entry.clause || player.basePrice)}</div>
           </button>
         ))}
       </div>
@@ -3749,25 +3730,25 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
   };
 
   return (
-    <div className="fl-row p-3 fl-pop">
-      <div className="flex items-center gap-3">
-        <button onClick={() => onOpenPlayer(asset)} className="fl-tap flex items-center gap-3 flex-1 min-w-0 text-left">
-          <PlayerPhoto url={asset.photo} size={52} />
+    <div className="fl-row p-4 fl-pop">
+      <div className="flex items-center gap-3.5">
+        <button onClick={() => onOpenPlayer(asset)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
+          <PlayerPhoto url={asset.photo} size={68} rounded={16} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
-              <PositionBadge posKey={asset.position} />
-              <span className="fl-display text-sm uppercase truncate" style={{ color: C.white }}>{asset.name}</span>
+              <PositionBadge posKey={asset.position} size="md" />
+              <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{asset.name}</span>
             </div>
-            <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{asset.team}</div>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="fl-mono text-[11px]" style={{ color: C.baby }}>Salida {fmtCredits(asset.basePrice || 1)}</span>
-              <span className="fl-mono text-[10px]" style={{ color: C.muted }}>· {bidCount} {bidCount === 1 ? "puja" : "pujas"}</span>
+            <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{asset.team}</div>
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>Salida {fmtCredits(asset.basePrice || 1)}</span>
+              <span className="fl-mono text-[11px]" style={{ color: C.muted }}>· {bidCount} {bidCount === 1 ? "puja" : "pujas"}</span>
             </div>
-            <div className="mt-1"><BidStatusPill status={status} /></div>
+            <div className="mt-1.5"><BidStatusPill status={status} /></div>
           </div>
         </button>
         <button onClick={() => setOpen(o => !o)} disabled={!isMarketOpen || owned}
-          className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-3 py-2 disabled:opacity-40 flex-shrink-0"
+          className="fl-tap fl-mono text-xs font-semibold rounded-md px-3.5 py-2.5 disabled:opacity-40 flex-shrink-0"
           style={{ background: owned ? "transparent" : C.baby, color: owned ? C.muted : C.ink, border: owned ? `1px solid ${C.line}` : "none" }}>
           {owned ? "Tuya" : myBid ? "Editar" : "Pujar"}
         </button>
