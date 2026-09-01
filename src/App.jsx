@@ -1418,7 +1418,7 @@ export default function App() {
   if (profile === null) return <Onboarding onEnter={completeOnboarding} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
-    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} />;
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} />;
   }
   if (!market) return <Loading />;
 
@@ -1468,7 +1468,7 @@ export default function App() {
 /* =============================================================================
    MIS LIGAS
    ========================================================================== */
-function MisLigasScreen({ leagues, onSelect, onCreate, onJoin }) {
+function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [name, setName] = useState("");
@@ -1476,6 +1476,11 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [justCreated, setJustCreated] = useState(null); // liga recién creada, para mostrar su código
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  const currentJornada = useMemo(() => findCurrentJornada(jornadas), [jornadas]);
+  const currentJornadaNumber = currentJornada ? jornadas.findIndex(j => j.id === currentJornada.id) + 1 : 0;
+  const partidosPreview = (currentJornada?.partidos || []).slice(0, 4);
 
   const submitCreate = async () => {
     if (!name.trim()) return;
@@ -1558,7 +1563,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin }) {
         {leagues.length === 0 ? (
           <EmptyState title="Todavía no estás en ninguna liga" text="Crea la tuya o pide un código de invitación a algún amigo." />
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 mb-5">
             {leagues.map(l => (
               <button key={l.id} onClick={() => onSelect(l.id)} className="fl-tap w-full fl-row flex items-center justify-between px-3.5 py-3">
                 <div className="text-left">
@@ -1570,7 +1575,31 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin }) {
             ))}
           </div>
         )}
+
+        {currentJornada && (
+          <div>
+            <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
+            {partidosPreview.length === 0 ? (
+              <EmptyState compact title="Sin partidos" text="Todavía no hay partidos añadidos para esta jornada." />
+            ) : (
+              <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
+                {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} />)}
+              </div>
+            )}
+            {(currentJornada.partidos || []).length > 0 && (
+              <button onClick={() => setShowCalendar(true)}
+                className="fl-tap w-full mt-3 rounded-md py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
+                Todos los partidos
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {showCalendar && (
+        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
+          initialIndex={Math.max(currentJornadaNumber - 1, 0)} onClose={() => setShowCalendar(false)} />
+      )}
     </div>
   );
 }
