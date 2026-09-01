@@ -12,22 +12,26 @@ import { supabase } from "./lib/supabaseClient";
    Azul marino (estructura/fondos) · Blanco (contraste/tarjetas) · Azul bebé (acción)
    ========================================================================== */
 const C = {
-  navy900: "#081226",
-  navy800: "#0E2140",
-  navy700: "#16305A",
-  navy600: "#1E3E70",
+  navy900: "#0A0F1A",
+  navy800: "#141A27",
+  navy700: "#1C2333",
+  navy600: "#232B3F",
   line: "rgba(255,255,255,0.10)",
   lineSoft: "rgba(255,255,255,0.06)",
   white: "#FFFFFF",
-  ink: "#0B1B33",
-  muted: "rgba(255,255,255,0.56)",
-  mutedInk: "rgba(11,27,51,0.55)",
-  baby: "#5AC0F2",
-  babyDark: "#2E9BD8",
-  babySoft: "rgba(90,192,242,0.14)",
-  gold: "#D9A93B",
-  positive: "#3FCE8E",
-  negative: "#FF7A85",
+  ink: "#0A0F1A",
+  muted: "rgba(168,181,199,0.72)",
+  mutedInk: "rgba(10,15,26,0.55)",
+  // "baby" = color de acción (botones, pestañas activas, importes) — Secundario naranja
+  baby: "#FF8A00",
+  babyDark: "#CC6E00",
+  babySoft: "rgba(255,138,0,0.14)",
+  // "principal" = color de identidad/marca (cabecera, degradados, ranking, cancha) — Principal rosa
+  principal: "#FF3D7F",
+  principalSoft: "rgba(255,61,127,0.16)",
+  gold: "#FFC83D",
+  positive: "#35E59A",
+  negative: "#FF5C7A",
 };
 
 /* =============================================================================
@@ -699,10 +703,10 @@ function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
       <div className="relative flex items-center justify-center overflow-hidden"
         style={{
           width: size, height: size, borderRadius: size * 0.28,
-          background: empty ? "rgba(255,255,255,0.05)" : C.navy700,
-          border: empty ? "1.5px dashed rgba(255,255,255,0.22)" : `1.5px solid ${C.line}`,
+          background: empty ? "rgba(255,61,127,0.06)" : C.navy700,
+          border: empty ? "1.5px dashed rgba(255,61,127,0.55)" : `1.5px solid ${C.line}`,
         }}>
-        {empty ? <PlayerSilhouette size={size * 0.52} />
+        {empty ? <PlayerSilhouette size={size * 0.52} color="rgba(255,61,127,0.55)" />
           : (player.photo ? <img src={player.photo} alt="" className="w-full h-full object-cover" /> : <ImageOff size={size * 0.4} color={C.muted} />)}
         {!empty && (
           <span className="absolute flex items-center justify-center"
@@ -1184,14 +1188,14 @@ function Header({ profile, saving, onToggleAdmin }) {
   return (
     <header className="px-4 pt-5 pb-3 flex items-center justify-between" style={{ borderBottom: `1px solid ${C.line}` }}>
       <div>
-        <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.baby }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
+        <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
         <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Fantasy Liga Femenina</h1>
         <div className="mt-0.5 fl-mono text-[11px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</div>
       </div>
       <button onClick={onToggleAdmin} className="fl-tap flex items-center justify-center w-9 h-9 rounded-full"
-        style={{ background: profile.isAdmin ? C.babySoft : "transparent", border: `1px solid ${profile.isAdmin ? C.baby : C.line}` }}
+        style={{ background: profile.isAdmin ? C.principalSoft : "transparent", border: `1.5px solid ${C.principal}`, boxShadow: `0 0 14px ${C.principal}55` }}
         title="Solo activa esto si organizas la liga">
-        <ShieldAlert size={16} color={profile.isAdmin ? C.baby : C.muted} />
+        <ShieldAlert size={16} color={C.principal} />
       </button>
     </header>
   );
@@ -1205,16 +1209,18 @@ function BottomNav({ tab, setTab, isAdmin }) {
     { key: "mercado", label: "Mercado", icon: Gavel },
     { key: "mas", label: "Más", icon: Menu },
   ];
+  const accentFor = (key) => (key === "mercado" ? C.baby : C.principal);
   return (
     <nav className="fixed bottom-0 left-0 right-0 px-2 py-1.5 flex items-stretch justify-between"
       style={{ background: C.navy800, borderTop: `1px solid ${C.line}`, paddingBottom: "calc(6px + env(safe-area-inset-bottom, 0px))" }}>
       {items.map(it => {
         const Icon = it.icon;
         const active = tab === it.key;
+        const accent = accentFor(it.key);
         return (
           <button key={it.key} onClick={() => setTab(it.key)} className="fl-tap flex-1 flex flex-col items-center gap-0.5 py-1.5">
-            <Icon size={19} color={active ? C.baby : C.muted} />
-            <span className="fl-mono text-[9px]" style={{ color: active ? C.baby : C.muted }}>{it.label}</span>
+            <Icon size={19} color={active ? accent : C.muted} />
+            <span className="fl-mono text-[9px]" style={{ color: active ? accent : C.muted }}>{it.label}</span>
           </button>
         );
       })}
@@ -1331,15 +1337,15 @@ function InicioTab({ profile, teams, players, jornadas, myTeam, budgetAvailable,
 
   return (
     <div className="space-y-4">
-      <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.navy700}, ${C.navy800})` }}>
+      <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
         <div className="flex items-center justify-between">
           <div>
-            <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: C.baby }}>TU LIGA</div>
+            <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>TU LIGA</div>
             <div className="fl-display text-lg uppercase" style={{ color: C.white }}>{profile.name}</div>
           </div>
           <div className="text-right">
-            <div className="fl-mono text-2xl font-semibold" style={{ color: C.baby }}>{myRow ? `#${myRow.rank}` : "—"}</div>
-            <div className="fl-mono text-[9px]" style={{ color: C.muted }}>POSICIÓN</div>
+            <div className="fl-mono text-2xl font-semibold" style={{ color: C.white }}>{myRow ? `#${myRow.rank}` : "—"}</div>
+            <div className="fl-mono text-[9px]" style={{ color: "rgba(255,255,255,0.75)" }}>POSICIÓN</div>
           </div>
         </div>
       </div>
@@ -1471,7 +1477,7 @@ function ClasificacionTab({ teams, players, jornadas, me }) {
       {rows.length === 0 ? <EmptyState title="Todavía no hay participantes" text="En cuanto alguien entre en la liga aparecerá aquí." /> : (
         <div className="space-y-1.5">
           {rows.map(r => (
-            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{ outline: r.name === me ? `2px solid ${C.baby}` : "none" }}>
+            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
