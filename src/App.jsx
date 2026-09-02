@@ -2187,33 +2187,53 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
    NAVEGACIÓN
    ========================================================================== */
 function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId }) {
-  const [notifState, setNotifState] = useState(() => {
-    try { return localStorage.getItem(`fl_push_${activeLeagueId}_${profile.name}`) === "1" ? "on" : "off"; }
-    catch { return "off"; }
-  });
+  // "checking" evita parpadear al estado equivocado mientras se comprueba el permiso real.
+  const [notifState, setNotifState] = useState("checking");
   const [busy, setBusy] = useState(false);
 
+  // Comprueba el estado REAL del navegador (no solo lo que guardamos en
+  // localStorage), por si el permiso se revocó desde los ajustes del móvil
+  // o la suscripción se perdió por cualquier motivo.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!pushSupported()) { if (!cancelled) setNotifState("unsupported"); return; }
+      if (typeof Notification === "undefined") { if (!cancelled) setNotifState("unsupported"); return; }
+      if (Notification.permission === "denied") { if (!cancelled) setNotifState("denied"); return; }
+      if (Notification.permission !== "granted") { if (!cancelled) setNotifState("off"); return; }
+      try {
+        const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+        const subscription = registration ? await registration.pushManager.getSubscription() : null;
+        if (!cancelled) setNotifState(subscription ? "on" : "off");
+      } catch {
+        if (!cancelled) setNotifState("off");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeLeagueId, profile.name]);
+
   const toggleNotifications = async () => {
-    if (busy) return;
+    if (busy || notifState === "checking" || notifState === "unsupported" || notifState === "denied") return;
+    setBusy(true);
     if (notifState === "on") {
-      setBusy(true);
       await disablePushNotifications();
       setBusy(false);
       setNotifState("off");
-      try { localStorage.removeItem(`fl_push_${activeLeagueId}_${profile.name}`); } catch {}
       return;
     }
-    if (!pushSupported()) { setNotifState("unsupported"); return; }
-    setBusy(true);
     const ok = await enablePushNotifications(activeLeagueId, profile.name);
     setBusy(false);
-    if (ok) {
-      setNotifState("on");
-      try { localStorage.setItem(`fl_push_${activeLeagueId}_${profile.name}`, "1"); } catch {}
-    } else {
-      setNotifState("off");
-    }
+    setNotifState(ok ? "on" : (Notification.permission === "denied" ? "denied" : "off"));
   };
+
+  const notifLabel = {
+    checking: "Comprobando…",
+    unsupported: "No disponible en este navegador",
+    denied: "Bloqueadas — actívalas en Ajustes del navegador",
+    on: "Notificaciones activadas",
+    off: "Activar notificaciones",
+  }[notifState];
+  const notifDisabled = busy || notifState === "checking" || notifState === "unsupported" || notifState === "denied";
 
   return (
     <header className="px-4 pt-3 pb-2.5" style={{ borderBottom: `1px solid ${C.line}` }}>
@@ -2222,13 +2242,7 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
           <ChevronLeft size={14} color={C.muted} />
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
         </button>
-        <div className="flex items-center gap-2.5">
-          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
-          <button onClick={toggleNotifications} disabled={busy} className="fl-tap flex items-center justify-center"
-            title={notifState === "on" ? "Desactivar notificaciones" : "Activar notificaciones"}>
-            {notifState === "on" ? <Bell size={15} color={C.baby} fill={C.baby} /> : <BellOff size={15} color={C.muted} />}
-          </button>
-        </div>
+        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
       </div>
       <div className="flex items-baseline gap-2 mt-1">
         <h1 className="fl-display text-2xl uppercase" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
@@ -2236,6 +2250,17 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
         </h1>
         <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
       </div>
+      <button onClick={toggleNotifications} disabled={notifDisabled}
+        className="fl-tap w-full mt-2.5 rounded-md py-2.5 flex items-center justify-center gap-2 disabled:opacity-60"
+        style={{
+          background: notifState === "on" ? C.babySoft : "transparent",
+          border: `1.5px solid ${notifState === "on" ? C.baby : C.line}`,
+        }}>
+        {busy ? <Loader2 size={18} className="animate-spin" color={C.muted} />
+          : notifState === "on" ? <Bell size={18} color={C.baby} fill={C.baby} />
+          : <BellOff size={18} color={C.muted} />}
+        <span className="fl-body text-sm font-medium" style={{ color: notifState === "on" ? C.baby : C.muted }}>{notifLabel}</span>
+      </button>
     </header>
   );
 }
