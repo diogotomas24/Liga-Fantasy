@@ -2093,7 +2093,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <header className="px-4 pt-6 pb-4 text-center" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <header className="px-4 pb-4 text-center" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
         <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
         <h1 className="fl-display text-2xl uppercase mt-0.5" style={{ color: C.white }}>Mis Ligas</h1>
       </header>
@@ -2254,7 +2254,7 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   const notifDisabled = busy || ["checking", "unsupported", "denied", "ios-add-to-home"].includes(notifState);
 
   return (
-    <header className="px-4 pt-3 pb-2.5" style={{ borderBottom: `1px solid ${C.line}` }}>
+    <header className="px-4 pb-2.5" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
       <div className="flex items-center justify-between">
         <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 -ml-0.5">
           <ChevronLeft size={14} color={C.muted} />
