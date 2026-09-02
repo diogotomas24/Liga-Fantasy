@@ -3,7 +3,7 @@ import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
-  ImageOff, CircleCheck, CircleX, CircleDot, Search,
+  ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -67,6 +67,8 @@ const DEFAULT_MARKET_CONFIG = { openHour: "08:00", closeHour: "20:00" };
    ========================================================================== */
 const slug = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 const uid = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+// Multiplicador aleatorio (entre 1,45 y 1,66) para la cláusula del reparto inicial de jugadoras.
+const randomClauseMultiplier = () => 1.45 + Math.random() * (1.66 - 1.45);
 
 function shuffle(arr) {
   const a = [...arr];
@@ -249,9 +251,13 @@ const teamService = {
   },
   // Añade el reparto inicial a la plantilla SIN descontar presupuesto: el valor de equipo del
   // sorteo (90-100 M) es aparte de los 100 M que cada persona tiene disponibles para pujar.
-  // La cláusula inicial nace igual al valor de mercado del reparto.
+  // Cada jugadora del reparto inicial nace con una cláusula igual a su valor de mercado ×
+  // un multiplicador aleatorio entre 1,45 y 1,66 (independiente para cada una).
   addInitialSquad(team, entries) {
-    const squadEntries = entries.map(e => ({ id: e.id, pricePaid: e.price, clause: e.price, acquiredAt: Date.now(), initial: true }));
+    const squadEntries = entries.map(e => ({
+      id: e.id, pricePaid: e.price, acquiredAt: Date.now(), initial: true,
+      clause: Math.round(e.price * randomClauseMultiplier()),
+    }));
     return { ...team, squad: [...(team.squad || []), ...squadEntries] };
   },
   // Transferencia entre plantillas (cláusula pagada a otro usuario, u oferta aceptada): la
@@ -951,6 +957,63 @@ async function writeTeamCrestRow(teamName, url) {
 }
 
 /* -----------------------------------------------------------------------
+   NOTIFICACIONES PUSH — avisos reales al móvil (ofertas recibidas, fichajes
+   propios y cláusulas pagadas por otras personas). Requiere que la persona
+   dé permiso de notificaciones en su navegador; si lo rechaza o el navegador
+   no lo soporta, la app sigue funcionando exactamente igual, solo sin avisos.
+   ----------------------------------------------------------------------- */
+const VAPID_PUBLIC_KEY = "BEb_YAJUzyeqI2SNI51zv9oilAel3545PYtegrhiCTWm6AwO0JJJDXPIzq81aLVpzcCNwO0oIFQ7cCLd-6pXicI";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+function pushSupported() {
+  return typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window;
+}
+
+// Pide permiso, se suscribe al push del navegador, y guarda la suscripción en
+// Supabase asociada a esta persona + esta liga. Devuelve true si ha quedado activada.
+async function enablePushNotifications(leagueId, userName) {
+  if (!pushSupported()) return false;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") return false;
+    const registration = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = subscription.toJSON();
+    await supabase.from("push_subscriptions").upsert({
+      id: uid("push"), league_id: leagueId, user_name: userName,
+      endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth,
+    }, { onConflict: "endpoint" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Envía un aviso a otra persona (o a ti misma) de esta liga. "Fire and forget":
+// si falla (sin conexión, función no desplegada todavía, etc.) no interrumpe
+// nada de lo que esté haciendo la app.
+function sendPushNotification(leagueId, userName, title, body, extra) {
+  try {
+    supabase.functions.invoke("send-push", { body: { leagueId, userName, title, body, ...extra } }).catch(() => {});
+  } catch {}
+}
+
+/* -----------------------------------------------------------------------
    Cada equipo vive en SU PROPIA fila ("team_<liga>_<slug>") en vez de todos
    compartiendo un único blob. Así, guardar una alineación, liberar una
    jugadora o resolver el mercado son lecturas/escrituras que solo tocan la
@@ -1117,6 +1180,23 @@ function parseFechaDDMMYYYY(str) {
 // partidos de una misma jornada comparten fecha en el calendario oficial).
 function jornadaDate(jornada) {
   return parseFechaDDMMYYYY(jornada?.partidos?.[0]?.fecha);
+}
+
+// Momento exacto en que arranca una jornada: el partido con fecha+hora más
+// temprano de todos los suyos. Si ningún partido tiene fecha Y hora
+// rellenadas, devuelve null (no se puede avisar de esa jornada).
+function computeJornadaStartTime(jornada) {
+  let earliest = null;
+  (jornada?.partidos || []).forEach((p) => {
+    if (!p.fecha || !p.hora) return;
+    const d = parseFechaDDMMYYYY(p.fecha);
+    if (!d) return;
+    const [hh, mm] = p.hora.split(":").map(Number);
+    if (Number.isNaN(hh)) return;
+    const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm || 0, 0, 0);
+    if (!earliest || dt < earliest) earliest = dt;
+  });
+  return earliest;
 }
 
 // Jornada "vigente" para la portada: la más próxima cuya fecha todavía no ha
@@ -1409,6 +1489,43 @@ export default function App() {
     return workingPlayers;
   }, []);
 
+  // Aviso de "quedan 10 minutos" para el inicio de la jornada (el partido más
+  // temprano de todos los suyos). Es GLOBAL: el calendario es el mismo para
+  // todas las ligas, así que avisa a TODAS las personas suscritas de TODAS
+  // las ligas, no solo a la liga que tengas abierta en este momento. Cada
+  // jornada se avisa una sola vez (lista global "jornadaStartWarned").
+  const checkJornadaStartWarning = useCallback(async () => {
+    try {
+      const freshJ = await readJornadas();
+      const warned = await readShared("jornadaStartWarned", []);
+      const now = Date.now();
+      for (const jornada of freshJ) {
+        if (warned.includes(jornada.id)) continue;
+        const start = computeJornadaStartTime(jornada);
+        if (!start) continue;
+        const diff = start.getTime() - now;
+        if (diff > 0 && diff <= 10 * 60 * 1000) {
+          const { data: subs } = await supabase.from("push_subscriptions").select("league_id,user_name");
+          const seen = new Set();
+          (subs || []).forEach((s) => {
+            const key = `${s.league_id}::${s.user_name}`;
+            if (seen.has(key)) return;
+            seen.add(key);
+            sendPushNotification(s.league_id, s.user_name, "🏀 ¡La jornada está a punto de empezar!", `${jornada.name} arranca en menos de 10 minutos.`);
+          });
+          await writeShared("jornadaStartWarned", [...warned, jornada.id]);
+        }
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (profile === undefined) return;
+    checkJornadaStartWarning();
+    const t = setInterval(checkJornadaStartWarning, 60000);
+    return () => clearInterval(t);
+  }, [profile, checkJornadaStartWarning]);
+
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
   // de qué liga se elija después.
@@ -1546,6 +1663,10 @@ export default function App() {
             writeShared(leagueKey(leagueId, "marketHistory"), historyNext),
             writeShared(leagueKey(leagueId, "activity"), activityNext),
           ]);
+          (historyEntry.results || []).forEach((r) => {
+            const asset = freshPlayers.find((p) => p.id === r.assetId);
+            if (asset) sendPushNotification(leagueId, r.winnerUserId, "✅ ¡Fichaje del mercado!", `Has ganado la puja por ${asset.name} por ${fmtCredits(r.amount)}.`);
+          });
         }
       }
 
@@ -1595,6 +1716,19 @@ export default function App() {
             await writeTeam(leagueId, userName, nextT);
           });
           await Promise.all(creditWrites);
+        }
+      }
+
+      // Aviso de "quedan 3 minutos" para el cierre del mercado, a todas las personas de la liga.
+      // Se manda una sola vez por mercado (marcado con closeWarningSent).
+      if (marketNext && !marketNext.resolved && !marketNext.closeWarningSent) {
+        const msLeft = marketNext.closesAt - now;
+        if (msLeft > 0 && msLeft <= 3 * 60 * 1000) {
+          Object.keys(teamsNext).forEach((userName) => {
+            sendPushNotification(leagueId, userName, "⏰ ¡El mercado cierra en 3 minutos!", "Últimas pujas antes de que se cierre.");
+          });
+          marketNext = { ...marketNext, closeWarningSent: true };
+          await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
         }
       }
 
@@ -1667,6 +1801,8 @@ export default function App() {
     const { buyerTeam: nextBuyer, sellerTeam: nextSeller } = clauseService.execute(buyerTeam, sellerTeam, asset, amount);
     await Promise.all([writeTeam(activeLeagueId, profile.name, nextBuyer), writeTeam(activeLeagueId, sellerName, nextSeller)]);
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
+    sendPushNotification(activeLeagueId, sellerName, "🔒 ¡Te han clausulado!", `${profile.name} se ha llevado a ${asset.name} por ${fmtCredits(amount)}.`);
+    sendPushNotification(activeLeagueId, profile.name, "✅ Fichaje confirmado", `Has fichado a ${asset.name} por ${fmtCredits(amount)}.`);
     return { ok: true };
   }, [profile, players, bids, market, activeLeagueId]);
 
@@ -1751,6 +1887,7 @@ export default function App() {
     const nextOffers = offerService.create(freshOffers, { fromUser: profile.name, toUser: sellerName, assetId: asset.id, amount });
     await writeShared(leagueKey(activeLeagueId, "offers"), nextOffers);
     setOffers(nextOffers);
+    sendPushNotification(activeLeagueId, sellerName, "💰 Nueva oferta recibida", `${profile.name} te ofrece ${fmtCredits(amount)} por ${asset.name}.`);
     return { ok: true };
   }, [profile, players, bids, market, offers, activeLeagueId]);
 
@@ -1769,6 +1906,7 @@ export default function App() {
       const nextBuyer = teamService.receiveTransfer(buyerTeam, asset, offer.amount);
       await Promise.all([writeTeam(activeLeagueId, offer.fromUser, nextBuyer), writeTeam(activeLeagueId, offer.toUser, nextSeller)]);
       setTeams(t => ({ ...t, [offer.fromUser]: nextBuyer, [offer.toUser]: nextSeller }));
+      sendPushNotification(activeLeagueId, offer.fromUser, "✅ ¡Te han aceptado la oferta!", `Has fichado a ${asset.name} por ${fmtCredits(offer.amount)}.`);
     }
     const nextStatus = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "cancelled";
     const nextOffers = offerService.setStatus(freshOffers, offerId, nextStatus);
@@ -1852,7 +1990,7 @@ export default function App() {
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} />
+      <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} activeLeagueId={activeLeagueId} />
       <main className="px-4 fl-safe-bottom" style={{ minHeight: "70vh" }}>
         <div className="pt-3">
           {tab === "inicio" && (
@@ -2030,7 +2168,27 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
 /* =============================================================================
    NAVEGACIÓN
    ========================================================================== */
-function Header({ profile, saving, activeLeague, onBackToLeagues }) {
+function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId }) {
+  const [notifState, setNotifState] = useState(() => {
+    try { return localStorage.getItem(`fl_push_${activeLeagueId}_${profile.name}`) === "1" ? "on" : "off"; }
+    catch { return "off"; }
+  });
+  const [busy, setBusy] = useState(false);
+
+  const toggleNotifications = async () => {
+    if (notifState === "on" || busy) return;
+    if (!pushSupported()) { setNotifState("unsupported"); return; }
+    setBusy(true);
+    const ok = await enablePushNotifications(activeLeagueId, profile.name);
+    setBusy(false);
+    if (ok) {
+      setNotifState("on");
+      try { localStorage.setItem(`fl_push_${activeLeagueId}_${profile.name}`, "1"); } catch {}
+    } else {
+      setNotifState("off");
+    }
+  };
+
   return (
     <header className="px-4 pt-3 pb-2.5" style={{ borderBottom: `1px solid ${C.line}` }}>
       <div className="flex items-center justify-between">
@@ -2038,7 +2196,13 @@ function Header({ profile, saving, activeLeague, onBackToLeagues }) {
           <ChevronLeft size={14} color={C.muted} />
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
         </button>
-        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
+        <div className="flex items-center gap-2.5">
+          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
+          <button onClick={toggleNotifications} disabled={busy || notifState === "on"} className="fl-tap flex items-center justify-center"
+            title={notifState === "on" ? "Notificaciones activadas" : "Activar notificaciones"}>
+            {notifState === "on" ? <Bell size={15} color={C.baby} fill={C.baby} /> : <Bell size={15} color={C.muted} />}
+          </button>
+        </div>
       </div>
       <div className="flex items-baseline gap-2 mt-1">
         <h1 className="fl-display text-2xl uppercase" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
