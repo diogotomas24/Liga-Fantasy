@@ -1079,37 +1079,57 @@ function ClauseBadge({ entry, size = "sm" }) {
 // silueta ("sombra") en tono apagado si el hueco está vacío. `label` fuerza el
 // texto bajo el hueco (p. ej. la posición en el banquillo); si no se indica,
 // se usa el nombre de la jugadora o "Vacío".
-function CourtSlot({ player, onClick, size = 54, label, isCaptain = false }) {
+function CourtSlot({ player, onClick, size = 78, label, isCaptain = false, teamCrests }) {
   const empty = !player;
-  const name = player ? (player.name.length > 9 ? player.name.slice(0, 8) + "…" : player.name) : null;
-  const text = label || (empty ? "Vacío" : name);
+  const width = size;
+  const height = Math.round(size * 1.28);
+  const accent = isCaptain ? C.gold : C.baby;
+
+  if (empty) {
+    return (
+      <button onClick={onClick} disabled={!onClick} className="fl-tap flex flex-col items-center gap-1 fl-pop" style={{ width: width + 10 }}>
+        <div className="relative flex items-center justify-center overflow-hidden rounded-2xl"
+          style={{ width, height, background: "rgba(255,61,127,0.06)", border: "2px dashed rgba(255,61,127,0.55)" }}>
+          <PlayerSilhouette size={width * 0.42} color="rgba(255,61,127,0.55)" />
+          {onClick && (
+            <span className="absolute flex items-center justify-center rounded-full"
+              style={{ bottom: 6, width: 20, height: 20, background: C.principal, boxShadow: `0 0 8px ${C.principal}99` }}>
+              <Plus size={12} color="#fff" strokeWidth={3} />
+            </span>
+          )}
+        </div>
+        <span className="fl-mono text-[9px] truncate" style={{ color: C.muted, maxWidth: width + 10 }}>{label || "Vacío"}</span>
+      </button>
+    );
+  }
+
   return (
-    <button onClick={onClick} disabled={!onClick} className="fl-tap flex flex-col items-center gap-1 fl-pop" style={{ width: size + 16 }}>
-      <div className="relative flex items-center justify-center overflow-hidden"
+    <button onClick={onClick} disabled={!onClick} className="fl-tap flex flex-col items-center fl-pop" style={{ width: width + 6 }}>
+      <div className="relative overflow-hidden rounded-2xl"
         style={{
-          width: size, height: size, borderRadius: size * 0.28,
-          background: empty ? "rgba(255,61,127,0.06)" : C.navy700,
-          border: empty ? "1.5px dashed rgba(255,61,127,0.55)" : `1.5px solid ${C.line}`,
+          width, height,
+          border: `2px solid ${accent}`,
+          boxShadow: `0 0 18px ${accent}77, 0 0 3px ${accent}`,
+          background: C.navy700,
         }}>
-        {empty ? <PlayerSilhouette size={size * 0.52} color="rgba(255,61,127,0.55)" />
-          : (player.photo ? <img src={player.photo} alt="" className="w-full h-full object-cover" /> : <ImageOff size={size * 0.4} color={C.muted} />)}
-        {!empty && (
-          <span className="absolute flex items-center justify-center"
-            style={{ right: -3, bottom: -3, width: 17, height: 17, borderRadius: 999, background: C.positive, border: `2px solid ${C.navy800}` }}>
-            <Check size={9} color={C.navy900} strokeWidth={3.5} />
-          </span>
-        )}
-        {!empty && isCaptain && (
-          <span className="absolute flex items-center justify-center fl-mono font-bold"
-            style={{ left: -3, bottom: -3, width: 17, height: 17, borderRadius: 999, background: C.gold, border: `2px solid ${C.navy800}`, color: C.ink, fontSize: 9 }}>
-            C
-          </span>
-        )}
+        {player.photo
+          ? <img src={player.photo} alt="" className="w-full h-full object-cover" />
+          : <div className="w-full h-full flex items-center justify-center"><ImageOff size={width * 0.32} color={C.muted} /></div>}
+        <div className="absolute inset-x-0 bottom-0 pointer-events-none" style={{ height: "58%", background: "linear-gradient(to top, rgba(4,6,12,0.92), transparent)" }} />
+        <div className="absolute" style={{ top: 5, right: 5 }}>
+          <TeamCrest name={player.team} size={Math.max(16, Math.round(width * 0.26))} photo={teamCrests?.[player.team]} />
+        </div>
+        <span className="absolute flex items-center justify-center rounded-full"
+          style={{ top: 5, left: 5, width: 18, height: 18, background: isCaptain ? C.gold : C.positive, boxShadow: `0 0 6px ${isCaptain ? C.gold : C.positive}99` }}>
+          {isCaptain ? <Star size={10} color={C.ink} fill={C.ink} /> : <Check size={10} color={C.navy900} strokeWidth={3.5} />}
+        </span>
+        <div className="absolute left-1.5 right-1.5" style={{ bottom: 5 }}>
+          <div className="fl-body font-bold truncate" style={{ color: C.white, fontSize: Math.max(10, Math.round(width * 0.13)) }}>{player.name}</div>
+        </div>
       </div>
-      <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded truncate"
-        style={{ background: empty && !label ? "transparent" : C.navy900, color: empty ? C.muted : C.white, maxWidth: size + 20 }}>
-        {text}
-      </span>
+      <div className="fl-mono text-[9px] mt-1 flex items-center gap-1" style={{ color: C.muted }}>
+        <Coins size={9} color={C.gold} /> {fmtCredits(player.basePrice || 0)}
+      </div>
     </button>
   );
 }
@@ -2717,20 +2737,20 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
         <EmptyState compact title="Sin alineación guardada" text="No se guardó una alineación para esta jornada." />
       ) : (
         <>
-          <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, aspectRatio: "320 / 300" }}>
+          <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, minHeight: 420 }}>
             <BasketballCourt />
-            <div className="relative h-full flex flex-col justify-between py-4 px-1">
+            <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
               {rows.map(({ pos, ids, need }) => {
                 const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
                 const isWing = pos.key === "ALERO";
                 return (
-                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-4"}`}>
+                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-3"}`}>
                     {slots.map((id, i) => {
                       const p = id ? findPlayer(id) : null;
                       return (
-                        <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center" style={{ width: 74 }}>
+                        <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
                           <div className="relative">
-                            <CourtSlot player={p} size={54} isCaptain={!!id && usedLineup.captainId === id} />
+                            <CourtSlot player={p} size={84} isCaptain={!!id && usedLineup.captainId === id} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                                 style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -2749,13 +2769,13 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
           <div className="mb-3">
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>BANQUILLO</div>
-            <div className="fl-row flex items-center justify-around gap-2 py-3 px-2">
+            <div className="fl-row flex items-center justify-around gap-2 py-4 px-2">
               {POSITIONS.map(pos => {
                 const id = bench[pos.key];
                 const p = id ? findPlayer(id) : null;
                 return (
                   <div key={pos.key} className="relative">
-                    <CourtSlot player={p} size={46} label={pos.label} />
+                    <CourtSlot player={p} size={64} label={pos.label} />
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                         style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -2770,9 +2790,9 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
           <div>
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
-            <div className="fl-row flex items-center justify-center py-3 px-2">
+            <div className="fl-row flex items-center justify-center py-4 px-2">
               <div className="relative">
-                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={50} label={coachId ? undefined : "DT"} />
+                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={70} label={coachId ? undefined : "DT"} />
                 {coachId && findPlayer(coachId) && (
                   <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                     style={{ background: C.navy900, color: pointsFor(coachId) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -2888,7 +2908,7 @@ function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack })
               {ids.map(id => {
                 const p = myJugadoras.find(x => x.id === id);
                 if (!p) return null;
-                return <CourtSlot key={id} player={p} size={54} isCaptain={captainId === id} onClick={() => onSelect(id)} />;
+                return <CourtSlot key={id} player={p} size={78} isCaptain={captainId === id} onClick={() => onSelect(id)} />;
               })}
             </div>
           ))}
@@ -3029,18 +3049,18 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
           Cualquier hueco (vacío u ocupado) abre la pantalla de selección al pulsarlo. Los aleros
           (posición de ala/wing) se separan hacia los laterales de la pista, cerca de la línea de
           3 puntos, en vez de agruparse en el centro; bases y pívots quedan centrados. */}
-      <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, aspectRatio: "320 / 300" }}>
+      <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, minHeight: 420 }}>
         <BasketballCourt />
-        <div className="relative h-full flex flex-col justify-between py-4 px-1">
+        <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
           {rows.map(({ pos, ids, need }) => {
             const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
             const isWing = pos.key === "ALERO";
             return (
-              <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-4"}`}>
+              <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-3"}`}>
                 {slots.map((id, i) => {
                   const p = id ? myJugadoras.find(x => x.id === id) : null;
                   return (
-                    <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={58} isCaptain={!!id && captainId === id}
+                    <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={84} isCaptain={!!id && captainId === id}
                       onClick={() => setPicker({ type: "starter", posKey: pos.key, currentId: id || null })} />
                   );
                 })}
@@ -3053,12 +3073,12 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
       {/* Banquillo: 3 huecos fijos (1 base + 1 alero + 1 pívot). Se abren igual que la cancha. */}
       <div className="mb-3">
         <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>BANQUILLO</div>
-        <div className="fl-row flex items-center justify-around gap-2 py-3 px-2">
+        <div className="fl-row flex items-center justify-around gap-2 py-4 px-2">
           {POSITIONS.map(pos => {
             const id = bench[pos.key];
             const p = id ? myJugadoras.find(x => x.id === id) : null;
             return (
-              <CourtSlot key={pos.key} player={p} size={46} label={pos.label}
+              <CourtSlot key={pos.key} player={p} size={64} label={pos.label}
                 onClick={() => setPicker({ type: "bench", posKey: pos.key, currentId: id || null })} />
             );
           })}
@@ -3068,8 +3088,8 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
       {/* Entrenadora/or titular: mismo patrón de hueco + selección. */}
       <div className="mb-3">
         <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR TITULAR</div>
-        <div className="fl-row flex items-center justify-center py-3 px-2">
-          <CourtSlot player={titularCoach ? findPlayer(titularCoach) : null} size={50} label={titularCoach ? undefined : "DT"}
+        <div className="fl-row flex items-center justify-center py-4 px-2">
+          <CourtSlot player={titularCoach ? findPlayer(titularCoach) : null} size={70} label={titularCoach ? undefined : "DT"}
             onClick={() => setPicker({ type: "coach", posKey: "DT", currentId: titularCoach || null })} />
         </div>
       </div>
