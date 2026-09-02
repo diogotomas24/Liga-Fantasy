@@ -1738,6 +1738,13 @@ export default function App() {
             await writeTeam(leagueId, userName, nextT);
           });
           await Promise.all(creditWrites);
+          // Registra en Actividad a quien haya ganado premio (0 € no se registra).
+          const wonEntries = Object.entries(teamCredits).filter(([, amount]) => amount > 0);
+          if (wonEntries.length > 0) {
+            const tripleActivity = wonEntries.map(([userName, amount]) => ({ id: uid("act"), ts: Date.now(), type: "triple", userId: userName, amount }));
+            activityNext = [...tripleActivity, ...activityNext].slice(0, 60);
+            await writeShared(leagueKey(leagueId, "activity"), activityNext);
+          }
         }
       }
 
@@ -1836,6 +1843,16 @@ export default function App() {
   }, [profile, players, bids, market, activeLeagueId]);
 
   // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
+  // Añade una entrada al feed de "Actividad" de la liga (ventas a la liga,
+  // premios del Triple Fantasy...). Los fichajes del mercado ya se registran
+  // aparte, dentro de syncMarket.
+  const logActivity = useCallback(async (entry) => {
+    const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
+    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
+    setActivity(nextActivity);
+  }, [activeLeagueId, activity]);
+
   const sellImmediate = useCallback(async (assetId) => {
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const player = players.find(p => p.id === assetId);
@@ -1844,8 +1861,9 @@ export default function App() {
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    await logActivity({ type: "venta", userId: profile.name, assetId, amount });
     return { ok: true, amount };
-  }, [profile, players, activeLeagueId]);
+  }, [profile, players, activeLeagueId, logActivity]);
 
   // Marca/desmarca una jugadora como "en venta" a la liga. La oferta en sí se
   // genera sola la próxima vez que se abra un mercado nuevo (ver syncMarket).
@@ -1862,11 +1880,13 @@ export default function App() {
     const entry = teamService.getSquadEntry(fresh, assetId);
     if (!entry?.saleOffer) return { ok: false, error: "Esta jugadora ya no tiene una oferta activa." };
     if (entry.saleOffer.expiresAt && Date.now() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
-    const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, entry.saleOffer.amount);
+    const amount = entry.saleOffer.amount;
+    const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    await logActivity({ type: "venta", userId: profile.name, assetId, amount });
     return { ok: true };
-  }, [profile, activeLeagueId]);
+  }, [profile, activeLeagueId, logActivity]);
 
   // Sube la cláusula de tu propia jugadora pagando: el importe se descuenta de tu
   // presupuesto y la cláusula sube el DOBLE de lo pagado.
@@ -2646,19 +2666,24 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       </div>
 
       {lastJornada && partidos.length > 0 && (
-        <button onClick={() => setShowTriple(true)} className="fl-tap w-full fl-row p-3.5 flex items-center justify-between"
-          style={{ border: `1.5px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}44` }}>
-          <div className="flex items-center gap-2.5">
-            <span style={{ fontSize: 20, lineHeight: 1 }}>🏀</span>
-            <div className="text-left">
-              <div className="fl-body text-sm font-semibold" style={{ color: C.white }}>Triple Fantasy</div>
-              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>
-                {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : `Entrada ${fmtCredits(TRIPLE_ENTRY_FEE)} · hasta ${fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}`}
+        <div className="relative rounded-2xl p-[1.5px]" style={{
+          background: `linear-gradient(120deg, ${C.principal}, ${C.gold}, ${C.baby})`,
+          boxShadow: `0 0 22px ${C.principal}40, 0 0 34px ${C.baby}30`,
+        }}>
+          <button onClick={() => setShowTriple(true)} className="fl-tap w-full flex items-center justify-between p-3.5 rounded-2xl"
+            style={{ background: C.navy800 }}>
+            <div className="flex items-center gap-2.5">
+              <span style={{ fontSize: 20, lineHeight: 1 }}>🏀</span>
+              <div className="text-left">
+                <div className="fl-body text-sm font-semibold" style={{ color: C.white }}>Triple Fantasy</div>
+                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>
+                  {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : `Entrada ${fmtCredits(TRIPLE_ENTRY_FEE)} · hasta ${fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}`}
+                </div>
               </div>
             </div>
-          </div>
-          <ChevronRight size={16} color={C.principal} />
-        </button>
+            <ChevronRight size={16} color={C.principal} />
+          </button>
+        </div>
       )}
 
       {partidos.length > 0 && (
@@ -4436,16 +4461,28 @@ function MasTab({ activity, players }) {
 }
 
 function ActividadFeed({ activity, players }) {
-  if (activity.length === 0) return <EmptyState title="Sin actividad todavía" text="Los fichajes resueltos en el mercado aparecerán aquí." />;
+  if (activity.length === 0) return <EmptyState title="Sin actividad todavía" text="Los fichajes, ventas y premios de la liga aparecerán aquí." />;
   return (
     <div className="space-y-1.5">
       {activity.map(a => {
         const asset = players.find(p => p.id === a.assetId);
+        let text;
+        if (a.type === "venta") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha vendido a <span className="font-medium">{asset?.name || "una jugadora"}</span> a la liga por {fmtCredits(a.amount)}
+          </>;
+        } else if (a.type === "triple") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha ganado <span className="font-medium">{fmtCredits(a.amount)}</span> en el 🏀 Triple Fantasy
+          </>;
+        } else {
+          text = <>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha fichado a <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)}
+          </>;
+        }
         return (
           <div key={a.id} className="fl-row px-3 py-2.5">
-            <div className="fl-body text-sm" style={{ color: C.white }}>
-              <span style={{ color: C.baby }}>{a.userId}</span> ha fichado a <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)}
-            </div>
+            <div className="fl-body text-sm" style={{ color: C.white }}>{text}</div>
             <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{new Date(a.ts).toLocaleString("es-ES")}</div>
           </div>
         );
