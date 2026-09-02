@@ -977,6 +977,18 @@ function pushSupported() {
   return typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window;
 }
 
+// En iOS (iPhone/iPad), da igual el navegador que se use (Chrome, Firefox...):
+// por dentro todos usan el motor de Safari, y Apple solo permite las
+// notificaciones push si la web está añadida a la pantalla de inicio. Esto
+// sirve para explicarlo bien en vez de decir simplemente "no disponible".
+function isIOS() {
+  return typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+}
+function isStandalonePWA() {
+  if (typeof window === "undefined") return false;
+  return window.navigator.standalone === true || window.matchMedia?.("(display-mode: standalone)")?.matches;
+}
+
 // Pide permiso, se suscribe al push del navegador, y guarda la suscripción en
 // Supabase asociada a esta persona + esta liga. Devuelve true si ha quedado activada.
 async function enablePushNotifications(leagueId, userName) {
@@ -2197,6 +2209,11 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // En iPhone/iPad, Apple solo permite las notificaciones push si la web está
+      // añadida a la pantalla de inicio (da igual qué navegador se use para verla:
+      // todos usan el motor de Safari por dentro). Se detecta antes que nada,
+      // porque en ese caso "PushManager" puede ni existir todavía.
+      if (isIOS() && !isStandalonePWA()) { if (!cancelled) setNotifState("ios-add-to-home"); return; }
       if (!pushSupported()) { if (!cancelled) setNotifState("unsupported"); return; }
       if (typeof Notification === "undefined") { if (!cancelled) setNotifState("unsupported"); return; }
       if (Notification.permission === "denied") { if (!cancelled) setNotifState("denied"); return; }
@@ -2213,7 +2230,7 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   }, [activeLeagueId, profile.name]);
 
   const toggleNotifications = async () => {
-    if (busy || notifState === "checking" || notifState === "unsupported" || notifState === "denied") return;
+    if (busy || ["checking", "unsupported", "denied", "ios-add-to-home"].includes(notifState)) return;
     setBusy(true);
     if (notifState === "on") {
       await disablePushNotifications();
@@ -2230,10 +2247,11 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
     checking: "Comprobando…",
     unsupported: "No disponible en este navegador",
     denied: "Bloqueadas — actívalas en Ajustes del navegador",
+    "ios-add-to-home": "En iPhone: añade la web a inicio desde Safari",
     on: "Notificaciones activadas",
     off: "Activar notificaciones",
   }[notifState];
-  const notifDisabled = busy || notifState === "checking" || notifState === "unsupported" || notifState === "denied";
+  const notifDisabled = busy || ["checking", "unsupported", "denied", "ios-add-to-home"].includes(notifState);
 
   return (
     <header className="px-4 pt-3 pb-2.5" style={{ borderBottom: `1px solid ${C.line}` }}>
@@ -2259,8 +2277,13 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
         {busy ? <Loader2 size={18} className="animate-spin" color={C.muted} />
           : notifState === "on" ? <Bell size={18} color={C.baby} fill={C.baby} />
           : <BellOff size={18} color={C.muted} />}
-        <span className="fl-body text-sm font-medium" style={{ color: notifState === "on" ? C.baby : C.muted }}>{notifLabel}</span>
+        <span className="fl-body text-sm font-medium text-center" style={{ color: notifState === "on" ? C.baby : C.muted }}>{notifLabel}</span>
       </button>
+      {notifState === "ios-add-to-home" && (
+        <p className="fl-body text-[10px] mt-1.5 text-center" style={{ color: C.muted }}>
+          Toca el icono de compartir de Safari → "Añadir a pantalla de inicio", y abre la app desde ese icono nuevo (no desde Chrome ni desde una pestaña normal de Safari).
+        </p>
+      )}
     </header>
   );
 }
