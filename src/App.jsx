@@ -2897,6 +2897,56 @@ function ValorHistoricoModal({ player, onClose }) {
 /* =============================================================================
    EQUIPO: Alineación (pista) · Plantilla · Puntos
    ========================================================================== */
+// Teclado numérico propio de la app (no el del móvil): traslúcido y a juego
+// con el resto del diseño. Trabaja siempre en EUROS exactos (no en "millones"
+// redondos), así que se puede pujar/ofertar/subir cláusula por cualquier
+// importe, incluido 1 € de diferencia. `valueEuros` es un string de dígitos
+// (sin separadores); `minEuros`, si se indica, bloquea "Confirmar" por debajo
+// de ese importe.
+function AmountKeypadSheet({ title, subtitle, valueEuros, onChange, onConfirm, onClose, confirmLabel, minEuros }) {
+  const handleKey = (k) => {
+    if (k === "back") { onChange(valueEuros.length > 1 ? valueEuros.slice(0, -1) : "0"); return; }
+    const next = (valueEuros === "0" ? "" : valueEuros) + k;
+    if (next.replace(/^0+/, "").length > 12) return; // límite razonable de dígitos
+    onChange(next.replace(/^0+(?=\d)/, ""));
+  };
+  const numericValue = Number(valueEuros || 0);
+  const belowMin = minEuros != null && numericValue < minEuros;
+  const displayFormatted = numericValue.toLocaleString("es-ES");
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-end" style={{ background: "rgba(0,0,0,0.55)" }} onClick={onClose}>
+      <div className="w-full rounded-t-2xl overflow-hidden fl-pop"
+        style={{ background: "rgba(20,26,39,0.88)", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", border: `1px solid ${C.lineSoft}` }}
+        onClick={(e) => e.stopPropagation()}>
+        {title && <div className="px-4 pt-4 text-center fl-display text-sm uppercase" style={{ color: C.white }}>{title}</div>}
+        {subtitle && <div className="px-4 pt-1 text-center fl-mono text-[10px]" style={{ color: C.muted }}>{subtitle}</div>}
+        <div className="px-6 py-4 text-center">
+          <div className="fl-mono font-bold" style={{ color: belowMin ? C.negative : C.white, fontSize: 30 }}>{displayFormatted} €</div>
+          {belowMin && <div className="fl-mono text-[10px] mt-1" style={{ color: C.negative }}>Mínimo {minEuros.toLocaleString("es-ES")} €</div>}
+        </div>
+        <div className="px-4 pb-3">
+          <button onClick={() => !belowMin && onConfirm()} disabled={belowMin}
+            className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40"
+            style={{ background: C.positive, color: C.ink }}>
+            {confirmLabel || "Confirmar importe"}
+          </button>
+        </div>
+        <div className="grid grid-cols-3" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+          {["1", "2", "3", "4", "5", "6", "7", "8", "9", "000", "0", "back"].map((k, i) => (
+            <button key={i} onClick={() => handleKey(k)}
+              className="fl-tap py-4 flex items-center justify-center"
+              style={{ background: "rgba(255,255,255,0.02)", borderRight: (i % 3 !== 2) ? `1px solid ${C.lineSoft}` : "none", borderTop: i >= 3 ? `1px solid ${C.lineSoft}` : "none" }}>
+              {k === "back" ? <span className="fl-mono text-lg" style={{ color: C.muted }}>⌫</span> : <span className="fl-mono text-xl font-medium" style={{ color: C.white }}>{k}</span>}
+            </button>
+          ))}
+        </div>
+        <div style={{ height: "env(safe-area-inset-bottom, 10px)" }} />
+      </div>
+    </div>
+  );
+}
+
 // Ficha de una jugadora/entrenadora: cabecera con foto, posición, PFSY y
 // media de la temporada, chips de jornadas (J1, J2…) y, debajo, el desglose
 // estadística a estadística de la jornada seleccionada con el sistema de
@@ -2934,11 +2984,11 @@ function ActionSheetItem({ label, subtitle, onClick, disabled, danger }) {
 // lo pagado (pagar 1 M sube la cláusula 2 M), a pantalla completa.
 function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
   const clause = entry?.clause || player.basePrice || 0;
-  const [amount, setAmount] = useState("0");
-  const [editing, setEditing] = useState(false);
+  const [payEuros, setPayEuros] = useState("0");
+  const [showKeypad, setShowKeypad] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const pay = Number(amount) || 0;
+  const pay = Number(payEuros) / 1000000;
   const previewClause = clause + pay * 2;
 
   const submit = async () => {
@@ -2974,22 +3024,16 @@ function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
             <div className="fl-mono text-sm font-semibold" style={{ color: C.gold }}>{fmtCredits(previewClause)}</div>
           </div>
         </div>
-        <div className="fl-row flex items-center gap-2.5 px-3 py-2.5 mb-3" style={{ background: C.navy700 }}>
+        <button onClick={() => setShowKeypad(true)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 mb-3" style={{ background: C.navy700, borderRadius: 12 }}>
           <div className="flex items-center justify-center rounded-full" style={{ width: 26, height: 26, background: C.gold }}>
             <Coins size={14} color={C.ink} />
           </div>
-          <div className="flex-1">
+          <div className="flex-1 text-left">
             <div className="fl-mono text-[9px]" style={{ color: C.muted }}>IMPORTE A PAGAR</div>
-            {editing ? (
-              <input autoFocus type="number" min={0} value={amount} onChange={e => setAmount(e.target.value)}
-                onBlur={() => setEditing(false)} className="fl-mono text-sm font-semibold w-full bg-transparent outline-none" style={{ color: C.white }} />
-            ) : (
-              <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(pay)}</div>
-            )}
+            <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(pay)}</div>
           </div>
-          <button onClick={() => setEditing(e => !e)} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><Pencil size={12} color={C.white} /></button>
-          <button onClick={() => setAmount("0")} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><X size={12} color={C.white} /></button>
-        </div>
+          <Pencil size={14} color={C.muted} />
+        </button>
         <p className="fl-body text-[11px]" style={{ color: C.muted }}>Cada euro que pagues aquí sube la cláusula el doble. Por ejemplo, pagar 1.000.000 € sube la cláusula 2.000.000 €.</p>
         {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
       </div>
@@ -3000,6 +3044,11 @@ function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
           {busy ? <Loader2 size={15} className="animate-spin" /> : "Subir cláusula"}
         </button>
       </div>
+      {showKeypad && (
+        <AmountKeypadSheet title="Importe a pagar" subtitle="Cada euro pagado sube la cláusula el doble"
+          valueEuros={payEuros} onChange={setPayEuros} minEuros={0}
+          confirmLabel="Fijar importe" onConfirm={() => setShowKeypad(false)} onClose={() => setShowKeypad(false)} />
+      )}
     </div>
   );
 }
@@ -4149,14 +4198,16 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
 // jugadora todavía protegida por cláusula.
 function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   const { sellerName, asset } = target;
-  const [amount, setAmount] = useState(String(Math.round((asset.basePrice || 1) * 0.8)));
+  const defaultEuros = Math.round((asset.basePrice || 1) * 0.8 * 1000000);
+  const [amountEuros, setAmountEuros] = useState(String(defaultEuros));
+  const [showKeypad, setShowKeypad] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
 
   const submit = async () => {
     setError(""); setBusy(true);
-    const res = await onConfirm(Number(amount));
+    const res = await onConfirm(Number(amountEuros) / 1000000);
     setBusy(false);
     if (!res.ok) setError(res.error); else setSent(true);
   };
@@ -4185,13 +4236,16 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
         </div>
         <div className="text-center fl-body text-sm font-medium mb-4" style={{ color: C.white }}>{asset.name}</div>
         <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>TU OFERTA</label>
-        <input type="number" min={1} value={amount} onChange={e => setAmount(e.target.value)}
-          className="w-full rounded-md px-3 py-2.5 text-sm fl-mono" style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }} />
+        <button onClick={() => setShowKeypad(true)} className="w-full rounded-md px-3 py-2.5 text-sm fl-mono flex items-center justify-between"
+          style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }}>
+          <span>{fmtCredits(Number(amountEuros) / 1000000)}</span>
+          <Pencil size={14} color={C.muted} />
+        </button>
         <p className="fl-body text-[11px] mt-2" style={{ color: C.muted }}>{sellerName} decidirá si acepta o rechaza tu oferta. Puedes ofrecer cualquier importe, incluso si la jugadora todavía está protegida por cláusula.</p>
         {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
       </div>
       <div className="px-5 pb-3">
-        <button onClick={submit} disabled={busy || !Number(amount) || Number(amount) <= 0}
+        <button onClick={submit} disabled={busy || !Number(amountEuros) || Number(amountEuros) <= 0}
           className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
           style={{ background: C.principal, color: C.white }}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar oferta"}
@@ -4200,6 +4254,11 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           Tu saldo: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(budgetAvailable)}</span>
         </div>
       </div>
+      {showKeypad && (
+        <AmountKeypadSheet title={`Oferta por ${asset.name}`} subtitle={`Tu saldo: ${fmtCredits(budgetAvailable)}`}
+          valueEuros={amountEuros} onChange={setAmountEuros} minEuros={1}
+          confirmLabel="Fijar importe" onConfirm={() => setShowKeypad(false)} onClose={() => setShowKeypad(false)} />
+      )}
     </div>
   );
 }
@@ -4288,16 +4347,18 @@ function OfertasEnviadasList({ offers, players, me, onRespond }) {
 function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   const { sellerName, asset, entry } = target;
   const clause = (entry && entry.clause) || asset.basePrice || 1;
-  const [amount, setAmount] = useState(String(clause));
-  const [editing, setEditing] = useState(false);
+  const clauseEuros = Math.round(clause * 1000000);
+  const [amountEuros, setAmountEuros] = useState(String(clauseEuros));
+  const [showKeypad, setShowKeypad] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
     setError(""); setBusy(true);
-    const res = await onConfirm(Number(amount));
+    const res = await onConfirm(Number(amountEuros) / 1000000);
     setBusy(false);
     if (!res.ok) setError(res.error);
+    else setShowKeypad(false);
   };
 
   return (
@@ -4329,28 +4390,22 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           </div>
         </div>
 
-        <div className="fl-row flex items-center gap-2.5 px-3 py-2.5 mb-3" style={{ background: C.navy700 }}>
+        <button onClick={() => setShowKeypad(true)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 mb-3" style={{ background: C.navy700, borderRadius: 12 }}>
           <div className="flex items-center justify-center rounded-full" style={{ width: 26, height: 26, background: C.gold }}>
             <Coins size={14} color={C.ink} />
           </div>
-          <div className="flex-1">
+          <div className="flex-1 text-left">
             <div className="fl-mono text-[9px]" style={{ color: C.muted }}>IMPORTE</div>
-            {editing ? (
-              <input autoFocus type="number" min={clause} value={amount} onChange={e => setAmount(e.target.value)}
-                onBlur={() => setEditing(false)} className="fl-mono text-sm font-semibold w-full bg-transparent outline-none" style={{ color: C.white }} />
-            ) : (
-              <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(Number(amount) || 0)}</div>
-            )}
+            <div className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(Number(amountEuros) / 1000000)}</div>
           </div>
-          <button onClick={() => setEditing(e => !e)} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><Pencil size={12} color={C.white} /></button>
-          <button onClick={() => setAmount(String(clause))} className="fl-tap p-1.5 rounded-full" style={{ background: C.navy600 }}><X size={12} color={C.white} /></button>
-        </div>
+          <Pencil size={14} color={C.muted} />
+        </button>
         <p className="fl-body text-[11px]" style={{ color: C.muted }}>Debes igualar o superar la cláusula ({fmtCredits(clause)}) para llevártela. La compra es inmediata: no hace falta esperar al cierre del mercado.</p>
         {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
       </div>
 
       <div className="px-5 pb-3">
-        <button onClick={submit} disabled={busy || Number(amount) < clause}
+        <button onClick={submit} disabled={busy || Number(amountEuros) < clauseEuros}
           className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
           style={{ background: C.positive, color: C.ink }}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : "Hacer oferta de compra"}
@@ -4359,13 +4414,20 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           Tu saldo: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(budgetAvailable)}</span>
         </div>
       </div>
+
+      {showKeypad && (
+        <AmountKeypadSheet title={`Oferta por ${asset.name}`} subtitle={`Cláusula ${fmtCredits(clause)} · Tu saldo: ${fmtCredits(budgetAvailable)}`}
+          valueEuros={amountEuros} onChange={setAmountEuros} minEuros={clauseEuros}
+          confirmLabel="Fijar importe" onConfirm={() => setShowKeypad(false)} onClose={() => setShowKeypad(false)} />
+      )}
     </div>
   );
 }
 
 function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onOpenPlayer }) {
-  const [open, setOpen] = useState(false);
-  const [amount, setAmount] = useState("");
+  const [showKeypad, setShowKeypad] = useState(false);
+  const minEuros = Math.round((asset.basePrice || 1) * 1000000);
+  const [amountEuros, setAmountEuros] = useState(String(minEuros));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -4374,13 +4436,19 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
   const owned = teamService.squadIds(myTeam).includes(asset.id);
   const status = owned ? "won" : myBid ? "active" : "none";
 
+  const openKeypad = () => {
+    setAmountEuros(String(myBid ? Math.round(myBid.amount * 1000000) : minEuros));
+    setError("");
+    setShowKeypad(true);
+  };
+
   const submit = async () => {
     setError(""); setBusy(true);
-    const val = Number(amount);
+    const val = Number(amountEuros) / 1000000; // de euros exactos a "millones" (unidad interna)
     const res = await onBid(asset, val);
     setBusy(false);
     if (!res.ok) setError(res.error);
-    else setOpen(false);
+    else setShowKeypad(false);
   };
 
   return (
@@ -4401,23 +4469,19 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
             <div className="mt-1.5"><BidStatusPill status={status} /></div>
           </div>
         </button>
-        <button onClick={() => setOpen(o => !o)} disabled={!isMarketOpen || owned}
+        <button onClick={openKeypad} disabled={!isMarketOpen || owned}
           className="fl-tap fl-mono text-xs font-semibold rounded-md px-3.5 py-2.5 disabled:opacity-40 flex-shrink-0"
           style={{ background: owned ? "transparent" : C.baby, color: owned ? C.muted : C.ink, border: owned ? `1px solid ${C.line}` : "none" }}>
           {owned ? "Tuya" : myBid ? "Editar" : "Pujar"}
         </button>
       </div>
-      {open && (
-        <div className="mt-3 pt-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
-          <input type="number" min={asset.basePrice || 1} value={amount} onChange={e => setAmount(e.target.value)}
-            placeholder={`Mín. ${asset.basePrice || 1}`} className="flex-1 fl-mono text-sm rounded-md px-2.5 py-2"
-            style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
-          <button onClick={submit} disabled={busy} className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ background: C.baby, color: C.ink }}>
-            {busy ? <Loader2 size={13} className="animate-spin" /> : "Confirmar"}
-          </button>
-        </div>
-      )}
       {error && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{error}</div>}
+      {showKeypad && (
+        <AmountKeypadSheet title={`Puja por ${asset.name}`} subtitle={`Mínimo ${fmtCredits(asset.basePrice || 1)} · Tu saldo: ${fmtCredits(budgetAvailable)}`}
+          valueEuros={amountEuros} onChange={setAmountEuros} minEuros={minEuros}
+          confirmLabel={busy ? "Confirmando…" : "Confirmar puja"}
+          onConfirm={submit} onClose={() => setShowKeypad(false)} />
+      )}
     </div>
   );
 }
