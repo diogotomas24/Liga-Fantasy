@@ -476,6 +476,97 @@ const offerService = {
   },
 };
 
+// --- tripleFantasyService --------------------------------------------------
+// Quiniela semanal: 1 M€ de entrada, acertar el ganador de los 7 partidos de
+// la jornada y quién será la MVP. Dinero 100% ficticio del propio juego.
+const TRIPLE_ENTRY_FEE = 1; // 1 M€
+const TRIPLE_PRIZE_TABLE = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 2, 6: 3.5, 7: 5 };
+const TRIPLE_PRIZE_PERFECT_MVP = 6;
+
+const tripleFantasyService = {
+  // Ganador de un partido a partir de su marcador ("local" | "visitante" | null si no hay marcador aún).
+  matchWinner(partido) {
+    const { marcadorLocal: l, marcadorVisitante: v } = partido;
+    if (l === undefined || l === null || l === "" || v === undefined || v === null || v === "") return null;
+    const ln = Number(l), vn = Number(v);
+    if (ln === vn) return null; // empate: no cuenta como partido resuelto (raro en baloncesto)
+    return ln > vn ? "local" : "visitante";
+  },
+  // Puntos Fantasy totales de cada jugadora en UNA jornada concreta.
+  jornadaPointsByPlayer(jornada, players) {
+    const totals = {};
+    Object.entries(jornada.stats || {}).forEach(([pid, s]) => {
+      const pl = players.find(x => x.id === pid);
+      if (pl && pl.position !== "DT") totals[pid] = calcPointsBreakdown(s, pl.position).total;
+    });
+    return totals;
+  },
+  // Puntos Fantasy acumulados de cada jugadora en TODA la temporada hasta la fecha.
+  seasonPointsByPlayer(players, jornadas) {
+    const totals = {};
+    (players || []).forEach(p => { if (p.position !== "DT") totals[p.id] = 0; });
+    (jornadas || []).forEach(j => {
+      Object.entries(j.stats || {}).forEach(([pid, s]) => {
+        const pl = players.find(x => x.id === pid);
+        if (pl && pl.position !== "DT") totals[pid] = (totals[pid] || 0) + calcPointsBreakdown(s, pl.position).total;
+      });
+    });
+    return totals;
+  },
+  // MVP real de la jornada: la que más puntos Fantasy hace ESA jornada. Si hay
+  // empate, desempata quien lleve más puntos acumulados en toda la temporada
+  // entre las empatadas. Lo decide el juego solo, con las estadísticas ya
+  // cargadas — no hace falta indicarlo a mano en ningún sitio.
+  computeActualMvp(jornada, players, jornadas) {
+    const jornadaPoints = tripleFantasyService.jornadaPointsByPlayer(jornada, players);
+    const entries = Object.entries(jornadaPoints);
+    if (entries.length === 0) return null;
+    const maxPts = Math.max(...entries.map(([, pts]) => pts));
+    const tied = entries.filter(([, pts]) => pts === maxPts).map(([id]) => id);
+    if (tied.length === 1) return tied[0];
+    const seasonPoints = tripleFantasyService.seasonPointsByPlayer(players, jornadas);
+    tied.sort((a, b) => (seasonPoints[b] || 0) - (seasonPoints[a] || 0) || a.localeCompare(b));
+    return tied[0];
+  },
+  // La jornada está lista para repartir premios cuando los 7 partidos tienen
+  // marcador Y hay estadísticas cargadas (para poder calcular la MVP real).
+  isJornadaReady(jornada) {
+    const partidos = jornada?.partidos || [];
+    if (partidos.length === 0 || !jornada.stats || Object.keys(jornada.stats).length === 0) return false;
+    return partidos.every(p => tripleFantasyService.matchWinner(p) !== null);
+  },
+  // Top 7 candidatas a MVP: por puntos Fantasy acumulados hasta la fecha: si
+  // todavía nadie tiene puntos (inicio de temporada), se ordena por valor de
+  // mercado en su lugar.
+  computeMvpCandidates(players, jornadas) {
+    const totals = tripleFantasyService.seasonPointsByPlayer(players, jornadas);
+    const hasPoints = Object.values(totals).some(v => v > 0);
+    return Object.entries(totals)
+      .map(([id, pts]) => ({ player: players.find(p => p.id === id), pts }))
+      .filter(x => x.player)
+      .sort((a, b) => hasPoints ? (b.pts - a.pts) : ((b.player.basePrice || 0) - (a.player.basePrice || 0)))
+      .slice(0, 7)
+      .map(x => x.player);
+  },
+  // Corrige una participación contra el resultado real de la jornada. `actualMvpId`
+  // es el id calculado por computeActualMvp para esa jornada.
+  scoreEntry(entry, jornada, actualMvpId) {
+    const partidos = jornada.partidos || [];
+    let correct = 0;
+    partidos.forEach(p => {
+      const actual = tripleFantasyService.matchWinner(p);
+      const pick = entry.picks?.[p.id];
+      if (actual && pick && actual === pick) correct++;
+    });
+    const mvpCorrect = entry.mvpChoice === "otra"
+      ? !(entry.mvpOptions || []).includes(actualMvpId)
+      : entry.mvpChoice === actualMvpId;
+    let prize = TRIPLE_PRIZE_TABLE[correct] ?? 0;
+    if (correct === partidos.length && mvpCorrect) prize = TRIPLE_PRIZE_PERFECT_MVP;
+    return { correct, mvpCorrect, prize, actualMvpId };
+  },
+};
+
 // --- marketService -----------------------------------------------------------
 const marketService = {
   parseHM(str) {
@@ -776,6 +867,7 @@ async function readJornadas() {
         partidos: partidosByJornada[j.id] || [],
         stats: statsByJornada[j.id] || {},
         lineups: j.lineups || {},
+        mvpPlayerId: j.mvp_player_id || null,
       }))
       .sort((a, b) => jornadaNumberFromName(a.name) - jornadaNumberFromName(b.name));
   } catch {
@@ -787,8 +879,8 @@ async function readJornadas() {
 // más simple y fiable que hacer un upsert selectivo) + estadísticas.
 async function writeJornada(jornada) {
   try {
-    const { id, name, lineups, partidos, stats } = jornada;
-    await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {} });
+    const { id, name, lineups, partidos, stats, mvpPlayerId } = jornada;
+    await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {}, mvp_player_id: mvpPlayerId || null });
 
     await supabase.from("partidos").delete().eq("jornada_id", id);
     if (partidos && partidos.length > 0) {
@@ -1271,6 +1363,7 @@ export default function App() {
   const [market, setMarket] = useState(null);
   const [bids, setBids] = useState([]);
   const [offers, setOffers] = useState([]);
+  const [tripleEntries, setTripleEntries] = useState([]);
   const [marketHistory, setMarketHistory] = useState([]);
   const [activity, setActivity] = useState([]);
 
@@ -1284,6 +1377,36 @@ export default function App() {
       writePersonal("favoritos", next);
       return next;
     });
+  }, []);
+
+  // Aplica el movimiento de valor de mercado y sube las cláusulas afectadas
+  // para cualquier jornada que ya tenga estadísticas cargadas en Supabase y
+  // todavía no se haya "procesado" (idempotente: cada jornada se procesa una
+  // sola vez, controlado por la lista global "pricedJornadas"). Sustituye al
+  // antiguo botón "Guardar jornada" del panel de administración, que ya no existe.
+  const settlePlayerPricing = useCallback(async (currentPlayers) => {
+    const freshJ = await readJornadas();
+    const pricedIds = await readShared("pricedJornadas", []);
+    const toPrice = freshJ.filter(j => j.stats && Object.keys(j.stats).length > 0 && !pricedIds.includes(j.id));
+    if (toPrice.length === 0) return currentPlayers;
+    const freshTGlobal = (await readAllTeamsGlobal()) || {};
+    let workingPlayers = currentPlayers;
+    for (const jornada of toPrice) {
+      const lineups = { ...(jornada.lineups || {}) };
+      Object.entries(freshTGlobal).forEach(([key, t]) => { if (!lineups[key] && t.lineup) lineups[key] = t.lineup; });
+      const jornadaToSave = { ...jornada, lineups };
+      await writeJornada(jornadaToSave);
+      workingPlayers = applyMarketMovement(workingPlayers, jornadaToSave, freshTGlobal);
+      await writePlayersAfterJornada(workingPlayers, jornadaToSave);
+      const bumpWrites = [];
+      Object.entries(freshTGlobal).forEach(([key, t]) => {
+        const bumped = teamService.bumpClausesToMarket(t, workingPlayers);
+        if (bumped !== t) { freshTGlobal[key] = bumped; bumpWrites.push(writeTeam(t.leagueId, t.name, bumped)); }
+      });
+      if (bumpWrites.length > 0) await Promise.all(bumpWrites);
+    }
+    await writeShared("pricedJornadas", [...pricedIds, ...toPrice.map(j => j.id)]);
+    return workingPlayers;
   }, []);
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
@@ -1303,6 +1426,8 @@ export default function App() {
       setMarketConfig(config);
       if (!cfg) await writeMarketConfig(config);
       setProfile(p);
+      const priced = await settlePlayerPricing(pl);
+      if (priced !== pl) setPlayers(priced);
     })();
   }, []);
 
@@ -1382,11 +1507,12 @@ export default function App() {
     if (!leagueId || resolvingRef.current) return;
     resolvingRef.current = true;
     try {
-      const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity, freshOffers] = await Promise.all([
+      const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity, freshOffers, freshTriple, freshJornadas] = await Promise.all([
         readPlayers(), readAllTeams(leagueId), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
         readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
         readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
-        readShared(leagueKey(leagueId, "offers"), []),
+        readShared(leagueKey(leagueId, "offers"), []), readShared(leagueKey(leagueId, "triple"), []),
+        readJornadas(),
       ]);
       if (freshTeamsOrNull === null) {
         // No pudimos leer con garantías TODOS los equipos de esta liga en este
@@ -1439,8 +1565,42 @@ export default function App() {
         }
       }
 
+      // Liquida las participaciones de Triple Fantasy cuya jornada ya tiene los 7
+      // marcadores y la MVP indicados, y que todavía no han cobrado su premio.
+      let tripleNext = freshTriple;
+      const pendingSettle = freshTriple.filter(e => !e.settled);
+      if (pendingSettle.length > 0) {
+        let tripleChanged = false;
+        const teamCredits = {}; // { userName: importe total a abonar }
+        const actualMvpCache = {}; // { jornadaId: playerId } — se calcula una sola vez por jornada
+        tripleNext = freshTriple.map(entry => {
+          if (entry.settled) return entry;
+          const jornada = freshJornadas.find(j => j.id === entry.jornadaId);
+          if (!jornada || !tripleFantasyService.isJornadaReady(jornada)) return entry;
+          if (!(entry.jornadaId in actualMvpCache)) {
+            actualMvpCache[entry.jornadaId] = tripleFantasyService.computeActualMvp(jornada, freshPlayers, freshJornadas);
+          }
+          const { correct, mvpCorrect, prize } = tripleFantasyService.scoreEntry(entry, jornada, actualMvpCache[entry.jornadaId]);
+          teamCredits[entry.userId] = (teamCredits[entry.userId] || 0) + prize;
+          tripleChanged = true;
+          return { ...entry, settled: true, correct, mvpCorrect, prize, actualMvpId: actualMvpCache[entry.jornadaId] };
+        });
+        if (tripleChanged) {
+          await writeShared(leagueKey(leagueId, "triple"), tripleNext);
+          const creditWrites = Object.entries(teamCredits).map(async ([userName, amount]) => {
+            if (amount <= 0) return;
+            const t = teamsNext[userName] || teamService.emptyTeam();
+            const nextT = { ...t, budgetSpent: (t.budgetSpent || 0) - amount };
+            teamsNext[userName] = nextT;
+            await writeTeam(leagueId, userName, nextT);
+          });
+          await Promise.all(creditWrites);
+        }
+      }
+
       setPlayers(playersNext); setTeams(teamsNext); setBids(bidsNext); setMarketHistory(historyNext); setActivity(activityNext);
-      setMarketConfig(freshConfig); setMarket(marketNext); setOffers(freshOffers);
+      setMarketConfig(freshConfig); setMarket(marketNext); setOffers(freshOffers); setTripleEntries(tripleNext);
+      setJornadas(freshJornadas);
     } finally {
       resolvingRef.current = false;
     }
@@ -1556,6 +1716,28 @@ export default function App() {
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     return { ok: true };
   }, [profile, activeLeagueId, budgetAvailable]);
+
+  // Triple Fantasy: pronosticar los 7 partidos + MVP de la jornada, pagando 1 M€ de entrada.
+  const joinTriple = useCallback(async (jornadaId, picks, mvpChoice, mvpOptions) => {
+    if (TRIPLE_ENTRY_FEE > budgetAvailable) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(budgetAvailable)}.` };
+    const freshEntries = await readShared(leagueKey(activeLeagueId, "triple"), tripleEntries);
+    if (freshEntries.some(e => e.jornadaId === jornadaId && e.userId === profile.name)) {
+      return { ok: false, error: "Ya has participado en esta jornada." };
+    }
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const nextTeam = { ...fresh, budgetSpent: (fresh.budgetSpent || 0) + TRIPLE_ENTRY_FEE };
+    const nextEntries = [...freshEntries, {
+      id: uid("tf"), jornadaId, userId: profile.name, picks, mvpChoice, mvpOptions,
+      paidAt: Date.now(), settled: false, correct: null, mvpCorrect: null, prize: null,
+    }];
+    await Promise.all([
+      writeTeam(activeLeagueId, profile.name, nextTeam),
+      writeShared(leagueKey(activeLeagueId, "triple"), nextEntries),
+    ]);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    setTripleEntries(nextEntries);
+    return { ok: true };
+  }, [profile, activeLeagueId, budgetAvailable, tripleEntries]);
 
   // Ofertas de compra directas a otra persona: se pueden enviar en cualquier
   // momento (mercado abierto o cerrado, jugadora protegida por cláusula o no).
@@ -1677,7 +1859,7 @@ export default function App() {
             <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas} leagueId={activeLeagueId}
               myTeam={myTeam} budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               market={market} isMarketOpen={isMarketOpen} onGoTo={setTab}
-              teamCrests={teamCrests} />
+              teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple} />
           )}
           {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
@@ -1998,14 +2180,180 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests }) {
+/* =============================================================================
+   TRIPLE FANTASY 🏀 — quiniela semanal con dinero ficticio del juego
+   ========================================================================== */
+function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntry, budgetAvailable, teamCrests, onJoin, onClose }) {
+  const [picks, setPicks] = useState({});
+  const [mvpChoice, setMvpChoice] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const mvpCandidates = useMemo(() => tripleFantasyService.computeMvpCandidates(players, jornadas), [players, jornadas]);
+  const partidos = jornada?.partidos || [];
+  const allPicked = partidos.length > 0 && partidos.every(p => picks[p.id]) && !!mvpChoice;
+
+  // Ya has participado en esta jornada: muestra tu quiniela y, si ya hay resultado, el premio.
+  if (myEntry) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+          <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
+          <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
+          <span style={{ width: 28 }} />
+        </div>
+        <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+          <div className="fl-row p-4 mb-4 text-center" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
+            <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>YA HAS PARTICIPADO</div>
+            <div className="fl-display text-lg uppercase mt-1" style={{ color: C.white }}>Jornada {jornadaNumber}</div>
+          </div>
+
+          {myEntry.settled ? (
+            <div className="fl-row p-4 text-center mb-4">
+              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>ACIERTOS: {myEntry.correct}/{partidos.length} {myEntry.mvpCorrect ? "· MVP ✓" : ""}</div>
+              <div className="fl-mono text-3xl font-bold mt-2" style={{ color: myEntry.prize > 0 ? C.positive : C.negative }}>{fmtCredits(myEntry.prize || 0)}</div>
+              <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>
+                {myEntry.prize > TRIPLE_ENTRY_FEE ? `Beneficio: +${fmtCredits(myEntry.prize - TRIPLE_ENTRY_FEE)}` : "Sin premio esta vez"}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-4"><EmptyState compact title="Pendiente de resultados" text="En cuanto termine la jornada verás aquí tu premio." /></div>
+          )}
+
+          <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>TUS PRONÓSTICOS</div>
+          <div className="space-y-1.5">
+            {partidos.map(p => {
+              const winner = tripleFantasyService.matchWinner(p);
+              const pick = myEntry.picks?.[p.id];
+              const hit = winner && pick && winner === pick;
+              const pickName = pick === "local" ? p.local : pick === "visitante" ? p.visitante : "—";
+              return (
+                <div key={p.id} className="fl-row flex items-center justify-between px-3 py-2.5">
+                  <span className="fl-body text-xs truncate" style={{ color: C.white, maxWidth: "55%" }}>{p.local} vs {p.visitante}</span>
+                  <span className="fl-mono text-[10px] flex items-center gap-1" style={{ color: winner ? (hit ? C.positive : C.negative) : C.muted }}>
+                    {winner && (hit ? <CircleCheck size={12} /> : <CircleX size={12} />)} {pickName}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {mvpCandidates.length > 0 && (
+            <div className="mt-4">
+              <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>TU MVP</div>
+              <div className="fl-row px-3 py-2.5 flex items-center justify-between">
+                <span className="fl-body text-sm flex items-center gap-1.5" style={{ color: C.white }}>
+                  {myEntry.settled && (myEntry.mvpCorrect ? <CircleCheck size={14} color={C.positive} /> : <CircleX size={14} color={C.negative} />)}
+                  {myEntry.mvpChoice === "otra" ? "Otra jugadora" : (players.find(p => p.id === myEntry.mvpChoice)?.name || "—")}
+                </span>
+              </div>
+              {myEntry.settled && myEntry.actualMvpId && (
+                <div className="fl-mono text-[10px] mt-1.5 px-1" style={{ color: C.muted }}>
+                  MVP real de la jornada: <span style={{ color: C.gold }}>{players.find(p => p.id === myEntry.actualMvpId)?.name || "—"}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const togglePick = (partidoId, side) => setPicks(prev => ({ ...prev, [partidoId]: side }));
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    const res = await onJoin(jornada.id, picks, mvpChoice, mvpCandidates.map(p => p.id));
+    setBusy(false);
+    if (!res.ok) setError(res.error);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
+        <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
+        <span style={{ width: 28 }} />
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+        <div className="fl-row p-4 mb-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
+          <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>QUINIELA DE LA JORNADA {jornadaNumber}</div>
+          <div className="fl-body text-xs mt-1.5" style={{ color: "rgba(255,255,255,0.9)" }}>Acierta los {partidos.length} resultados y quién será la MVP. Entrada: {fmtCredits(TRIPLE_ENTRY_FEE)}.</div>
+        </div>
+
+        <div className="grid grid-cols-4 gap-1.5 mb-4">
+          {[["5 aciertos", TRIPLE_PRIZE_TABLE[5]], ["6 aciertos", TRIPLE_PRIZE_TABLE[6]], ["7/7", TRIPLE_PRIZE_TABLE[7]], ["7/7 + MVP", TRIPLE_PRIZE_PERFECT_MVP]].map(([label, val]) => (
+            <div key={label} className="fl-row py-2 px-1 text-center">
+              <div className="fl-mono font-bold" style={{ color: C.gold, fontSize: 12 }}>{fmtCredits(val)}</div>
+              <div className="fl-mono text-[8px] mt-0.5" style={{ color: C.muted }}>{label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="fl-mono text-[10px] mb-2" style={{ color: C.muted }}>PRONOSTICA LOS {partidos.length} PARTIDOS</div>
+        <div className="space-y-2 mb-5">
+          {partidos.map(p => (
+            <div key={p.id} className="fl-row p-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => togglePick(p.id, "local")} className="fl-tap rounded-md py-2.5 px-2 text-xs font-semibold flex items-center gap-1.5 justify-center"
+                  style={{ background: picks[p.id] === "local" ? C.baby : C.navy900, color: picks[p.id] === "local" ? C.ink : C.white, border: `1.5px solid ${picks[p.id] === "local" ? C.baby : C.line}` }}>
+                  <TeamCrest name={p.local} size={20} photo={teamCrests?.[p.local]} /> <span className="truncate">{p.local}</span>
+                </button>
+                <button onClick={() => togglePick(p.id, "visitante")} className="fl-tap rounded-md py-2.5 px-2 text-xs font-semibold flex items-center gap-1.5 justify-center"
+                  style={{ background: picks[p.id] === "visitante" ? C.baby : C.navy900, color: picks[p.id] === "visitante" ? C.ink : C.white, border: `1.5px solid ${picks[p.id] === "visitante" ? C.baby : C.line}` }}>
+                  <TeamCrest name={p.visitante} size={20} photo={teamCrests?.[p.visitante]} /> <span className="truncate">{p.visitante}</span>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="fl-mono text-[10px] mb-2" style={{ color: C.muted }}>¿QUIÉN SERÁ LA MVP DE LA JORNADA?</div>
+        <div className="space-y-1.5 mb-5">
+          {mvpCandidates.map(p => (
+            <button key={p.id} onClick={() => setMvpChoice(p.id)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-left"
+              style={{ background: mvpChoice === p.id ? C.babySoft : C.navy800, border: `1.5px solid ${mvpChoice === p.id ? C.baby : C.line}` }}>
+              <PlayerPhoto url={p.photo} size={36} rounded={10} />
+              <div className="flex-1 min-w-0">
+                <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</div>
+                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team}</div>
+              </div>
+              {mvpChoice === p.id && <Check size={16} color={C.baby} />}
+            </button>
+          ))}
+          <button onClick={() => setMvpChoice("otra")} className="fl-tap w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-center"
+            style={{ background: mvpChoice === "otra" ? C.babySoft : C.navy800, border: `1.5px solid ${mvpChoice === "otra" ? C.baby : C.line}` }}>
+            <span className="fl-body text-sm font-medium" style={{ color: C.white }}>Otra jugadora</span>
+            {mvpChoice === "otra" && <Check size={16} color={C.baby} />}
+          </button>
+        </div>
+
+        {error && <div className="fl-mono text-xs mb-3 text-center" style={{ color: C.negative }}>{error}</div>}
+      </div>
+      <div className="px-4 pb-4 flex-shrink-0">
+        <button disabled={!allPicked || busy} onClick={submit}
+          className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
+          style={{ background: C.principal, color: C.white }}>
+          {busy ? <Loader2 size={16} className="animate-spin" /> : `Confirmar participación (${fmtCredits(TRIPLE_ENTRY_FEE)})`}
+        </button>
+        <div className="text-center fl-mono text-[11px] mt-2" style={{ color: C.muted }}>
+          Tu saldo: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(budgetAvailable)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
   const [showCalendar, setShowCalendar] = useState(false);
+  const [showTriple, setShowTriple] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const marketAssets = (market.assetIds || []).length;
   const lastJornada = findCurrentJornada(jornadas);
   const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
   const partidos = lastJornada?.partidos || [];
+  const myTripleEntry = lastJornada ? (tripleEntries || []).find(e => e.jornadaId === lastJornada.id && e.userId === profile.name) : null;
 
   return (
     <div className="space-y-4">
@@ -2067,6 +2415,22 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         )}
       </div>
 
+      {lastJornada && partidos.length > 0 && (
+        <button onClick={() => setShowTriple(true)} className="fl-tap w-full fl-row p-3.5 flex items-center justify-between"
+          style={{ border: `1.5px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}44` }}>
+          <div className="flex items-center gap-2.5">
+            <span style={{ fontSize: 20, lineHeight: 1 }}>🏀</span>
+            <div className="text-left">
+              <div className="fl-body text-sm font-semibold" style={{ color: C.white }}>Triple Fantasy</div>
+              <div className="fl-mono text-[10px]" style={{ color: C.muted }}>
+                {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : `Entrada ${fmtCredits(TRIPLE_ENTRY_FEE)} · hasta ${fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}`}
+              </div>
+            </div>
+          </div>
+          <ChevronRight size={16} color={C.principal} />
+        </button>
+      )}
+
       {partidos.length > 0 && (
         <div>
           <SectionTitle>Partidos de la jornada</SectionTitle>
@@ -2107,6 +2471,12 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       {showCalendar && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
           initialIndex={Math.max(jornadas.length - 1, 0)} onClose={() => setShowCalendar(false)} />
+      )}
+
+      {showTriple && lastJornada && (
+        <TripleFantasyScreen jornada={lastJornada} jornadaNumber={currentJornadaNumber} players={players} jornadas={jornadas}
+          myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests}
+          onJoin={onJoinTriple} onClose={() => setShowTriple(false)} />
       )}
     </div>
   );
