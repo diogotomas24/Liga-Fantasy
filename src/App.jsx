@@ -1135,14 +1135,17 @@ function PositionBadge({ posKey, size = "sm" }) {
   );
 }
 
-function PlayerPhoto({ url, size = 44, width, height, rounded = 12, noBorder = false, focusTop = false }) {
+function PlayerPhoto({ url, size = 44, width, height, rounded = 12, noBorder = false, focusTop = false, baseLine = false }) {
   const w = width || size, h = height || size;
   return (
-    <div className="flex-shrink-0 flex items-center justify-center overflow-hidden"
+    <div className="flex-shrink-0 flex items-center justify-center overflow-hidden relative"
       style={{ width: w, height: h, borderRadius: rounded, background: C.navy700, border: noBorder ? "none" : `1px solid ${C.line}` }}>
       {url
         ? <img src={url} alt="" className="w-full h-full object-cover" style={{ objectPosition: focusTop ? "center 15%" : "center" }} />
         : <ImageOff size={Math.min(w, h) * 0.4} color={C.muted} />}
+      {baseLine && (
+        <div className="absolute inset-x-0 bottom-0" style={{ height: 3, background: C.baby, boxShadow: `0 0 8px 1.5px ${C.baby}` }} />
+      )}
     </div>
   );
 }
@@ -3321,7 +3324,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
             const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
             return (
               <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-3.5 py-3.5 pr-4 text-left overflow-hidden">
-                <div className="self-end -ml-px -mb-3.5"><PlayerPhoto url={p.photo} width={92} height={132} rounded={0} noBorder focusTop /></div>
+                <div className="self-end -ml-px -mb-3.5"><PlayerPhoto url={p.photo} width={92} height={132} rounded={0} noBorder focusTop baseLine /></div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
                     <PositionBadge posKey={p.position} size="md" />
@@ -4113,7 +4116,7 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
             <div key={player.id} className="fl-row fl-pop overflow-hidden py-4 pr-4">
               <div className="flex items-center gap-3.5">
                 <button onClick={() => onOpenPlayer(player)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
-                  <div className="self-end -ml-px -mb-4"><PlayerPhoto url={player.photo} width={92} height={132} rounded={0} noBorder focusTop /></div>
+                  <div className="self-end -ml-px -mb-4"><PlayerPhoto url={player.photo} width={92} height={132} rounded={0} noBorder focusTop baseLine /></div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <PositionBadge posKey={player.position} size="md" />
@@ -4458,7 +4461,7 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
     <div className="fl-row fl-pop overflow-hidden py-4 pr-4">
       <div className="flex items-center gap-3.5">
         <button onClick={() => onOpenPlayer(asset)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
-          <div className="self-end -ml-px -mb-4"><PlayerPhoto url={asset.photo} width={92} height={132} rounded={0} noBorder focusTop /></div>
+          <div className="self-end -ml-px -mb-4"><PlayerPhoto url={asset.photo} width={92} height={132} rounded={0} noBorder focusTop baseLine /></div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
               <PositionBadge posKey={asset.position} size="md" />
