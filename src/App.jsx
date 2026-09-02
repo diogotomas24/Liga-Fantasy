@@ -1004,6 +1004,24 @@ async function enablePushNotifications(leagueId, userName) {
   }
 }
 
+// Cancela la suscripción push del navegador y borra la fila correspondiente
+// en Supabase, para que esta persona deje de recibir avisos en esta liga.
+async function disablePushNotifications() {
+  try {
+    if (pushSupported()) {
+      const registration = await navigator.serviceWorker.getRegistration("/sw.js");
+      const subscription = registration ? await registration.pushManager.getSubscription() : null;
+      if (subscription) {
+        await supabase.from("push_subscriptions").delete().eq("endpoint", subscription.endpoint);
+        await subscription.unsubscribe();
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Envía un aviso a otra persona (o a ti misma) de esta liga. "Fire and forget":
 // si falla (sin conexión, función no desplegada todavía, etc.) no interrumpe
 // nada de lo que esté haciendo la app.
@@ -2176,7 +2194,15 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   const [busy, setBusy] = useState(false);
 
   const toggleNotifications = async () => {
-    if (notifState === "on" || busy) return;
+    if (busy) return;
+    if (notifState === "on") {
+      setBusy(true);
+      await disablePushNotifications();
+      setBusy(false);
+      setNotifState("off");
+      try { localStorage.removeItem(`fl_push_${activeLeagueId}_${profile.name}`); } catch {}
+      return;
+    }
     if (!pushSupported()) { setNotifState("unsupported"); return; }
     setBusy(true);
     const ok = await enablePushNotifications(activeLeagueId, profile.name);
@@ -2198,9 +2224,9 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
         </button>
         <div className="flex items-center gap-2.5">
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
-          <button onClick={toggleNotifications} disabled={busy || notifState === "on"} className="fl-tap flex items-center justify-center"
-            title={notifState === "on" ? "Notificaciones activadas" : "Activar notificaciones"}>
-            {notifState === "on" ? <Bell size={15} color={C.baby} fill={C.baby} /> : <Bell size={15} color={C.muted} />}
+          <button onClick={toggleNotifications} disabled={busy} className="fl-tap flex items-center justify-center"
+            title={notifState === "on" ? "Desactivar notificaciones" : "Activar notificaciones"}>
+            {notifState === "on" ? <Bell size={15} color={C.baby} fill={C.baby} /> : <BellOff size={15} color={C.muted} />}
           </button>
         </div>
       </div>
