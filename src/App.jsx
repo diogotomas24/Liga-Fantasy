@@ -584,22 +584,17 @@ const marketService = {
     d.setHours(hm.h, hm.m, 0, 0);
     return d.getTime();
   },
-  // Ventana de mercado (apertura/cierre) vigente o próxima, a partir de la hora configurada
-  computeWindow(config, now = Date.now()) {
-    const open = marketService.parseHM(config.openHour);
-    const close = marketService.parseHM(config.closeHour);
-    const todayOpen = marketService.atHour(now, open);
-    const todayClose = marketService.atHour(now, close);
-    if (now < todayOpen) {
-      const prevClose = todayOpen; // aún no ha abierto hoy
-      return { opensAt: todayOpen, closesAt: todayClose, isOpen: false };
-    }
-    if (now >= todayOpen && now < todayClose) {
-      return { opensAt: todayOpen, closesAt: todayClose, isOpen: true };
-    }
-    const tomorrowOpen = todayOpen + 24 * 3600 * 1000;
-    const tomorrowClose = todayClose + 24 * 3600 * 1000;
-    return { opensAt: tomorrowOpen, closesAt: tomorrowClose, isOpen: false };
+  // Ventana de mercado del nuevo modelo: el mercado está SIEMPRE abierto (no
+  // hay periodo cerrado); cada 24 horas, exactamente a la hora fija de esta
+  // liga (la hora a la que se creó), se cierra, se reparten las pujas
+  // ganadas, y se abre uno nuevo con jugadoras distintas al instante.
+  // "resetHour" es un texto "HH:MM".
+  computeWindow(resetHour, now = Date.now()) {
+    const reset = marketService.parseHM(resetHour);
+    const todayReset = marketService.atHour(now, reset);
+    const closesAt = now < todayReset ? todayReset : todayReset + 24 * 3600 * 1000;
+    const opensAt = closesAt - 24 * 3600 * 1000;
+    return { opensAt, closesAt, isOpen: true };
   },
   buildAssets(players, teams, count, excludeIds = []) {
     const owned = new Set();
@@ -788,10 +783,11 @@ function generateInviteCode() {
 async function createLeagueRow(name, creatorName) {
   const id = uid("lg");
   const invite_code = generateInviteCode();
+  const created_at = new Date().toISOString();
   try {
-    const { error } = await supabase.from("leagues").insert({ id, name, invite_code, created_by: creatorName });
+    const { error } = await supabase.from("leagues").insert({ id, name, invite_code, created_by: creatorName, created_at });
     if (error) throw error;
-    return { id, name, invite_code, created_by: creatorName };
+    return { id, name, invite_code, created_by: creatorName, created_at };
   } catch {
     return null;
   }
@@ -1456,7 +1452,6 @@ export default function App() {
   const [profile, setProfile] = useState(undefined);
   const [players, setPlayers] = useState([]);
   const [jornadas, setJornadas] = useState([]);
-  const [marketConfig, setMarketConfig] = useState(DEFAULT_MARKET_CONFIG);
   const [teamCrests, setTeamCrests] = useState({});
   const [favoritos, setFavoritos] = useState([]);
 
@@ -1563,15 +1558,12 @@ export default function App() {
     (async () => {
       const p = await readPersonal("profile", null);
       const fav = await readPersonal("favoritos", []);
-      const [pl, jo, cfg, crests] = await Promise.all([
-        readPlayers(), readJornadas(), readMarketConfig(), readTeamCrests(),
+      const [pl, jo, crests] = await Promise.all([
+        readPlayers(), readJornadas(), readTeamCrests(),
       ]);
       setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
-      const config = cfg || DEFAULT_MARKET_CONFIG;
-      setMarketConfig(config);
-      if (!cfg) await writeMarketConfig(config);
       setProfile(p);
       const priced = await settlePlayerPricing(pl);
       if (priced !== pl) setPlayers(priced);
@@ -1650,12 +1642,12 @@ export default function App() {
   // Nota: esta comprobación corre en el cliente a intervalos como sustituto temporal
   // de un job programado en servidor; la resolución de la subasta y el descuento del
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
-  const syncMarket = useCallback(async (leagueId) => {
+  const syncMarket = useCallback(async (leagueId, resetHour) => {
     if (!leagueId || resolvingRef.current) return;
     resolvingRef.current = true;
     try {
-      const [freshPlayers, freshTeamsOrNull, freshConfig, freshMarket, freshBids, freshHistory, freshActivity, freshOffers, freshTriple, freshJornadas] = await Promise.all([
-        readPlayers(), readAllTeams(leagueId), readMarketConfig().then(c => c || DEFAULT_MARKET_CONFIG),
+      const [freshPlayers, freshTeamsOrNull, freshMarket, freshBids, freshHistory, freshActivity, freshOffers, freshTriple, freshJornadas] = await Promise.all([
+        readPlayers(), readAllTeams(leagueId),
         readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
         readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
         readShared(leagueKey(leagueId, "offers"), []), readShared(leagueKey(leagueId, "triple"), []),
@@ -1672,7 +1664,7 @@ export default function App() {
       }
       const freshTeams = freshTeamsOrNull;
       const now = Date.now();
-      const window_ = marketService.computeWindow(freshConfig, now);
+      const window_ = marketService.computeWindow(resetHour, now);
 
       let teamsNext = freshTeams, bidsNext = freshBids, playersNext = freshPlayers, historyNext = freshHistory, activityNext = freshActivity;
       let marketNext = freshMarket;
@@ -1763,20 +1755,27 @@ export default function App() {
       }
 
       setPlayers(playersNext); setTeams(teamsNext); setBids(bidsNext); setMarketHistory(historyNext); setActivity(activityNext);
-      setMarketConfig(freshConfig); setMarket(marketNext); setOffers(freshOffers); setTripleEntries(tripleNext);
+      setMarket(marketNext); setOffers(freshOffers); setTripleEntries(tripleNext);
       setJornadas(freshJornadas);
     } finally {
       resolvingRef.current = false;
     }
   }, []);
 
+  // Hora fija diaria del mercado de esta liga: la hora a la que se creó (p. ej.
+  // si la liga se creó a las 19:34, el mercado se resuelve y se regenera cada
+  // día a esa misma hora). Cada liga tiene la suya propia.
+  const marketResetHour = activeLeague?.created_at
+    ? new Date(activeLeague.created_at).toTimeString().slice(0, 5)
+    : "08:00";
+
   useEffect(() => {
     if (!activeLeagueId) return;
     setMarket(null); // evita mostrar por un instante el mercado de la liga anterior
-    syncMarket(activeLeagueId);
-    const t = setInterval(() => syncMarket(activeLeagueId), 15000);
+    syncMarket(activeLeagueId, marketResetHour);
+    const t = setInterval(() => syncMarket(activeLeagueId, marketResetHour), 15000);
     return () => clearInterval(t);
-  }, [activeLeagueId, syncMarket]);
+  }, [activeLeagueId, marketResetHour, syncMarket]);
 
   const myTeam = profile ? (teams[profile.name] || teamService.emptyTeam()) : teamService.emptyTeam();
   const mySquadIds = useMemo(() => teamService.squadIds(myTeam), [myTeam]);
@@ -1945,19 +1944,12 @@ export default function App() {
     return { ok: true };
   }, [players, offers, activeLeagueId]);
 
-  // El horario del mercado sigue siendo GLOBAL (igual para todas las ligas).
-  const saveMarketConfig = useCallback(async (cfg) => {
-    await writeMarketConfig(cfg);
-    setMarketConfig(cfg);
-    await syncMarket(activeLeagueId);
-  }, [syncMarket, activeLeagueId]);
-
   const forceResolveMarket = useCallback(async () => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     if (!freshMarket) return;
     await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
-    await syncMarket(activeLeagueId);
-  }, [market, syncMarket, activeLeagueId]);
+    await syncMarket(activeLeagueId, marketResetHour);
+  }, [market, syncMarket, activeLeagueId, marketResetHour]);
 
   // Las jornadas son GLOBALES (compartidas por todas las ligas), así que el snapshot de
   // alineaciones que se guarda con cada jornada recoge los equipos de TODAS las ligas a
