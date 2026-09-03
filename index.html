@@ -3,7 +3,7 @@ import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
-  ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff,
+  ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -38,7 +38,7 @@ const C = {
    DOMINIO
    ========================================================================== */
 const BUDGET_TOTAL = 100; // millones (créditos Fantasy)
-const MARKET_ASSET_COUNT = 6;
+const MARKET_ASSET_COUNT = 8;
 const MAX_COACHES = 1;
 const MAX_SQUAD_JUGADORAS = 11; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
 const INITIAL_SQUAD_COUNT = 8; // jugadoras del reparto inicial (el resto de la plantilla se completa luego vía mercado/cláusulas)
@@ -754,6 +754,13 @@ async function writeShared(key, value) {
     return true;
   } catch { return false; }
 }
+async function deleteShared(key) {
+  try {
+    const { error } = await supabase.from("kv_store").delete().eq("key", key);
+    if (error) throw error;
+    return true;
+  } catch { return false; }
+}
 async function readPersonal(key, fallback) {
   try { const raw = localStorage.getItem(`fl_personal_${key}`); return raw != null ? JSON.parse(raw) : fallback; }
   catch { return fallback; }
@@ -835,6 +842,16 @@ async function readLeaguesByIds(ids) {
   }
 }
 
+async function deleteLeagueRow(id) {
+  try {
+    const { error } = await supabase.from("leagues").delete().eq("id", id);
+    if (error) throw error;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Lista local (en este dispositivo) de las ligas en las que participa esta
 // persona. Al no haber login real, es lo más simple para poder estar en
 // varias ligas a la vez, como pide el diseño de "Mis ligas".
@@ -843,6 +860,12 @@ async function addMyLeagueId(id) {
   const ids = await readMyLeagueIds();
   if (!ids.includes(id)) { const next = [...ids, id]; await writePersonal("myLeagues", next); return next; }
   return ids;
+}
+async function removeMyLeagueId(id) {
+  const ids = await readMyLeagueIds();
+  const next = ids.filter((x) => x !== id);
+  await writePersonal("myLeagues", next);
+  return next;
 }
 
 /* -----------------------------------------------------------------------
@@ -1082,6 +1105,9 @@ async function writeTeam(leagueId, name, team) {
   // el mapa { nombre -> equipo } sin depender de un índice compartido aparte.
   return await writeShared(teamKey(leagueId, name), { ...team, name });
 }
+async function deleteTeamRow(leagueId, name) {
+  return await deleteShared(teamKey(leagueId, name));
+}
 // Lee TODOS los equipos DE UNA LIGA, pero como una sola consulta filtrando
 // por prefijo de clave, nunca como un read-modify-write sobre un blob
 // compartido. Se usa solo para mostrar datos (clasificación, mercado, ids
@@ -1133,6 +1159,7 @@ function GlobalStyle() {
       @keyframes fl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
       .fl-tap { -webkit-tap-highlight-color: transparent; }
       .fl-safe-bottom { padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+      html, body { background: ${C.navy900}; overscroll-behavior-y: none; }
       * { box-sizing: border-box; }
     `}</style>
   );
@@ -1643,6 +1670,8 @@ export default function App() {
   const ensureTeamInLeague = useCallback(async (leagueId, name) => {
     const existing = await readTeam(leagueId, name);
     if (existing) return existing;
+    const kicked = await readShared(leagueKey(leagueId, "kicked"), []);
+    if (kicked.includes(name)) return null; // expulsada de esta liga: no se le vuelve a crear equipo
     const freshPlayers = await readPlayers();
     const fresh = (await readAllTeams(leagueId)) || {};
     const ownedIds = new Set();
@@ -1660,11 +1689,44 @@ export default function App() {
   }, []);
 
   const selectLeague = useCallback(async (leagueId) => {
-    if (profile) await ensureTeamInLeague(leagueId, profile.name);
+    if (profile) {
+      const team = await ensureTeamInLeague(leagueId, profile.name);
+      if (!team) {
+        // Expulsada de esta liga: la quitamos también de "Mis ligas" en este dispositivo.
+        await removeMyLeagueId(leagueId);
+        setMyLeagues(prev => prev.filter(l => l.id !== leagueId));
+        return { ok: false, error: "Has sido expulsada/o de esta liga." };
+      }
+    }
     await writePersonal("activeLeagueId", leagueId);
     setActiveLeagueId(leagueId);
     setTab("inicio");
+    return { ok: true };
   }, [profile, ensureTeamInLeague]);
+
+  // Expulsa a alguien de la liga: borra su equipo y lo añade a la lista de
+  // vetados para que no se le vuelva a crear uno si intenta volver a entrar.
+  const kickMember = useCallback(async (leagueId, userName) => {
+    await deleteTeamRow(leagueId, userName);
+    const kicked = await readShared(leagueKey(leagueId, "kicked"), []);
+    if (!kicked.includes(userName)) await writeShared(leagueKey(leagueId, "kicked"), [...kicked, userName]);
+    return { ok: true };
+  }, []);
+
+  // Borra la liga entera: todos los equipos de esa liga y la propia liga.
+  // Solo debe poder llamarlo quien la creó (se comprueba en la UI).
+  const deleteLeague = useCallback(async (leagueId) => {
+    const teams = (await readAllTeams(leagueId)) || {};
+    await Promise.all(Object.keys(teams).map((name) => deleteTeamRow(leagueId, name)));
+    await deleteLeagueRow(leagueId);
+    await removeMyLeagueId(leagueId);
+    setMyLeagues((prev) => prev.filter((l) => l.id !== leagueId));
+    if (activeLeagueId === leagueId) {
+      await writePersonal("activeLeagueId", null);
+      setActiveLeagueId(null);
+    }
+    return { ok: true };
+  }, [activeLeagueId]);
 
   const backToLeagues = useCallback(async () => {
     await writePersonal("activeLeagueId", null);
@@ -2084,7 +2146,7 @@ export default function App() {
   if (profile === null) return <Onboarding onEnter={completeOnboarding} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
-    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} />;
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} />;
   }
   if (!market) return <Loading />;
 
@@ -2109,7 +2171,7 @@ export default function App() {
               onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mercado" && (
-            <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory}
+            <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory} activity={activity}
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
               budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
@@ -2130,7 +2192,7 @@ export default function App() {
 /* =============================================================================
    MIS LIGAS
    ========================================================================== */
-function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests }) {
+function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [name, setName] = useState("");
@@ -2139,6 +2201,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
   const [error, setError] = useState("");
   const [justCreated, setJustCreated] = useState(null); // liga recién creada, para mostrar su código
   const [showCalendar, setShowCalendar] = useState(false);
+  const [adminLeague, setAdminLeague] = useState(null); // liga cuya administración está abierta
 
   const currentJornada = useMemo(() => findCurrentJornada(jornadas), [jornadas]);
   const currentJornadaNumber = currentJornada ? jornadas.findIndex(j => j.id === currentJornada.id) + 1 : 0;
@@ -2158,6 +2221,12 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
     setBusy(true); setError("");
     const res = await onJoin(code);
     setBusy(false);
+    if (!res.ok) setError(res.error);
+  };
+
+  const handleSelect = async (leagueId) => {
+    setError("");
+    const res = await onSelect(leagueId);
     if (!res.ok) setError(res.error);
   };
 
@@ -2227,13 +2296,18 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
         ) : (
           <div className="space-y-1.5 mb-5">
             {leagues.map(l => (
-              <button key={l.id} onClick={() => onSelect(l.id)} className="fl-tap w-full fl-row flex items-center justify-between px-3.5 py-3">
-                <div className="text-left">
-                  <div className="fl-body text-sm font-medium" style={{ color: C.white }}>{l.name}</div>
+              <div key={l.id} className="fl-row flex items-center justify-between px-3.5 py-3">
+                <button onClick={() => handleSelect(l.id)} className="fl-tap flex-1 text-left min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{l.name}</div>
                   <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Código {l.invite_code}</div>
-                </div>
-                <ChevronRight size={16} color={C.muted} />
-              </button>
+                </button>
+                {l.created_by === profile?.name && (
+                  <button onClick={() => setAdminLeague(l)} className="fl-tap p-1.5 -mr-1" title="Administrar liga">
+                    <MoreVertical size={16} color={C.muted} />
+                  </button>
+                )}
+                <button onClick={() => handleSelect(l.id)} className="fl-tap p-1"><ChevronRight size={16} color={C.muted} /></button>
+              </div>
             ))}
           </div>
         )}
@@ -2262,6 +2336,116 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
           initialIndex={Math.max(currentJornadaNumber - 1, 0)} onClose={() => setShowCalendar(false)} />
       )}
+
+      {adminLeague && (
+        <LeagueAdminScreen league={adminLeague} profile={profile} onKick={onKick} onDeleteLeague={onDeleteLeague}
+          onClose={() => setAdminLeague(null)} />
+      )}
+    </div>
+  );
+}
+
+// Panel de administración de una liga: solo lo ve quien la creó. Permite
+// expulsar a cualquier persona (menos a una misma) y borrar la liga entera.
+function LeagueAdminScreen({ league, profile, onKick, onDeleteLeague, onClose }) {
+  const [members, setMembers] = useState(null); // null = cargando
+  const [busyName, setBusyName] = useState(null);
+  const [confirmKick, setConfirmKick] = useState(null); // nombre pendiente de confirmar
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const teams = await readAllTeams(league.id);
+      if (!cancelled) setMembers(Object.keys(teams || {}).sort());
+    })();
+    return () => { cancelled = true; };
+  }, [league.id]);
+
+  const doKick = async (name) => {
+    setBusyName(name);
+    await onKick(league.id, name);
+    setMembers((prev) => (prev || []).filter((n) => n !== name));
+    setBusyName(null);
+    setConfirmKick(null);
+  };
+
+  const doDelete = async () => {
+    setDeleting(true);
+    await onDeleteLeague(league.id);
+    setDeleting(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6 truncate" style={{ color: C.white }}>{league.name}</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>MIEMBROS</div>
+        {members === null ? (
+          <div className="flex justify-center py-6"><Loader2 size={20} className="animate-spin" color={C.muted} /></div>
+        ) : members.length === 0 ? (
+          <EmptyState compact title="Todavía no hay nadie" text="En cuanto alguien se una con el código, aparecerá aquí." />
+        ) : (
+          <div className="space-y-1.5 mb-6">
+            {members.map((name) => {
+              const isCreator = name === league.created_by;
+              const isMe = name === profile?.name;
+              return (
+                <div key={name} className="fl-row flex items-center justify-between px-3.5 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="fl-body text-sm" style={{ color: C.white }}>{name}</span>
+                    {isCreator && <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded" style={{ background: C.babySoft, color: C.baby }}>ADMIN</span>}
+                    {isMe && <span className="fl-mono text-[9px]" style={{ color: C.muted }}>(tú)</span>}
+                  </div>
+                  {!isCreator && !isMe && (
+                    confirmKick === name ? (
+                      <div className="flex items-center gap-1.5">
+                        <button disabled={busyName === name} onClick={() => doKick(name)}
+                          className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ background: C.negative, color: C.white }}>
+                          {busyName === name ? <Loader2 size={12} className="animate-spin" /> : "Confirmar"}
+                        </button>
+                        <button onClick={() => setConfirmKick(null)} className="fl-tap fl-mono text-[11px] rounded-md px-2.5 py-1.5" style={{ border: `1px solid ${C.line}`, color: C.muted }}>
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => setConfirmKick(name)} className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+                        Expulsar
+                      </button>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ZONA DE PELIGRO</div>
+        {confirmDelete ? (
+          <div className="fl-row p-3.5" style={{ border: `1px solid ${C.negative}` }}>
+            <p className="fl-body text-sm mb-3" style={{ color: C.white }}>
+              ¿Seguro que quieres borrar "{league.name}"? Se eliminará para todo el mundo y no se puede deshacer.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setConfirmDelete(false)} className="fl-tap rounded-md py-2.5 text-sm font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
+                Cancelar
+              </button>
+              <button disabled={deleting} onClick={doDelete} className="fl-tap rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: C.negative, color: C.white }}>
+                {deleting ? <Loader2 size={14} className="animate-spin" /> : "Sí, borrar"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmDelete(true)} className="fl-tap w-full rounded-md py-3 text-sm font-semibold" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
+            Borrar liga
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -4012,7 +4196,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
+function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("mercado");
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
@@ -4131,7 +4315,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
       )}
 
       {sub === "historico" && (
-        <HistoricoTab marketHistory={marketHistory} players={players} bids={bids} profile={profile} myPastBids={myPastBids} />
+        <HistoricoTab marketHistory={marketHistory} players={players} bids={bids} profile={profile} myPastBids={myPastBids} activity={activity} />
       )}
 
       {detailPlayer && (
@@ -4561,7 +4745,7 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
   );
 }
 
-function HistoricoTab({ marketHistory, players, bids, profile, myPastBids }) {
+function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activity }) {
   const rows = [];
   [...marketHistory].reverse().forEach(h => {
     h.results.forEach(r => {
@@ -4575,7 +4759,12 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids }) {
       }
     });
   });
-  if (rows.length === 0) return <EmptyState title="Sin operaciones todavía" text="Cuando se resuelva un mercado, aquí verás tus fichajes y pujas perdidas." />;
+  (activity || []).filter(a => a.userId === profile.name && a.type === "venta").forEach(a => {
+    const asset = players.find(p => p.id === a.assetId);
+    rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: true });
+  });
+  rows.sort((a, b) => b.ts - a.ts);
+  if (rows.length === 0) return <EmptyState title="Sin operaciones todavía" text="Cuando se resuelva un mercado o hagas una venta, aquí verás tus fichajes, ventas y pujas perdidas." />;
   return (
     <div className="space-y-1.5">
       {rows.map(r => (
