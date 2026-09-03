@@ -803,6 +803,93 @@ async function writePersonal(key, value) {
   catch { return false; }
 }
 
+/* -----------------------------------------------------------------------
+   CUENTAS REALES (Supabase Auth) — email + contraseña. El nombre que se usa
+   en el resto del juego se guarda en la tabla "profiles", vinculado a la
+   cuenta, y queda protegido: una vez registrado, nadie más puede volver a
+   usarlo. El resto de la app sigue funcionando exactamente igual que antes,
+   usando ese nombre — solo cambia CÓMO se consigue de forma segura.
+   ----------------------------------------------------------------------- */
+async function signUpAccount(email, password, name) {
+  try {
+    const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
+    if (error) throw error;
+    const userId = data.user?.id;
+    if (!userId) return { ok: false, error: "No se pudo crear la cuenta." };
+    const { error: profErr } = await supabase.from("profiles").insert({ id: userId, name: name.trim() });
+    if (profErr) {
+      if (profErr.code === "23505") return { ok: false, error: "Ese nombre ya está en uso. Elige otro." };
+      return { ok: false, error: "No se pudo guardar tu nombre." };
+    }
+    // Sin sesión todavía = Supabase exige confirmar el email antes de poder entrar.
+    if (!data.session) return { ok: true, needsConfirmation: true, name: name.trim() };
+    return { ok: true, needsConfirmation: false, name: name.trim() };
+  } catch (e) {
+    const msg = (e?.message || "").toLowerCase();
+    if (msg.includes("already registered") || msg.includes("already exists")) return { ok: false, error: "Ese email ya tiene una cuenta. Prueba a iniciar sesión." };
+    if (msg.includes("password")) return { ok: false, error: "La contraseña debe tener al menos 6 caracteres." };
+    return { ok: false, error: "No se pudo crear la cuenta. Revisa el email." };
+  }
+}
+async function signInAccount(email, password) {
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) throw error;
+    const userId = data.user?.id;
+    const { data: prof } = await supabase.from("profiles").select("name").eq("id", userId).maybeSingle();
+    if (!prof?.name) return { ok: false, error: "Tu cuenta no tiene nombre asignado. Contacta para revisarlo." };
+    return { ok: true, name: prof.name };
+  } catch {
+    return { ok: false, error: "Email o contraseña incorrectos." };
+  }
+}
+async function signOutAccount() {
+  try { await supabase.auth.signOut(); } catch {}
+}
+// Abre el flujo de Google (redirige fuera de la app y vuelve solo).
+async function signInWithGoogle() {
+  try {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) throw error;
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "No se pudo abrir el inicio de sesión con Google." };
+  }
+}
+// Al abrir la app: si ya hay una sesión activa (se recuerda sola entre
+// visitas, incluida la de Google tras volver de la redirección), recupera el
+// nombre vinculado a esa cuenta. Si la sesión es válida pero es la PRIMERA
+// vez (típico de Google: nunca se le pidió un nombre), devuelve needsName
+// para que la app pida el nombre antes de dejar entrar.
+async function getSessionProfile() {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return { hasSession: false };
+    const { data: prof } = await supabase.from("profiles").select("name").eq("id", session.user.id).maybeSingle();
+    if (prof?.name) return { hasSession: true, name: prof.name };
+    return { hasSession: true, name: null, userId: session.user.id };
+  } catch {
+    return { hasSession: false };
+  }
+}
+// Completa el perfil de una cuenta que ya tiene sesión pero todavía no tiene
+// nombre elegido (primer inicio de sesión con Google).
+async function chooseNameForSession(userId, name) {
+  try {
+    const { error } = await supabase.from("profiles").insert({ id: userId, name: name.trim() });
+    if (error) {
+      if (error.code === "23505") return { ok: false, error: "Ese nombre ya está en uso. Elige otro." };
+      return { ok: false, error: "No se pudo guardar tu nombre." };
+    }
+    return { ok: true, name: name.trim() };
+  } catch {
+    return { ok: false, error: "No se pudo guardar tu nombre." };
+  }
+}
+
 // Lee TODOS los equipos de TODAS las ligas a la vez (con clave compuesta
 // "liga::nombre"). Se usa solo para cosas que son globales por diseño: el
 // snapshot de alineaciones al guardar una jornada, y el cálculo de demanda
@@ -1544,9 +1631,41 @@ function SectionTitle({ children, right }) {
 /* =============================================================================
    ONBOARDING
    ========================================================================== */
-function Onboarding({ onEnter }) {
+function Onboarding({ onEnter, onGoogle }) {
+  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [confirmMsg, setConfirmMsg] = useState("");
+
+  const submit = async () => {
+    setError(""); setConfirmMsg("");
+    if (!email.trim() || !password) { setError("Rellena el email y la contraseña."); return; }
+    if (mode === "signup" && !name.trim()) { setError("Elige un nombre de usuaria/o."); return; }
+    setBusy(true);
+    const res = mode === "signup"
+      ? await signUpAccount(email, password, name)
+      : await signInAccount(email, password);
+    setBusy(false);
+    if (!res.ok) { setError(res.error); return; }
+    if (res.needsConfirmation) {
+      setConfirmMsg("Cuenta creada. Revisa tu correo y pulsa el enlace de confirmación, y después inicia sesión aquí.");
+      setMode("login");
+      return;
+    }
+    await onEnter(res.name);
+  };
+
+  const submitGoogle = async () => {
+    setError(""); setGoogleBusy(true);
+    const res = await onGoogle();
+    if (!res.ok) { setGoogleBusy(false); setError(res.error); }
+    // Si res.ok, la página redirige fuera de la app — no hace falta hacer nada más aquí.
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: C.navy900 }}>
       <GlobalStyle />
@@ -1556,12 +1675,96 @@ function Onboarding({ onEnter }) {
           <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fantasy Liga<br />Femenina Aragón</h1>
         </div>
         <div className="fl-card p-5">
+          <button disabled={googleBusy} onClick={submitGoogle}
+            className="fl-body w-full mb-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+            style={{ background: C.white, color: C.ink, border: "1.5px solid rgba(11,27,51,0.2)" }}>
+            {googleBusy ? <Loader2 className="animate-spin" size={16} /> : (
+              <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.8 32.6 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" /><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.5 18.9 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4c-7.7 0-14.4 4.4-17.7 10.7z" /><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.4 26.7 36 24 36c-5.3 0-9.7-3.4-11.3-8.1l-6.5 5C9.5 39.5 16.2 44 24 44z" /><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l6.2 5.2C40.8 36 44 30.8 44 24c0-1.3-.1-2.7-.4-3.5z" /></svg>
+            )} Continuar con Google
+          </button>
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex-1 h-px" style={{ background: "rgba(11,27,51,0.15)" }} />
+            <span className="fl-mono text-[10px]" style={{ color: C.mutedInk }}>O CON EMAIL</span>
+            <div className="flex-1 h-px" style={{ background: "rgba(11,27,51,0.15)" }} />
+          </div>
+
+          <div className="flex gap-1.5 mb-4">
+            {[["login", "Iniciar sesión"], ["signup", "Crear cuenta"]].map(([k, l]) => (
+              <button key={k} onClick={() => { setMode(k); setError(""); setConfirmMsg(""); }}
+                className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-md font-semibold"
+                style={{ background: mode === k ? C.baby : "transparent", color: mode === k ? C.ink : C.mutedInk, border: mode === k ? "none" : "1.5px solid rgba(11,27,51,0.2)" }}>
+                {l.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {mode === "signup" && (
+            <div className="mb-3">
+              <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas?</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo"
+                className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} maxLength={24} />
+              <p className="fl-body text-[10px] mt-1" style={{ color: C.mutedInk }}>Este es el nombre que verán los demás. Una vez registrado, queda protegido: nadie más podrá usarlo.</p>
+            </div>
+          )}
+
+          <div className="mb-3">
+            <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>Email</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="tu@email.com"
+              className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} />
+          </div>
+          <div className="mb-1">
+            <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>Contraseña</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Mínimo 6 caracteres"
+              className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} />
+          </div>
+
+          {mode === "login" && (
+            <p className="fl-body text-[11px] mt-3" style={{ color: C.mutedInk }}>Al entrar por primera vez podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación.</p>
+          )}
+          {confirmMsg && <p className="fl-body text-xs mt-3 font-medium" style={{ color: C.positive }}>{confirmMsg}</p>}
+          {error && <p className="fl-body text-xs mt-3 font-medium" style={{ color: "#C0392B" }}>{error}</p>}
+
+          <button disabled={busy} onClick={submit}
+            className="fl-body w-full mt-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
+            {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} {mode === "signup" ? "Crear cuenta" : "Entrar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Primera vez que alguien entra con Google: ya tiene sesión, pero todavía no
+// ha elegido el nombre con el que juega (Google no lo pregunta).
+function ChooseNameScreen({ onSubmit }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!name.trim()) { setError("Elige un nombre de usuaria/o."); return; }
+    setError(""); setBusy(true);
+    const res = await onSubmit(name);
+    setBusy(false);
+    if (!res.ok) setError(res.error);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: C.navy900 }}>
+      <GlobalStyle />
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-6">
+          <div className="fl-mono text-[11px] tracking-[0.2em]" style={{ color: C.principal }}>¡YA CASI ESTÁ!</div>
+          <h1 className="fl-display text-2xl uppercase mt-1" style={{ color: C.white }}>Elige tu nombre</h1>
+        </div>
+        <div className="fl-card p-5">
           <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas?</label>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo"
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo" autoFocus
             className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} maxLength={24} />
-          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 8 jugadoras al azar con un valor de equipo de entre 80.000.000 € y 90.000.000 € (con un quinteto ya alineado), y 100.000.000 € enteros para pujar en el mercado de esa liga desde el primer día.</p>
-          <button disabled={!name.trim() || busy} onClick={async () => { setBusy(true); await onEnter(name.trim()); }}
-            className="fl-body w-full mt-3 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
+          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>Este es el nombre que verán los demás en tus ligas. Una vez elegido, queda protegido: nadie más podrá usarlo.</p>
+          {error && <p className="fl-body text-xs mt-3 font-medium" style={{ color: "#C0392B" }}>{error}</p>}
+          <button disabled={!name.trim() || busy} onClick={submit}
+            className="fl-body w-full mt-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
             {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Continuar
           </button>
         </div>
@@ -1575,6 +1778,7 @@ function Onboarding({ onEnter }) {
    ========================================================================== */
 export default function App() {
   const [profile, setProfile] = useState(undefined);
+  const [pendingUser, setPendingUser] = useState(null); // { userId } cuando hay sesión (típicamente de Google) pero falta elegir nombre
   const [players, setPlayers] = useState([]);
   const [jornadas, setJornadas] = useState([]);
   const [teamCrests, setTeamCrests] = useState({});
@@ -1738,10 +1942,12 @@ export default function App() {
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
-  // de qué liga se elija después.
+  // de qué liga se elija después. La identidad ya no se lee de localStorage sin más:
+  // se comprueba la sesión real de Supabase Auth (si hay una guardada y sigue
+  // siendo válida, entra directa; si no, se muestra el login).
   useEffect(() => {
     (async () => {
-      const p = await readPersonal("profile", null);
+      const sess = await getSessionProfile();
       const fav = await readPersonal("favoritos", []);
       const [pl, jo, crests] = await Promise.all([
         readPlayers(), readJornadas(), readTeamCrests(),
@@ -1749,7 +1955,17 @@ export default function App() {
       setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
-      setProfile(p);
+      if (sess.hasSession && sess.name) {
+        const prof = { name: sess.name };
+        await writePersonal("profile", prof);
+        setProfile(prof);
+      } else if (sess.hasSession && !sess.name) {
+        // Sesión válida (típicamente recién llegada de Google) pero sin nombre todavía.
+        setPendingUser({ userId: sess.userId });
+        setProfile(null);
+      } else {
+        setProfile(null);
+      }
       const priced = await settlePlayerPricing(pl);
       if (priced !== pl) setPlayers(priced);
     })();
@@ -1859,6 +2075,27 @@ export default function App() {
     const prof = { name };
     await writePersonal("profile", prof);
     setProfile(prof);
+  }, []);
+
+  const handleGoogleLogin = useCallback(async () => {
+    return await signInWithGoogle(); // si va bien, la página redirige fuera; el resto se resuelve solo al volver.
+  }, []);
+
+  const completeGoogleName = useCallback(async (name) => {
+    const res = await chooseNameForSession(pendingUser.userId, name);
+    if (!res.ok) return res;
+    setPendingUser(null);
+    await completeOnboarding(res.name);
+    return { ok: true };
+  }, [pendingUser, completeOnboarding]);
+
+  const signOut = useCallback(async () => {
+    await signOutAccount();
+    await writePersonal("profile", null);
+    setProfile(null);
+    setPendingUser(null);
+    setActiveLeagueId(null);
+    setMyLeagues([]);
   }, []);
 
   // Sincroniza el mercado DE LA LIGA ACTIVA: resuelve la ventana cerrada y genera la
@@ -2252,10 +2489,11 @@ export default function App() {
   }, []);
 
   if (profile === undefined) return <Loading />;
-  if (profile === null) return <Onboarding onEnter={completeOnboarding} />;
+  if (pendingUser) return <ChooseNameScreen onSubmit={completeGoogleName} />;
+  if (profile === null) return <Onboarding onEnter={completeOnboarding} onGoogle={handleGoogleLogin} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
-    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} />;
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} onSignOut={signOut} />;
   }
   if (!market) return <Loading />;
 
@@ -2301,7 +2539,7 @@ export default function App() {
 /* =============================================================================
    MIS LIGAS
    ========================================================================== */
-function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague }) {
+function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague, onSignOut }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [name, setName] = useState("");
@@ -2342,9 +2580,13 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <header className="px-4 pb-4 text-center" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
+      <header className="px-4 pb-4 text-center relative" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
         <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
         <h1 className="fl-display text-2xl uppercase mt-0.5" style={{ color: C.white }}>Mis Ligas</h1>
+        <div className="flex items-center justify-center gap-2 mt-1.5">
+          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile?.name}</span>
+          <button onClick={onSignOut} className="fl-tap fl-mono text-[10px]" style={{ color: C.principal }}>· Cerrar sesión</button>
+        </div>
       </header>
 
       <div className="px-4 pt-4 pb-10 max-w-sm mx-auto">
