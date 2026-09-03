@@ -1318,6 +1318,21 @@ function computeJornadaStartTime(jornada) {
   return earliest;
 }
 
+// ¿Ha "empezado de verdad" una jornada? Sí en cuanto se cumpla CUALQUIERA de
+// estas tres cosas: ha llegado su hora programada, o ya se ha introducido el
+// marcador de algún partido suyo, o ya hay alguna estadística de jugadora
+// cargada — aunque la hora "oficial" todavía no haya llegado. Se usa tanto
+// para congelar alineaciones (checkLineupLock) como para cerrar la entrada al
+// Triple Fantasy de esa jornada.
+function hasJornadaEffectivelyStarted(jornada) {
+  const start = computeJornadaStartTime(jornada);
+  if (start && Date.now() >= start.getTime()) return true;
+  const hasScores = (jornada.partidos || []).some((p) => p.marcadorLocal != null && p.marcadorLocal !== "" && p.marcadorVisitante != null && p.marcadorVisitante !== "");
+  if (hasScores) return true;
+  const hasStats = jornada.stats && Object.keys(jornada.stats).length > 0;
+  return !!hasStats;
+}
+
 // Solo las jornadas que ya han empezado (su fecha es hoy o anterior). Así los
 // chips J1, J2... van apareciendo solos a medida que avanza el calendario, en
 // vez de mostrar de golpe toda la temporada desde el principio.
@@ -1696,11 +1711,9 @@ export default function App() {
     try {
       const freshJ = await readJornadas();
       const locked = await readShared("lineupLocked", []);
-      const now = Date.now();
       for (const jornada of freshJ) {
         if (locked.includes(jornada.id)) continue;
-        const start = computeJornadaStartTime(jornada);
-        if (!start || now < start.getTime()) continue;
+        if (!hasJornadaEffectivelyStarted(jornada)) continue;
         const allTeams = (await readAllTeamsGlobal()) || {};
         const lineups = { ...(jornada.lineups || {}) };
         let changed = false;
@@ -2117,6 +2130,11 @@ export default function App() {
   // Triple Fantasy: pronosticar los 7 partidos + MVP de la jornada, pagando 1 M€ de entrada.
   const joinTriple = useCallback(async (jornadaId, picks, mvpChoice, mvpOptions) => {
     if (TRIPLE_ENTRY_FEE > budgetAvailable) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(budgetAvailable)}.` };
+    const freshJ = await readJornadas();
+    const jornada = freshJ.find(j => j.id === jornadaId);
+    if (jornada && hasJornadaEffectivelyStarted(jornada)) {
+      return { ok: false, error: "Esta jornada ya ha empezado, no se puede participar." };
+    }
     const freshEntries = await readShared(leagueKey(activeLeagueId, "triple"), tripleEntries);
     if (freshEntries.some(e => e.jornadaId === jornadaId && e.userId === profile.name)) {
       return { ok: false, error: "Ya has participado en esta jornada." };
