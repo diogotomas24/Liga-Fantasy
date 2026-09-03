@@ -1239,9 +1239,11 @@ function computeJornadaStartTime(jornada) {
 // chips J1, J2... van apareciendo solos a medida que avanza el calendario, en
 // vez de mostrar de golpe toda la temporada desde el principio.
 function startedJornadas(jornadas) {
+  const list = jornadas || [];
   const today = new Date();
   today.setHours(23, 59, 59, 999); // el día de la jornada cuenta como "ya empezada" desde su fecha
-  return (jornadas || []).filter((j) => {
+  const filtered = list.filter((j, i) => {
+    if (i === 0) return true; // la primera jornada se ve SIEMPRE, pase lo que pase con sus fechas/datos
     const d = jornadaDate(j);
     if (d) return d <= today;
     // Sin ninguna fecha válida en sus partidos: si ya hay marcadores o
@@ -1251,42 +1253,7 @@ function startedJornadas(jornadas) {
     const hasStats = j.stats && Object.keys(j.stats).length > 0;
     return hasScores || hasStats;
   });
-}
-
-// ¿Ganó el equipo de esta jugadora/entrenadora ese partido? Se calcula solo, a
-// partir del marcador real que ya está en "partidos" (tabla partidos de
-// Supabase) — nunca hace falta rellenar "victoria" a mano en jornada_stats.
-// Devuelve true/false, o null si no se encuentra el partido de su equipo o
-// todavía no tiene marcador.
-function deriveVictoria(player, jornada) {
-  if (!player?.team || !jornada?.partidos) return null;
-  const partido = jornada.partidos.find((p) => p.local === player.team || p.visitante === player.team);
-  if (!partido) return null;
-  const winner = tripleFantasyService.matchWinner(partido); // "local" | "visitante" | null
-  if (!winner) return null;
-  return winner === "local" ? partido.local === player.team : partido.visitante === player.team;
-}
-
-// Devuelve las jornadas con el campo "victoria" de cada jugadora/entrenadora
-// sustituido por el resultado real calculado a partir del marcador de su
-// equipo (si no se encuentra partido para su equipo, se deja el valor que
-// hubiera en jornada_stats, por si acaso). Este es el único punto donde se
-// hace esta sustitución; todo lo demás (puntos, MVP, Triple Fantasy...) usa
-// siempre estas jornadas "enriquecidas", nunca las jornadas en crudo.
-function enrichJornadasWithVictoria(jornadas, players) {
-  return (jornadas || []).map((j) => {
-    if (!j.stats || Object.keys(j.stats).length === 0) return j;
-    let changed = false;
-    const nextStats = {};
-    Object.entries(j.stats).forEach(([pid, s]) => {
-      const player = players.find((p) => p.id === pid);
-      const v = deriveVictoria(player, j);
-      if (v === null) { nextStats[pid] = s; return; }
-      if (s.victoria !== v) changed = true;
-      nextStats[pid] = { ...s, victoria: v };
-    });
-    return changed ? { ...j, stats: nextStats } : j;
-  });
+  return filtered;
 }
 
 // Jornada "vigente" para la portada: la más próxima cuya fecha todavía no ha
@@ -1516,10 +1483,6 @@ export default function App() {
   const [profile, setProfile] = useState(undefined);
   const [players, setPlayers] = useState([]);
   const [jornadas, setJornadas] = useState([]);
-  // Jornadas "enriquecidas": con el campo victoria de cada jugadora/entrenadora
-  // ya calculado solo a partir del marcador real (ver enrichJornadasWithVictoria).
-  // Todo lo que se reparte a las pantallas usa ESTA versión, nunca la de arriba en crudo.
-  const enrichedJornadas = useMemo(() => enrichJornadasWithVictoria(jornadas, players), [jornadas, players]);
   const [teamCrests, setTeamCrests] = useState({});
   const [favoritos, setFavoritos] = useState([]);
 
@@ -1569,9 +1532,7 @@ export default function App() {
       Object.entries(freshTGlobal).forEach(([key, t]) => { if (!lineups[key] && t.lineup) lineups[key] = t.lineup; });
       const jornadaToSave = { ...jornada, lineups };
       await writeJornada(jornadaToSave);
-      // La victoria se calcula sola a partir del marcador real antes de tocar valores de mercado.
-      const [jornadaEnriquecida] = enrichJornadasWithVictoria([jornadaToSave], workingPlayers);
-      workingPlayers = applyMarketMovement(workingPlayers, jornadaEnriquecida, freshTGlobal);
+      workingPlayers = applyMarketMovement(workingPlayers, jornadaToSave, freshTGlobal);
       await writePlayersAfterJornada(workingPlayers, jornadaToSave);
       const bumpWrites = [];
       Object.entries(freshTGlobal).forEach(([key, t]) => {
@@ -2095,7 +2056,7 @@ export default function App() {
   if (profile === null) return <Onboarding onEnter={completeOnboarding} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
-    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={enrichedJornadas} teamCrests={teamCrests} />;
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} />;
   }
   if (!market) return <Loading />;
 
@@ -2106,16 +2067,16 @@ export default function App() {
       <main className="px-4 fl-safe-bottom" style={{ minHeight: "70vh" }}>
         <div className="pt-3">
           {tab === "inicio" && (
-            <InicioTab profile={profile} teams={teams} players={players} jornadas={enrichedJornadas} leagueId={activeLeagueId}
+            <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas} leagueId={activeLeagueId}
               myTeam={myTeam} budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               market={market} isMarketOpen={isMarketOpen} onGoTo={setTab}
               teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={enrichedJornadas} me={profile.name} leagueId={activeLeagueId} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
-              jornadas={enrichedJornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
+              jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
               favoritos={favoritos} onToggleFavorite={toggleFavorito} teamCrests={teamCrests}
               onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
@@ -2124,7 +2085,7 @@ export default function App() {
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
               budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
-              jornadas={enrichedJornadas} teamCrests={teamCrests}
+              jornadas={jornadas} teamCrests={teamCrests}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
