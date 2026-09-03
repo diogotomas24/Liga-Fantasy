@@ -2303,7 +2303,14 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
           <ChevronLeft size={14} color={C.muted} />
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
         </button>
-        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
+        <div className="flex items-center gap-2.5">
+          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
+          <button onClick={toggleNotifications} disabled={notifDisabled} title={notifLabel} className="fl-tap flex items-center justify-center disabled:opacity-50">
+            {busy ? <Loader2 size={16} className="animate-spin" color={C.muted} />
+              : notifState === "on" ? <Bell size={16} color={C.baby} fill={C.baby} />
+              : <BellOff size={16} color={C.muted} />}
+          </button>
+        </div>
       </div>
       <div className="flex items-baseline gap-2 mt-1">
         <h1 className="fl-display text-2xl uppercase" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
@@ -2311,20 +2318,9 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
         </h1>
         <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
       </div>
-      <button onClick={toggleNotifications} disabled={notifDisabled}
-        className="fl-tap w-full mt-2.5 rounded-md py-2.5 flex items-center justify-center gap-2 disabled:opacity-60"
-        style={{
-          background: notifState === "on" ? C.babySoft : "transparent",
-          border: `1.5px solid ${notifState === "on" ? C.baby : C.line}`,
-        }}>
-        {busy ? <Loader2 size={18} className="animate-spin" color={C.muted} />
-          : notifState === "on" ? <Bell size={18} color={C.baby} fill={C.baby} />
-          : <BellOff size={18} color={C.muted} />}
-        <span className="fl-body text-sm font-medium text-center" style={{ color: notifState === "on" ? C.baby : C.muted }}>{notifLabel}</span>
-      </button>
       {notifState === "ios-add-to-home" && (
-        <p className="fl-body text-[10px] mt-1.5 text-center" style={{ color: C.muted }}>
-          Toca el icono de compartir de Safari → "Añadir a pantalla de inicio", y abre la app desde ese icono nuevo (no desde Chrome ni desde una pestaña normal de Safari).
+        <p className="fl-body text-[10px] mt-1.5" style={{ color: C.muted }}>
+          🔔 Para activar avisos en iPhone: Safari → Compartir → "Añadir a pantalla de inicio", y abre la app desde ese icono.
         </p>
       )}
     </header>
@@ -2420,7 +2416,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-      <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
         <span className="fl-display text-base uppercase" style={{ color: C.white }}>Calendario</span>
         <span style={{ width: 28 }} />
@@ -2478,7 +2474,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
   if (myEntry) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-        <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
           <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
           <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
           <span style={{ width: 28 }} />
@@ -2551,7 +2547,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-      <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
         <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
         <span style={{ width: 28 }} />
@@ -3031,7 +3027,7 @@ function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col" style={{ background: C.navy900 }}>
-      <div className="flex items-center px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Subir cláusula a {player.name}</div>
       </div>
@@ -3132,7 +3128,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-      <div className="flex items-center justify-between px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
         <button onClick={onToggleFavorite} className="fl-tap flex items-center gap-1.5">
           <span className="fl-body text-sm" style={{ color: C.white }}>{isFavorite ? "En favoritos" : "Añadir a favoritos"}</span>
@@ -3906,7 +3902,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-      <div className="flex items-center gap-2 px-3 py-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center gap-2 px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
         <span className="fl-display text-base uppercase flex-1 text-center" style={{ color: C.white }}>Buscar</span>
         <span style={{ width: 28 }} />
@@ -4265,7 +4261,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col" style={{ background: C.navy900 }}>
-      <div className="flex items-center px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta a {sellerName}</div>
       </div>
@@ -4404,7 +4400,7 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
 
   return (
     <div className="fixed inset-0 z-20 flex flex-col" style={{ background: C.navy900 }}>
-      <div className="flex items-center px-4 pt-5 pb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta por {asset.name}</div>
       </div>
