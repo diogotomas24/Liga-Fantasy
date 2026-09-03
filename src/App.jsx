@@ -147,13 +147,11 @@ function calcSwishPoints(stats, position) {
 // parte del nuevo sistema Puntos SWISH, que solo afecta a jugadoras).
 function calcCoachPoints(stats) {
   const s = stats || {};
+  const win = !!s.victoria;
   const breakdown = [
-    { key: "jugo", label: "Partido jugado", cantidad: s.jugo ? "Sí" : "No", pts: s.jugo ? 2 : 0 },
-    { key: "victoria", label: "Victoria", cantidad: s.victoria ? "Sí" : "No", pts: s.victoria ? 8 : 0 },
-    { key: "diferencia", label: "Diferencia de puntos", cantidad: s.diferencia || 0, pts: Math.round((s.diferencia || 0) / 3) },
-    { key: "mvp", label: "MVP del partido", cantidad: s.mvp ? "Sí" : "No", pts: s.mvp ? 3 : 0 },
+    { key: "victoria", label: win ? "Partido ganado" : "Partido no ganado", cantidad: win ? 1 : 0, pts: win ? 5 : 0 },
   ];
-  return { breakdown, total: breakdown.reduce((sum, b) => sum + b.pts, 0) };
+  return { breakdown, total: win ? 5 : 0 };
 }
 
 // Punto de entrada único: desglose completo de una jugadora/entrenadora en
@@ -1229,6 +1227,18 @@ function computeJornadaStartTime(jornada) {
     if (!earliest || dt < earliest) earliest = dt;
   });
   return earliest;
+}
+
+// Solo las jornadas que ya han empezado (su fecha es hoy o anterior). Así los
+// chips J1, J2... van apareciendo solos a medida que avanza el calendario, en
+// vez de mostrar de golpe toda la temporada desde el principio.
+function startedJornadas(jornadas) {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999); // el día de la jornada cuenta como "ya empezada" desde su fecha
+  return (jornadas || []).filter((j) => {
+    const d = jornadaDate(j);
+    return d && d <= today;
+  });
 }
 
 // Jornada "vigente" para la portada: la más próxima cuya fecha todavía no ha
@@ -3067,7 +3077,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   const [actionMsg, setActionMsg] = useState("");
   const [confirmSell, setConfirmSell] = useState(false);
 
-  const seasonRows = useMemo(() => jornadas.map((j, i) => {
+  const seasonRows = useMemo(() => startedJornadas(jornadas).map((j, i) => {
     const stats = j.stats?.[player.id];
     const played = !!stats;
     const total = played ? calcPointsBreakdown(stats, player.position).total : 0;
@@ -3290,7 +3300,8 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
   const startersSet = new Set(lineup.starters || []);
   const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
   const reserva = allSquad.filter(p => !startersSet.has(p.id) && !benchIds.has(p.id) && p.id !== lineup.titularCoach);
-  const history = jornadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
+  const jornadasIniciadas = startedJornadas(jornadas);
+  const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
 
   const valorPlantilla = (myTeam.squad || []).reduce((s, e) => s + (e.pricePaid || 0), 0);
 
@@ -3348,7 +3359,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       )}
 
       {sub === "puntos" && (
-        <PuntosJornadaView jornadas={jornadas} history={history} leagueId={leagueId} teamName={teamName}
+        <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={teamName}
           players={players} lineup={lineup} teamCrests={teamCrests} />
       )}
 
