@@ -1343,23 +1343,15 @@ function startedJornadas(jornadas) {
   return filtered;
 }
 
-// Jornada "vigente" para la portada: la más próxima cuya fecha todavía no ha
-// pasado del todo (fecha >= hoy). En cuanto esa fecha queda atrás, al día
-// siguiente se pasa automáticamente a la siguiente jornada. Si todas las
-// jornadas con fecha ya pasaron, se muestra la última. Si ninguna jornada
-// tiene una fecha reconocible, se cae al comportamiento anterior (la última
-// creada), para no romper nada si el admin las crea a mano sin fechas.
+// Jornada "vigente" para la portada: la última de las que ya han "empezado"
+// (mismo criterio que startedJornadas: por fecha O porque ya se ha
+// introducido el resultado de algún partido suyo). Así, en cuanto metes el
+// marcador de la Jornada 2 aunque su fecha "oficial" no haya llegado, la
+// portada pasa sola a mostrar la Jornada 2.
 function findCurrentJornada(jornadas) {
   if (!jornadas || jornadas.length === 0) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const dated = jornadas
-    .map(j => ({ j, date: jornadaDate(j) }))
-    .filter(x => x.date)
-    .sort((a, b) => a.date - b.date);
-  if (dated.length === 0) return jornadas[jornadas.length - 1];
-  const upcoming = dated.find(x => x.date >= today);
-  return (upcoming || dated[dated.length - 1]).j;
+  const started = startedJornadas(jornadas);
+  return started.length > 0 ? started[started.length - 1] : jornadas[0];
 }
 
 // Estado de la cláusula de una jugadora, visible para toda la liga: en ROJO
@@ -1693,13 +1685,43 @@ export default function App() {
     } catch {}
   }, []);
 
+  // En cuanto empieza el primer partido de una jornada (misma hora que usa el
+  // aviso de "quedan 10 minutos"), se congela la alineación de CADA equipo de
+  // CADA liga tal y como estaba en ese instante exacto: titulares, banquillo,
+  // capitana y entrenadora/or. Esa foto fija es la que se usará SIEMPRE para
+  // los puntos de esa jornada, aunque después la persona cambie y guarde otra
+  // alineación distinta (esos cambios solo afectarán a la siguiente jornada
+  // sin empezar). Se hace una sola vez por jornada (lista global "lineupLocked").
+  const checkLineupLock = useCallback(async () => {
+    try {
+      const freshJ = await readJornadas();
+      const locked = await readShared("lineupLocked", []);
+      const now = Date.now();
+      for (const jornada of freshJ) {
+        if (locked.includes(jornada.id)) continue;
+        const start = computeJornadaStartTime(jornada);
+        if (!start || now < start.getTime()) continue;
+        const allTeams = (await readAllTeamsGlobal()) || {};
+        const lineups = { ...(jornada.lineups || {}) };
+        let changed = false;
+        Object.values(allTeams).forEach((t) => {
+          const key = `${t.leagueId}::${t.name}`;
+          if (!lineups[key] && t.lineup) { lineups[key] = t.lineup; changed = true; }
+        });
+        if (changed) await writeJornada({ ...jornada, lineups });
+        await writeShared("lineupLocked", [...locked, jornada.id]);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (profile === undefined) return;
     checkJornadaStartWarning();
     checkIdealFive();
-    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); }, 60000);
+    checkLineupLock();
+    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); checkLineupLock(); }, 60000);
     return () => clearInterval(t);
-  }, [profile, checkJornadaStartWarning, checkIdealFive]);
+  }, [profile, checkJornadaStartWarning, checkIdealFive, checkLineupLock]);
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
@@ -2578,7 +2600,7 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   const notifDisabled = busy || ["checking", "unsupported", "denied", "ios-add-to-home"].includes(notifState);
 
   return (
-    <header className="px-4 pb-2.5" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
+    <header className="px-4 pb-2.5 sticky z-30" style={{ top: 0, background: C.navy900, borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
       <div className="flex items-center justify-between">
         <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 -ml-0.5">
           <ChevronLeft size={14} color={C.muted} />
@@ -2970,7 +2992,7 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
                       return (
                         <div key={id} className="flex flex-col items-center">
                           <div className="relative">
-                            <CourtSlot player={p} size={84} teamCrests={teamCrests} />
+                            <CourtSlot player={p} size={70} teamCrests={teamCrests} />
                             <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                               style={{ background: C.navy900, color: C.gold, border: `1px solid ${C.gold}` }}>
                               {pointsFor(id)}
@@ -3133,13 +3155,14 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 function ClasificacionTab({ teams, players, jornadas, me, leagueId }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
-  const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId, filterJornadaId), [teams, players, jornadas, leagueId, filterJornadaId]);
-  const options = [{ id: null, label: "Total" }, ...[...jornadas].reverse().map(j => ({ id: j.id, label: j.name }))];
+  const jornadasIniciadas = startedJornadas(jornadas);
+  const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadasIniciadas, leagueId, filterJornadaId), [teams, players, jornadasIniciadas, leagueId, filterJornadaId]);
+  const options = [{ id: null, label: "Total" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name }))];
   const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "Total";
 
   return (
     <div>
-      {jornadas.length > 0 && (
+      {jornadasIniciadas.length > 0 && (
         <div className="relative mb-3" style={{ width: 150 }}>
           <button onClick={() => setOpen(o => !o)}
             className="fl-tap w-full flex items-center justify-between gap-1.5 fl-body text-sm font-semibold rounded-md px-3 py-2"
@@ -3820,7 +3843,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       return (
                         <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
                           <div className="relative">
-                            <CourtSlot player={p} size={84} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
+                            <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                                 style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3845,7 +3868,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                 const p = id ? findPlayer(id) : null;
                 return (
                   <div key={pos.key} className="relative">
-                    <CourtSlot player={p} size={64} label={pos.label} teamCrests={teamCrests} />
+                    <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} />
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                         style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3862,7 +3885,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
             <div className="fl-row flex items-center justify-center py-4 px-2">
               <div className="relative">
-                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={70} label={coachId ? undefined : "DT"} teamCrests={teamCrests} />
+                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={58} label={coachId ? undefined : "DT"} teamCrests={teamCrests} />
                 {coachId && findPlayer(coachId) && (
                   <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                     style={{ background: C.navy900, color: pointsFor(coachId) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3989,7 +4012,7 @@ function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack, t
               {ids.map(id => {
                 const p = myJugadoras.find(x => x.id === id);
                 if (!p) return null;
-                return <CourtSlot key={id} player={p} size={78} isCaptain={captainId === id} onClick={() => onSelect(id)} teamCrests={teamCrests} />;
+                return <CourtSlot key={id} player={p} size={66} isCaptain={captainId === id} onClick={() => onSelect(id)} teamCrests={teamCrests} />;
               })}
             </div>
           ))}
@@ -4142,7 +4165,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
                 {slots.map((id, i) => {
                   const p = id ? myJugadoras.find(x => x.id === id) : null;
                   return (
-                    <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={84} isCaptain={!!id && captainId === id}
+                    <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={70} isCaptain={!!id && captainId === id}
                       onClick={() => setPicker({ type: "starter", posKey: pos.key, currentId: id || null })} teamCrests={teamCrests} />
                   );
                 })}
@@ -4160,7 +4183,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
             const id = bench[pos.key];
             const p = id ? myJugadoras.find(x => x.id === id) : null;
             return (
-              <CourtSlot key={pos.key} player={p} size={64} label={pos.label}
+              <CourtSlot key={pos.key} player={p} size={54} label={pos.label}
                 onClick={() => setPicker({ type: "bench", posKey: pos.key, currentId: id || null })} teamCrests={teamCrests} />
             );
           })}
@@ -4171,7 +4194,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
       <div className="mb-3">
         <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR TITULAR</div>
         <div className="fl-row flex items-center justify-center py-4 px-2">
-          <CourtSlot player={titularCoach ? findPlayer(titularCoach) : null} size={70} label={titularCoach ? undefined : "DT"}
+          <CourtSlot player={titularCoach ? findPlayer(titularCoach) : null} size={58} label={titularCoach ? undefined : "DT"}
             onClick={() => setPicker({ type: "coach", posKey: "DT", currentId: titularCoach || null })} teamCrests={teamCrests} />
         </div>
       </div>
@@ -4388,7 +4411,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
 
   return (
     <div>
-      <div className="sticky z-20 -mx-4 px-4 pb-2" style={{ top: "env(safe-area-inset-top, 0px)", background: C.navy900, paddingTop: 10 }}>
+      <div className="sticky z-20 -mx-4 px-4 pb-2" style={{ top: "calc(env(safe-area-inset-top, 0px) + 78px)", background: C.navy900, paddingTop: 10 }}>
         <div className="flex items-center justify-between mb-3">
           <CountdownChip closesAt={market.closesAt} opensAt={market.opensAt} isOpen={isMarketOpen} />
           <div className="flex items-center gap-2">
