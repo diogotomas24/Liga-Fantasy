@@ -2052,7 +2052,7 @@ export default function App() {
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
-              favoritos={favoritos} onToggleFavorite={toggleFavorito}
+              favoritos={favoritos} onToggleFavorite={toggleFavorito} teamCrests={teamCrests}
               onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mercado" && (
@@ -2060,7 +2060,7 @@ export default function App() {
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
               budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
-              jornadas={jornadas}
+              jornadas={jornadas} teamCrests={teamCrests}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
@@ -3282,7 +3282,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -3326,6 +3326,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
               <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-3.5 px-4 py-3.5 text-left">
                 <div className="relative flex-shrink-0" style={{ width: 76 }}>
                   <PlayerPhoto url={p.photo} width={76} height={96} rounded={14} focusTop />
+                  <div className="absolute" style={{ top: -6, right: -6 }}><TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={26} /></div>
                   <div className="absolute bottom-0" style={{ left: -6, right: -6, height: 3, borderRadius: 2, background: C.baby, boxShadow: `0 0 8px 1.5px ${C.baby}` }} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -3954,7 +3955,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
+function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("mercado");
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
@@ -4013,11 +4014,11 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
             <div className="space-y-3">
               {assets.map(asset => (
                 <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
-                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} />
+                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} teamCrests={teamCrests} />
               ))}
             </div>
           )}
-          <EnVentaSection teams={teams} players={players}
+          <EnVentaSection teams={teams} players={players} teamCrests={teamCrests}
             onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
             onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
             onOpenPlayer={setDetailPlayer} />
@@ -4099,7 +4100,7 @@ function MercadoTab({ market, players, bids, marketHistory, profile, myTeam, tea
 // muestran cláusula porque, mientras están libres, no la tienen.
 // Jugadoras marcadas "en venta" por cualquier equipo de la liga, visibles
 // directamente en el Mercado (no solo dentro de su ficha).
-function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer }) {
+function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer, teamCrests }) {
   const rows = [];
   Object.entries(teams || {}).forEach(([name, team]) => {
     (team.squad || []).forEach(entry => {
@@ -4121,6 +4122,7 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
                 <button onClick={() => onOpenPlayer(player)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
                   <div className="relative flex-shrink-0" style={{ width: 76 }}>
                     <PlayerPhoto url={player.photo} width={76} height={96} rounded={14} focusTop />
+                    <div className="absolute" style={{ top: -6, right: -6 }}><TeamCrest name={player.team} photo={teamCrests?.[player.team]} size={26} /></div>
                     <div className="absolute bottom-0" style={{ left: -6, right: -6, height: 3, borderRadius: 2, background: C.baby, boxShadow: `0 0 8px 1.5px ${C.baby}` }} />
                   </div>
                   <div className="flex-1 min-w-0">
@@ -4436,7 +4438,7 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   );
 }
 
-function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onOpenPlayer }) {
+function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onOpenPlayer, teamCrests }) {
   const [showKeypad, setShowKeypad] = useState(false);
   const minEuros = Math.round((asset.basePrice || 1) * 1000000);
   const [amountEuros, setAmountEuros] = useState(String(minEuros));
@@ -4469,6 +4471,7 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
         <button onClick={() => onOpenPlayer(asset)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
           <div className="relative flex-shrink-0" style={{ width: 76 }}>
             <PlayerPhoto url={asset.photo} width={76} height={96} rounded={14} focusTop />
+            <div className="absolute" style={{ top: -6, right: -6 }}><TeamCrest name={asset.team} photo={teamCrests?.[asset.team]} size={26} /></div>
             <div className="absolute bottom-0" style={{ left: -6, right: -6, height: 3, borderRadius: 2, background: C.baby, boxShadow: `0 0 8px 1.5px ${C.baby}` }} />
           </div>
           <div className="flex-1 min-w-0">
