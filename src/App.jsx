@@ -1206,10 +1206,16 @@ function parseFechaDDMMYYYY(str) {
   return isNaN(date.getTime()) ? null : date;
 }
 
-// Fecha "de referencia" de una jornada: la de su primer partido (todos los
-// partidos de una misma jornada comparten fecha en el calendario oficial).
+// Fecha "de referencia" de una jornada: la más temprana entre TODOS sus
+// partidos (no solo el primero del array — si a ese en concreto le faltara
+// la fecha, antes se perdía la jornada entera aunque los demás sí la tuvieran).
 function jornadaDate(jornada) {
-  return parseFechaDDMMYYYY(jornada?.partidos?.[0]?.fecha);
+  let earliest = null;
+  (jornada?.partidos || []).forEach((p) => {
+    const d = parseFechaDDMMYYYY(p.fecha);
+    if (d && (!earliest || d < earliest)) earliest = d;
+  });
+  return earliest;
 }
 
 // Momento exacto en que arranca una jornada: el partido con fecha+hora más
@@ -1237,7 +1243,13 @@ function startedJornadas(jornadas) {
   today.setHours(23, 59, 59, 999); // el día de la jornada cuenta como "ya empezada" desde su fecha
   return (jornadas || []).filter((j) => {
     const d = jornadaDate(j);
-    return d && d <= today;
+    if (d) return d <= today;
+    // Sin ninguna fecha válida en sus partidos: si ya hay marcadores o
+    // estadísticas cargadas, se considera igualmente "empezada" — mejor
+    // mostrarla de más que ocultarla por un dato de fecha mal formateado.
+    const hasScores = (j.partidos || []).some((p) => p.marcadorLocal != null && p.marcadorLocal !== "" && p.marcadorVisitante != null && p.marcadorVisitante !== "");
+    const hasStats = j.stats && Object.keys(j.stats).length > 0;
+    return hasScores || hasStats;
   });
 }
 
