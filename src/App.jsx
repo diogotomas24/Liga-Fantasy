@@ -3312,7 +3312,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       </div>
 
       {sub === "alineacion" && (
-        <LineupEditor myJugadoras={myJugadoras} myCoaches={myCoaches} lineup={lineup} onSave={onSaveLineup} />
+        <LineupEditor myJugadoras={myJugadoras} myCoaches={myCoaches} lineup={lineup} onSave={onSaveLineup} teamCrests={teamCrests} />
       )}
 
       {sub === "plantilla" && (
@@ -3349,7 +3349,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
       {sub === "puntos" && (
         <PuntosJornadaView jornadas={jornadas} history={history} leagueId={leagueId} teamName={teamName}
-          players={players} lineup={lineup} />
+          players={players} lineup={lineup} teamCrests={teamCrests} />
       )}
 
       {detailPlayerId && (() => {
@@ -3370,7 +3370,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 // Vista de "Puntos" por jornada: chips J1, J2... para elegir la jornada, y
 // debajo la alineación GUARDADA en esa jornada concreta (titulares, banquillo
 // y entrenadora/or), cada una con los puntos que hizo ese día.
-function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup }) {
+function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests }) {
   const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
   if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
 
@@ -3434,7 +3434,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       return (
                         <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
                           <div className="relative">
-                            <CourtSlot player={p} size={84} isCaptain={!!id && usedLineup.captainId === id} />
+                            <CourtSlot player={p} size={84} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                                 style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3459,7 +3459,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                 const p = id ? findPlayer(id) : null;
                 return (
                   <div key={pos.key} className="relative">
-                    <CourtSlot player={p} size={64} label={pos.label} />
+                    <CourtSlot player={p} size={64} label={pos.label} teamCrests={teamCrests} />
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                         style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3476,7 +3476,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
             <div className="fl-row flex items-center justify-center py-4 px-2">
               <div className="relative">
-                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={70} label={coachId ? undefined : "DT"} />
+                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={70} label={coachId ? undefined : "DT"} teamCrests={teamCrests} />
                 {coachId && findPlayer(coachId) && (
                   <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
                     style={{ background: C.navy900, color: pointsFor(coachId) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
@@ -3575,7 +3575,7 @@ function PlayerPickerScreen({ picker, current, candidates, onSelect, onClear, on
 
 // Pantalla "Seleccionar como capitán": muestra las 5 titulares sobre la misma
 // disposición que la cancha; al tocar una se marca al instante con la "C" dorada.
-function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack }) {
+function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack, teamCrests }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
@@ -3592,7 +3592,7 @@ function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack })
               {ids.map(id => {
                 const p = myJugadoras.find(x => x.id === id);
                 if (!p) return null;
-                return <CourtSlot key={id} player={p} size={78} isCaptain={captainId === id} onClick={() => onSelect(id)} />;
+                return <CourtSlot key={id} player={p} size={78} isCaptain={captainId === id} onClick={() => onSelect(id)} teamCrests={teamCrests} />;
               })}
             </div>
           ))}
@@ -3605,7 +3605,7 @@ function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack })
   );
 }
 
-function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
+function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
   const [formationKey, setFormationKey] = useState(lineup?.formation || "2-2-1");
   const [starters, setStarters] = useState(lineup?.starters || []);
   const [bench, setBench] = useState(lineup?.bench || { BASE: null, ALERO: null, PIVOT: null });
@@ -3696,6 +3696,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         captainId={captainId}
         onSelect={(id) => setCaptainId(prev => (prev === id ? null : id))}
         onBack={() => setShowCaptainPicker(false)}
+        teamCrests={teamCrests}
       />
     );
   }
@@ -3745,7 +3746,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
                   const p = id ? myJugadoras.find(x => x.id === id) : null;
                   return (
                     <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={84} isCaptain={!!id && captainId === id}
-                      onClick={() => setPicker({ type: "starter", posKey: pos.key, currentId: id || null })} />
+                      onClick={() => setPicker({ type: "starter", posKey: pos.key, currentId: id || null })} teamCrests={teamCrests} />
                   );
                 })}
               </div>
@@ -3763,7 +3764,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
             const p = id ? myJugadoras.find(x => x.id === id) : null;
             return (
               <CourtSlot key={pos.key} player={p} size={64} label={pos.label}
-                onClick={() => setPicker({ type: "bench", posKey: pos.key, currentId: id || null })} />
+                onClick={() => setPicker({ type: "bench", posKey: pos.key, currentId: id || null })} teamCrests={teamCrests} />
             );
           })}
         </div>
@@ -3774,7 +3775,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave }) {
         <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR TITULAR</div>
         <div className="fl-row flex items-center justify-center py-4 px-2">
           <CourtSlot player={titularCoach ? findPlayer(titularCoach) : null} size={70} label={titularCoach ? undefined : "DT"}
-            onClick={() => setPicker({ type: "coach", posKey: "DT", currentId: titularCoach || null })} />
+            onClick={() => setPicker({ type: "coach", posKey: "DT", currentId: titularCoach || null })} teamCrests={teamCrests} />
         </div>
       </div>
 
