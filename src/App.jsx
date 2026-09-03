@@ -41,7 +41,8 @@ const BUDGET_TOTAL = 100; // millones (créditos Fantasy)
 const MARKET_ASSET_COUNT = 6;
 const MAX_COACHES = 1;
 const MAX_SQUAD_JUGADORAS = 11; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
-const INITIAL_SQUAD_VALUE_RANGE = { min: 90, max: 100 }; // valor de equipo del reparto inicial, aparte del presupuesto de mercado
+const INITIAL_SQUAD_COUNT = 8; // jugadoras del reparto inicial (el resto de la plantilla se completa luego vía mercado/cláusulas)
+const INITIAL_SQUAD_VALUE_RANGE = { min: 80, max: 90 }; // valor de equipo del reparto inicial, aparte del presupuesto de mercado
 
 const POSITIONS = [
   { key: "BASE", label: "Base", short: "B", fill: C.baby, textOn: C.ink },
@@ -315,30 +316,52 @@ const teamService = {
     // Liberar una jugadora es una herramienta administrativa, no una venta económica: no hay reembolso.
     return { ...team, squad: nextSquad, lineup };
   },
-  // Reparto inicial automático: hasta `count` jugadoras al azar con un valor de equipo total
-  // dentro del rango [range.min, range.max] (p. ej. 90-100 M). Prueba varias combinaciones
-  // aleatorias y se queda con una que cumpla el rango; si no encuentra ninguna, usa la mejor aproximación.
+  // Reparto inicial automático: `count` jugadoras al azar con un valor de equipo total
+  // dentro del rango [range.min, range.max], GARANTIZANDO suficientes jugadoras por
+  // posición para poder alinear un quinteto "2-2-1" desde el primer día (2 Base, 2 Alero,
+  // 1 Pívot como mínimo). El resto de huecos hasta `count` se rellena al azar.
   autoDraftSquad(freeJugadoras, range, count) {
     const { min, max } = range;
-    const valid = [];
-    let fallback = [];
-    let fallbackTotal = -1;
+    const need = { BASE: 2, ALERO: 2, PIVOT: 1 };
+    const byPos = { BASE: [], ALERO: [], PIVOT: [] };
+    freeJugadoras.forEach(p => { if (byPos[p.position]) byPos[p.position].push(p); });
+
+    let best = null; // { picked, total } — mejor intento válido (posiciones cubiertas) encontrado hasta ahora
     for (let attempt = 0; attempt < 80; attempt++) {
-      const shuffled = shuffle(freeJugadoras);
       const picked = [];
       let total = 0;
-      for (const p of shuffled) {
-        if (picked.length >= count) break;
-        const price = Math.max(1, p.basePrice || 1);
-        if (total + price <= max) { picked.push({ id: p.id, price }); total += price; }
+      let positionsOk = true;
+
+      for (const posKey of Object.keys(need)) {
+        const pool = shuffle(byPos[posKey]);
+        let taken = 0;
+        for (const p of pool) {
+          if (taken >= need[posKey]) break;
+          const price = Math.max(1, p.basePrice || 1);
+          if (total + price > max) continue;
+          picked.push({ id: p.id, price, position: p.position });
+          total += price; taken++;
+        }
+        if (taken < need[posKey]) positionsOk = false;
       }
-      if (picked.length === count && total >= min && total <= max) valid.push(picked);
-      if (picked.length > fallback.length || (picked.length === fallback.length && total > fallbackTotal)) {
-        fallback = picked; fallbackTotal = total;
+
+      if (positionsOk) {
+        const remaining = shuffle(freeJugadoras.filter(p => !picked.some(x => x.id === p.id)));
+        for (const p of remaining) {
+          if (picked.length >= count) break;
+          const price = Math.max(1, p.basePrice || 1);
+          if (total + price > max) continue;
+          picked.push({ id: p.id, price, position: p.position });
+          total += price;
+        }
+      }
+
+      if (positionsOk && picked.length === count && total >= min && total <= max) return picked;
+      if (positionsOk && (!best || picked.length > best.picked.length || (picked.length === best.picked.length && total > best.total))) {
+        best = { picked, total };
       }
     }
-    if (valid.length > 0) return valid[Math.floor(Math.random() * valid.length)];
-    return fallback;
+    return best ? best.picked : [];
   },
 };
 
@@ -1465,7 +1488,7 @@ function Onboarding({ onEnter }) {
           <label className="fl-body text-xs font-medium block mb-1.5" style={{ color: C.ink }}>¿Cómo te llamas?</label>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre o apodo"
             className="fl-body w-full rounded-md px-3 py-2 text-sm outline-none" style={{ border: "1.5px solid rgba(11,27,51,0.2)", background: C.white, color: C.ink }} maxLength={24} />
-          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 11 jugadoras al azar con un valor de equipo de entre 90.000.000 € y 100.000.000 €, y 100.000.000 € enteros para pujar en el mercado de esa liga desde el primer día.</p>
+          <p className="fl-body text-[11px] mt-2" style={{ color: C.mutedInk }}>A continuación podrás crear tu propia liga privada para jugar con tus amigos, o unirte a la de alguien con un código de invitación. Al entrar en una liga recibirás 8 jugadoras al azar con un valor de equipo de entre 80.000.000 € y 90.000.000 € (con un quinteto ya alineado), y 100.000.000 € enteros para pujar en el mercado de esa liga desde el primer día.</p>
           <button disabled={!name.trim() || busy} onClick={async () => { setBusy(true); await onEnter(name.trim()); }}
             className="fl-body w-full mt-3 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
             {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Continuar
@@ -1615,8 +1638,8 @@ export default function App() {
   }, [profile]);
 
   // Se asegura de que la persona tiene un equipo creado dentro de esa liga
-  // (reparto inicial de 11 jugadoras al azar, sin tocar el presupuesto de
-  // mercado). Idempotente: si ya existe, no hace nada.
+  // (reparto inicial de 8 jugadoras al azar, sin tocar el presupuesto de
+  // mercado, con un quinteto "2-2-1" ya alineado). Idempotente: si ya existe, no hace nada.
   const ensureTeamInLeague = useCallback(async (leagueId, name) => {
     const existing = await readTeam(leagueId, name);
     if (existing) return existing;
@@ -1625,8 +1648,13 @@ export default function App() {
     const ownedIds = new Set();
     Object.values(fresh).forEach(t => teamService.squadIds(t).forEach(id => ownedIds.add(id)));
     const freeJugadoras = freshPlayers.filter(p => p.position !== "DT" && !ownedIds.has(p.id));
-    const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, MAX_SQUAD_JUGADORAS);
-    const team = teamService.addInitialSquad(teamService.emptyTeam(), draft);
+    const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, INITIAL_SQUAD_COUNT);
+    let team = teamService.addInitialSquad(teamService.emptyTeam(), draft);
+    // Alinea automáticamente un quinteto "2-2-1" con las jugadoras que el reparto garantiza por posición.
+    const byPos = { BASE: [], ALERO: [], PIVOT: [] };
+    draft.forEach(d => { if (byPos[d.position]) byPos[d.position].push(d.id); });
+    const starters = [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)];
+    if (starters.length === 5) team = { ...team, lineup: { ...team.lineup, formation: "2-2-1", starters } };
     await writeTeam(leagueId, name, team);
     return team;
   }, []);
@@ -2298,12 +2326,12 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
 
   return (
     <header className="px-4 pb-2.5" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between">
         <button onClick={onBackToLeagues} className="fl-tap flex items-center gap-1 -ml-0.5">
           <ChevronLeft size={14} color={C.muted} />
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Mis ligas</span>
         </button>
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-col items-end gap-1">
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
           <button onClick={toggleNotifications} disabled={notifDisabled} title={notifLabel} className="fl-tap flex items-center justify-center disabled:opacity-50">
             {busy ? <Loader2 size={16} className="animate-spin" color={C.muted} />
