@@ -1328,13 +1328,17 @@ function startedJornadas(jornadas) {
   const filtered = list.filter((j, i) => {
     if (i === 0) return true; // la primera jornada se ve SIEMPRE, pase lo que pase con sus fechas/datos
     const d = jornadaDate(j);
-    if (d) return d <= today;
-    // Sin ninguna fecha válida en sus partidos: si ya hay marcadores o
-    // estadísticas cargadas, se considera igualmente "empezada" — mejor
-    // mostrarla de más que ocultarla por un dato de fecha mal formateado.
+    if (d && d <= today) return true;
+    // Aunque la fecha todavía no haya llegado (o no sea válida): si ya se ha
+    // introducido el resultado de algún partido suyo, se considera empezada.
     const hasScores = (j.partidos || []).some((p) => p.marcadorLocal != null && p.marcadorLocal !== "" && p.marcadorVisitante != null && p.marcadorVisitante !== "");
-    const hasStats = j.stats && Object.keys(j.stats).length > 0;
-    return hasScores || hasStats;
+    if (hasScores) return true;
+    // Sin fecha válida y sin marcadores: si aun así hay estadísticas cargadas, se muestra igual.
+    if (!d) {
+      const hasStats = j.stats && Object.keys(j.stats).length > 0;
+      if (hasStats) return true;
+    }
+    return false;
   });
   return filtered;
 }
@@ -2912,7 +2916,20 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
   const [selectedIdx, setSelectedIdx] = useState(Math.max(jornadas.length - 1, 0));
   const jornada = jornadas[selectedIdx];
   const ideal = useMemo(() => jornada ? idealFiveService.compute(jornada, players) : null, [jornada, players]);
-  const idealPlayers = ideal ? ideal.playerIds.map(id => players.find(p => p.id === id)).filter(Boolean) : [];
+
+  const findPlayer = (id) => players.find(p => p.id === id) || null;
+  const pointsFor = (id) => {
+    const p = findPlayer(id);
+    if (!p || !jornada) return 0;
+    const stats = jornada.stats?.[id];
+    return stats ? calcPointsBreakdown(stats, p.position).total : 0;
+  };
+  const byPos = (posKey) => (ideal?.playerIds || []).filter(id => findPlayer(id)?.position === posKey);
+  const rows = [
+    { pos: POSITIONS[2], ids: byPos("PIVOT") },
+    { pos: POSITIONS[1], ids: byPos("ALERO") },
+    { pos: POSITIONS[0], ids: byPos("BASE") },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -2942,28 +2959,32 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
         {!ideal ? (
           <EmptyState compact title="Todavía sin datos suficientes" text="En cuanto haya suficientes estadísticas cargadas de esta jornada, aparecerá aquí el 5 ideal." />
         ) : (
-          <div className="space-y-2">
-            {idealPlayers.map(p => {
-              const stats = jornada.stats?.[p.id];
-              const pts = stats ? calcPointsBreakdown(stats, p.position).total : 0;
-              return (
-                <div key={p.id} className="fl-row flex items-center gap-3 px-3.5 py-3">
-                  <PlayerPhoto url={p.photo} size={52} rounded={12} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <PositionBadge posKey={p.position} />
-                      <span className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</span>
-                    </div>
-                    <div className="fl-mono text-[10px] mt-0.5 flex items-center gap-1" style={{ color: C.muted }}>
-                      <TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={14} /> {p.team}
-                    </div>
+          <>
+            <div className="rounded-2xl relative overflow-hidden" style={{ background: C.navy700, border: `2px solid ${C.gold}55`, boxShadow: `0 0 24px ${C.gold}22`, minHeight: 420 }}>
+              <BasketballCourt />
+              <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
+                {rows.map(({ pos, ids }) => (
+                  <div key={pos.key} className={`flex items-start flex-wrap ${pos.key === "ALERO" ? "justify-between px-1" : "justify-center gap-3"}`}>
+                    {ids.map((id) => {
+                      const p = findPlayer(id);
+                      return (
+                        <div key={id} className="flex flex-col items-center">
+                          <div className="relative">
+                            <CourtSlot player={p} size={84} teamCrests={teamCrests} />
+                            <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                              style={{ background: C.navy900, color: C.gold, border: `1px solid ${C.gold}` }}>
+                              {pointsFor(id)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                  <span className="fl-mono text-base font-bold" style={{ color: C.gold }}>{pts}</span>
-                </div>
-              );
-            })}
-            <div className="fl-mono text-[10px] text-center mt-1" style={{ color: C.muted }}>Alineación: {ideal.formation} · {ideal.total} puntos en total</div>
-          </div>
+                ))}
+              </div>
+            </div>
+            <div className="fl-mono text-[10px] text-center mt-2.5" style={{ color: C.muted }}>Alineación: {ideal.formation} · {ideal.total} puntos en total</div>
+          </>
         )}
       </div>
     </div>
@@ -2973,7 +2994,6 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
 function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
-  const [showIdealFive, setShowIdealFive] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const marketAssets = (market.assetIds || []).length;
@@ -3093,14 +3113,6 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         </button>
       )}
 
-      {startedJornadas(jornadas).length > 0 && (
-        <button onClick={() => setShowIdealFive(true)}
-          className="fl-tap w-full mt-2.5 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
-          style={{ border: `1.5px solid ${C.gold}`, color: C.gold }}>
-          <Star size={15} fill={C.gold} /> Ver 5 ideal
-        </button>
-      )}
-
       {showCalendar && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
           initialIndex={Math.max(jornadas.length - 1, 0)} onClose={() => setShowCalendar(false)} />
@@ -3110,11 +3122,6 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         <TripleFantasyScreen jornada={lastJornada} jornadaNumber={currentJornadaNumber} players={players} jornadas={jornadas}
           myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests}
           onJoin={onJoinTriple} onClose={() => setShowTriple(false)} />
-      )}
-
-      {showIdealFive && (
-        <IdealFiveScreen jornadas={startedJornadas(jornadas)} players={players} teamCrests={teamCrests}
-          onClose={() => setShowIdealFive(false)} />
       )}
     </div>
   );
@@ -3750,6 +3757,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 // y entrenadora/or), cada una con los puntos que hizo ese día.
 function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests }) {
   const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
+  const [showIdealFive, setShowIdealFive] = useState(false);
   if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
 
   const jornada = jornadas[selectedIdx];
@@ -3865,6 +3873,17 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
             </div>
           </div>
         </>
+      )}
+
+      <button onClick={() => setShowIdealFive(true)}
+        className="fl-tap w-full mt-3 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+        style={{ border: `1.5px solid ${C.gold}`, color: C.gold }}>
+        <Star size={15} fill={C.gold} /> Ver 5 ideal
+      </button>
+
+      {showIdealFive && (
+        <IdealFiveScreen jornadas={jornadas} players={players} teamCrests={teamCrests}
+          onClose={() => setShowIdealFive(false)} />
       )}
     </div>
   );
@@ -4369,23 +4388,26 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <CountdownChip closesAt={market.closesAt} opensAt={market.opensAt} isOpen={isMarketOpen} />
-        <div className="flex items-center gap-2">
-          <div className="fl-mono text-xs flex items-center gap-1" style={{ color: C.baby }}><Wallet size={13} /> {fmtCredits(budgetAvailable)}</div>
-          <button onClick={() => setShowSearch(true)} className="fl-tap p-2 rounded-md" style={{ border: `1px solid ${C.line}` }} title="Buscar jugadora o entrenadora/or">
-            <Search size={19} color={C.white} />
-          </button>
+      <div className="sticky z-20 -mx-4 px-4 pb-2" style={{ top: "env(safe-area-inset-top, 0px)", background: C.navy900, paddingTop: 10 }}>
+        <div className="flex items-center justify-between mb-3">
+          <CountdownChip closesAt={market.closesAt} opensAt={market.opensAt} isOpen={isMarketOpen} />
+          <div className="flex items-center gap-2">
+            <div className="fl-mono text-xs flex items-center gap-1" style={{ color: C.baby }}><Wallet size={13} /> {fmtCredits(budgetAvailable)}</div>
+            <button onClick={() => setShowSearch(true)} className="fl-tap p-2 rounded-md" style={{ border: `1px solid ${C.line}` }} title="Buscar jugadora o entrenadora/or">
+              <Search size={19} color={C.white} />
+            </button>
+          </div>
+        </div>
+        <div className="flex gap-1.5">
+          {[["mercado", "Mercado"], ["operaciones", "Mis operaciones"], ["historico", "Histórico"]].map(([k, l]) => (
+            <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
+              style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
+              {l.toUpperCase()}
+            </button>
+          ))}
         </div>
       </div>
-      <div className="flex gap-1.5 mb-3">
-        {[["mercado", "Mercado"], ["operaciones", "Mis operaciones"], ["historico", "Histórico"]].map(([k, l]) => (
-          <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 fl-mono text-[11px] py-2 rounded-lg"
-            style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
-            {l.toUpperCase()}
-          </button>
-        ))}
-      </div>
+      <div className="mt-3">
 
       {sub === "mercado" && (
         <>
@@ -4463,6 +4485,8 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setDetailPlayer(null)} />
       )}
+
+      </div>
 
       {showSearch && (
         <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam}
