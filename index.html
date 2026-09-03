@@ -2344,12 +2344,12 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
           className="fl-tap flex items-center justify-center flex-shrink-0 disabled:opacity-50"
           style={{
             width: 40, height: 40, borderRadius: 10,
-            background: notifState === "on" ? C.babySoft : C.navy800,
-            border: `1.5px solid ${notifState === "on" ? C.baby : C.line}`,
+            background: notifState === "on" ? C.babySoft : C.navy600,
+            border: `1.5px solid ${notifState === "on" ? C.baby : "rgba(255,255,255,0.28)"}`,
           }}>
           {busy ? <Loader2 size={19} className="animate-spin" color={C.muted} />
             : notifState === "on" ? <Bell size={19} color={C.baby} fill={C.baby} />
-            : <BellOff size={19} color={C.muted} />}
+            : <BellOff size={19} color={C.white} />}
         </button>
       </div>
       {notifState === "ios-add-to-home" && (
