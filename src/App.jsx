@@ -594,6 +594,39 @@ const tripleFantasyService = {
   },
 };
 
+// --- idealFiveService ------------------------------------------------------
+// "5 ideal" de cada jornada: las 5 jugadoras (nunca entrenadoras/es) que más
+// puntos Fantasy hacen esa jornada, cuadrando con alguna de las 3
+// alineaciones válidas (2-2-1 / 1-3-1 / 1-2-2). Se prueban las 3 y se elige la
+// combinación con más puntos en total. Cada persona de la liga que tenga
+// alguna de esas 5 jugadoras en su plantilla recibe 100.000 €.
+const IDEAL_FIVE_REWARD = 0.1; // 100.000 €
+const idealFiveService = {
+  compute(jornada, players) {
+    const jornadaPoints = tripleFantasyService.jornadaPointsByPlayer(jornada, players);
+    const byPos = { BASE: [], ALERO: [], PIVOT: [] };
+    Object.entries(jornadaPoints).forEach(([pid, pts]) => {
+      const pl = players.find((p) => p.id === pid);
+      if (pl && byPos[pl.position]) byPos[pl.position].push({ id: pid, pts });
+    });
+    Object.values(byPos).forEach((list) => list.sort((a, b) => b.pts - a.pts));
+
+    let best = null;
+    Object.entries(FORMATIONS).forEach(([formation, need]) => {
+      const picks = [];
+      let total = 0;
+      let ok = true;
+      Object.entries(need).forEach(([posKey, count]) => {
+        const available = byPos[posKey] || [];
+        if (available.length < count) { ok = false; return; }
+        for (let i = 0; i < count; i++) { picks.push(available[i].id); total += available[i].pts; }
+      });
+      if (ok && (!best || total > best.total)) best = { formation, playerIds: picks, total };
+    });
+    return best; // null si no hay suficientes jugadoras con estadísticas esa jornada
+  },
+};
+
 // --- marketService -----------------------------------------------------------
 const marketService = {
   parseHM(str) {
@@ -1625,12 +1658,44 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Liquidación del "5 ideal": una sola vez por jornada (lista global
+  // "idealFiveAwarded"), calcula las 5 jugadoras con más puntos de esa
+  // jornada cuadrando alguna alineación válida, y abona 100.000 € a
+  // CUALQUIER equipo de CUALQUIER liga que tenga alguna de esas 5 en su
+  // plantilla (por eso usa readAllTeamsGlobal, no una liga concreta).
+  const checkIdealFive = useCallback(async () => {
+    try {
+      const freshJ = await readJornadas();
+      const freshPlayers = await readPlayers();
+      const awarded = await readShared("idealFiveAwarded", []);
+      for (const jornada of freshJ) {
+        if (awarded.includes(jornada.id)) continue;
+        if (!jornada.stats || Object.keys(jornada.stats).length < 5) continue;
+        const ideal = idealFiveService.compute(jornada, freshPlayers);
+        if (!ideal) continue;
+        const idealSet = new Set(ideal.playerIds);
+        const allTeams = (await readAllTeamsGlobal()) || {};
+        const writes = [];
+        Object.values(allTeams).forEach((t) => {
+          const owns = teamService.squadIds(t).some((id) => idealSet.has(id));
+          if (!owns) return;
+          const nextT = { ...t, budgetSpent: (t.budgetSpent || 0) - IDEAL_FIVE_REWARD };
+          writes.push(writeTeam(t.leagueId, t.name, nextT));
+          sendPushNotification(t.leagueId, t.name, "⭐ ¡Estás en el 5 ideal!", `Una de tus jugadoras ha entrado en el 5 ideal de ${jornada.name}. Te llevas ${fmtCredits(IDEAL_FIVE_REWARD)}.`);
+        });
+        await Promise.all(writes);
+        await writeShared("idealFiveAwarded", [...awarded, jornada.id]);
+      }
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (profile === undefined) return;
     checkJornadaStartWarning();
-    const t = setInterval(checkJornadaStartWarning, 60000);
+    checkIdealFive();
+    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); }, 60000);
     return () => clearInterval(t);
-  }, [profile, checkJornadaStartWarning]);
+  }, [profile, checkJornadaStartWarning, checkIdealFive]);
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
@@ -2839,9 +2904,76 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
   );
 }
 
+// Pantalla "5 ideal": muestra, jornada a jornada, las 5 jugadoras con más
+// puntos que cuadraban una alineación válida ese día. Se recalcula al vuelo
+// (es una función pura sobre las estadísticas ya cargadas), aunque el premio
+// de 100.000 € solo se abona una vez por jornada (ver checkIdealFive en App).
+function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
+  const [selectedIdx, setSelectedIdx] = useState(Math.max(jornadas.length - 1, 0));
+  const jornada = jornadas[selectedIdx];
+  const ideal = useMemo(() => jornada ? idealFiveService.compute(jornada, players) : null, [jornada, players]);
+  const idealPlayers = ideal ? ideal.playerIds.map(id => players.find(p => p.id === id)).filter(Boolean) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6 flex items-center justify-center gap-1.5" style={{ color: C.white }}>
+          <Star size={15} fill={C.gold} color={C.gold} /> 5 ideal
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        <div className="flex gap-1.5 mb-4 overflow-x-auto fl-scrollbar">
+          {jornadas.map((j, i) => (
+            <button key={j.id} onClick={() => setSelectedIdx(i)}
+              className="fl-tap flex-shrink-0 rounded-full flex items-center justify-center fl-mono text-[11px] font-semibold"
+              style={{ width: 38, height: 38, background: i === selectedIdx ? C.gold : C.navy800, color: i === selectedIdx ? C.ink : C.muted, border: `1px solid ${i === selectedIdx ? C.gold : C.line}` }}>
+              J{i + 1}
+            </button>
+          ))}
+        </div>
+
+        <div className="fl-row p-3.5 mb-4 text-center" style={{ border: `1px solid ${C.gold}55` }}>
+          <p className="fl-body text-xs" style={{ color: C.muted }}>
+            Cada jornada, quien tenga alguna de estas 5 jugadoras en su plantilla recibe <span style={{ color: C.gold, fontWeight: 600 }}>{fmtCredits(IDEAL_FIVE_REWARD)}</span> automáticamente.
+          </p>
+        </div>
+
+        {!ideal ? (
+          <EmptyState compact title="Todavía sin datos suficientes" text="En cuanto haya suficientes estadísticas cargadas de esta jornada, aparecerá aquí el 5 ideal." />
+        ) : (
+          <div className="space-y-2">
+            {idealPlayers.map(p => {
+              const stats = jornada.stats?.[p.id];
+              const pts = stats ? calcPointsBreakdown(stats, p.position).total : 0;
+              return (
+                <div key={p.id} className="fl-row flex items-center gap-3 px-3.5 py-3">
+                  <PlayerPhoto url={p.photo} size={52} rounded={12} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <PositionBadge posKey={p.position} />
+                      <span className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</span>
+                    </div>
+                    <div className="fl-mono text-[10px] mt-0.5 flex items-center gap-1" style={{ color: C.muted }}>
+                      <TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={14} /> {p.team}
+                    </div>
+                  </div>
+                  <span className="fl-mono text-base font-bold" style={{ color: C.gold }}>{pts}</span>
+                </div>
+              );
+            })}
+            <div className="fl-mono text-[10px] text-center mt-1" style={{ color: C.muted }}>Alineación: {ideal.formation} · {ideal.total} puntos en total</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
+  const [showIdealFive, setShowIdealFive] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const marketAssets = (market.assetIds || []).length;
@@ -2898,15 +3030,8 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       <div>
         <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
-        {jornadas.length === 0 ? (
+        {jornadas.length === 0 && (
           <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
-        ) : (
-          <div className="fl-row p-3.5 flex items-center justify-between">
-            <span className="fl-body text-sm" style={{ color: C.white }}>{lastJornada.name}</span>
-            <span className="fl-mono text-sm font-semibold" style={{ color: C.positive }}>
-              +{computeTeamJornadaPoints(lastJornada, `${leagueId}::${profile.name}`, myTeam.lineup, players)}
-            </span>
-          </div>
         )}
       </div>
 
@@ -2968,6 +3093,14 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         </button>
       )}
 
+      {startedJornadas(jornadas).length > 0 && (
+        <button onClick={() => setShowIdealFive(true)}
+          className="fl-tap w-full mt-2.5 rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2"
+          style={{ border: `1.5px solid ${C.gold}`, color: C.gold }}>
+          <Star size={15} fill={C.gold} /> Ver 5 ideal
+        </button>
+      )}
+
       {showCalendar && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
           initialIndex={Math.max(jornadas.length - 1, 0)} onClose={() => setShowCalendar(false)} />
@@ -2977,6 +3110,11 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         <TripleFantasyScreen jornada={lastJornada} jornadaNumber={currentJornadaNumber} players={players} jornadas={jornadas}
           myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests}
           onJoin={onJoinTriple} onClose={() => setShowTriple(false)} />
+      )}
+
+      {showIdealFive && (
+        <IdealFiveScreen jornadas={startedJornadas(jornadas)} players={players} teamCrests={teamCrests}
+          onClose={() => setShowIdealFive(false)} />
       )}
     </div>
   );
@@ -4234,9 +4372,9 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
       <div className="flex items-center justify-between mb-3">
         <CountdownChip closesAt={market.closesAt} opensAt={market.opensAt} isOpen={isMarketOpen} />
         <div className="flex items-center gap-2">
-          <div className="fl-mono text-xs flex items-center gap-1" style={{ color: C.baby }}><Wallet size={13} /> {fmtCredits(budgetAvailable)} disp.</div>
-          <button onClick={() => setShowSearch(true)} className="fl-tap p-1.5 rounded-md" style={{ border: `1px solid ${C.line}` }} title="Buscar jugadora o entrenadora/or">
-            <Search size={15} color={C.white} />
+          <div className="fl-mono text-xs flex items-center gap-1" style={{ color: C.baby }}><Wallet size={13} /> {fmtCredits(budgetAvailable)}</div>
+          <button onClick={() => setShowSearch(true)} className="fl-tap p-2 rounded-md" style={{ border: `1px solid ${C.line}` }} title="Buscar jugadora o entrenadora/or">
+            <Search size={19} color={C.white} />
           </button>
         </div>
       </div>
