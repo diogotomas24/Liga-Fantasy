@@ -985,6 +985,21 @@ async function deleteLeagueRow(id) {
   }
 }
 
+// Ahora que hay cuentas reales, "mis ligas" ya NO se calcula desde algo
+// guardado en el navegador (eso se compartía entre cualquier cuenta que
+// entrara desde el mismo dispositivo, lo cual estaba mal). Se calcula de
+// verdad mirando en qué ligas esta cuenta tiene un equipo creado — dato que
+// vive en el servidor, ligado al nombre de la cuenta, no al dispositivo.
+async function readMyLeagueIdsFromAccount(name) {
+  try {
+    const allTeams = (await readAllTeamsGlobal()) || {};
+    const ids = new Set();
+    Object.values(allTeams).forEach((t) => { if (t.name === name) ids.add(t.leagueId); });
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
 // Lista local (en este dispositivo) de las ligas en las que participa esta
 // persona. Al no haber login real, es lo más simple para poder estar en
 // varias ligas a la vez, como pide el diseño de "Mis ligas".
@@ -1984,12 +1999,14 @@ export default function App() {
     })();
   }, []);
 
-  // En cuanto hay un nombre elegido, cargamos "Mis ligas" (las que este
-  // dispositivo tiene guardadas) y recuperamos cuál era la última liga activa.
+  // En cuanto hay una cuenta activa, cargamos "Mis ligas" DE VERDAD: las
+  // ligas donde esa cuenta tiene un equipo creado en el servidor (no las que
+  // recordara este navegador, que podían ser las de otra persona en el mismo
+  // dispositivo). Y recuperamos cuál era la última liga activa.
   useEffect(() => {
     if (!profile) return;
     (async () => {
-      const ids = await readMyLeagueIds();
+      const ids = await readMyLeagueIdsFromAccount(profile.name);
       const leagues = await readLeaguesByIds(ids);
       setMyLeagues(leagues);
       const savedActive = await readPersonal("activeLeagueId", null);
