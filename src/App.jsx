@@ -1768,7 +1768,7 @@ function Onboarding({ onEnter, onGoogle }) {
 
 // Primera vez que alguien entra con Google: ya tiene sesión, pero todavía no
 // ha elegido el nombre con el que juega (Google no lo pregunta).
-function ChooseNameScreen({ onSubmit }) {
+function ChooseNameScreen({ onSubmit, onSignOut }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1798,6 +1798,9 @@ function ChooseNameScreen({ onSubmit }) {
           <button disabled={!name.trim() || busy} onClick={submit}
             className="fl-body w-full mt-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
             {busy ? <Loader2 className="animate-spin" size={14} /> : <ChevronRight size={14} />} Continuar
+          </button>
+          <button onClick={onSignOut} className="fl-tap w-full text-center mt-3 fl-body text-xs" style={{ color: C.mutedInk }}>
+            ¿No eres tú? Cerrar sesión
           </button>
         </div>
       </div>
@@ -2523,7 +2526,7 @@ export default function App() {
   }, []);
 
   if (profile === undefined) return <Loading />;
-  if (pendingUser) return <ChooseNameScreen onSubmit={completeGoogleName} />;
+  if (pendingUser) return <ChooseNameScreen onSubmit={completeGoogleName} onSignOut={signOut} />;
   if (profile === null) return <Onboarding onEnter={completeOnboarding} onGoogle={handleGoogleLogin} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
