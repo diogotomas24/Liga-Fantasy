@@ -914,10 +914,10 @@ async function readAllTeamsGlobal() {
     const map = {};
     (data || []).forEach((row) => {
       const t = row.value;
-      const rest = row.key.slice(TEAM_KEY_PREFIX.length); // "<leagueId>_<slug>"
-      const sep = rest.indexOf("_");
+      const rest = row.key.slice(TEAM_KEY_PREFIX.length); // "<leagueId>::<slug>"
+      const sep = rest.indexOf("::");
       const leagueId = sep >= 0 ? rest.slice(0, sep) : rest;
-      const name = t?.name || (sep >= 0 ? rest.slice(sep + 1) : rest);
+      const name = t?.name || (sep >= 0 ? rest.slice(sep + 2) : rest);
       map[`${leagueId}::${name}`] = { ...t, name, leagueId };
     });
     return map;
@@ -1242,7 +1242,11 @@ function sendPushNotification(leagueId, userName, title, body, extra) {
    kv_store por liga, con el id de la liga metido en el nombre de la clave.
    ----------------------------------------------------------------------- */
 const TEAM_KEY_PREFIX = "team_";
-function teamKey(leagueId, name) { return `${TEAM_KEY_PREFIX}${leagueId}_${slug(name) || "x"}`; }
+// separador "::" (no "_") entre el id de la liga y el nombre: el propio id de
+// liga (uid("lg")) ya lleva guiones bajos por dentro, así que un separador
+// que también fuera "_" hacía imposible saber dónde terminaba uno y
+// empezaba el otro al leer TODOS los equipos de golpe (readAllTeamsGlobal).
+function teamKey(leagueId, name) { return `${TEAM_KEY_PREFIX}${leagueId}::${slug(name) || "x"}`; }
 function leagueKey(leagueId, base) { return `${base}_${leagueId}`; }
 
 async function readTeam(leagueId, name) {
@@ -1271,7 +1275,7 @@ async function deleteTeamRow(leagueId, name) {
 // "inténtalo en el siguiente ciclo", no como "no había nada".
 async function readAllTeams(leagueId) {
   try {
-    const prefix = `${TEAM_KEY_PREFIX}${leagueId}_`;
+    const prefix = `${TEAM_KEY_PREFIX}${leagueId}::`;
     const { data, error } = await supabase.from("kv_store").select("key,value").like("key", `${prefix}%`);
     if (error) throw error;
     const map = {};
