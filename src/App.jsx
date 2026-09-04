@@ -1043,6 +1043,8 @@ async function readJornadas() {
         id: p.id, local: p.local, visitante: p.visitante,
         fecha: p.fecha || "", hora: p.hora || "",
         marcadorLocal: p.marcador_local ?? "", marcadorVisitante: p.marcador_visitante ?? "",
+        p1Local: p.marcador_local_p1 ?? "", p2Local: p.marcador_local_p2 ?? "", p3Local: p.marcador_local_p3 ?? "", p4Local: p.marcador_local_p4 ?? "",
+        p1Visitante: p.marcador_visitante_p1 ?? "", p2Visitante: p.marcador_visitante_p2 ?? "", p3Visitante: p.marcador_visitante_p3 ?? "", p4Visitante: p.marcador_visitante_p4 ?? "",
       });
     });
     const statsByJornada = {};
@@ -2530,7 +2532,7 @@ export default function App() {
   if (profile === null) return <Onboarding onEnter={completeOnboarding} onGoogle={handleGoogleLogin} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
-    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} onSignOut={signOut} />;
+    return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} onSignOut={signOut} players={players} />;
   }
   if (!market) return <Loading />;
 
@@ -2576,7 +2578,7 @@ export default function App() {
 /* =============================================================================
    MIS LIGAS
    ========================================================================== */
-function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague, onSignOut }) {
+function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague, onSignOut, players }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
   const [name, setName] = useState("");
@@ -2707,7 +2709,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
               <EmptyState compact title="Sin partidos" text="Todavía no hay partidos añadidos para esta jornada." />
             ) : (
               <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
-                {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} />)}
+                {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={currentJornada} players={players} />)}
               </div>
             )}
             {(currentJornada.partidos || []).length > 0 && (
@@ -2721,7 +2723,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       </div>
 
       {showCalendar && (
-        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
+        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players}
           initialIndex={Math.max(currentJornadaNumber - 1, 0)} onClose={() => setShowCalendar(false)} />
       )}
 
@@ -2989,25 +2991,132 @@ function groupPartidosByFecha(partidos) {
 
 // Fila de un partido: escudo+nombre a cada lado, marcador (si ya se jugó) o
 // hora/"VS" en el centro.
-function PartidoRow({ m, teamCrests }) {
+function PartidoRow({ m, teamCrests, jornada, players }) {
+  const [showDetail, setShowDetail] = useState(false);
   const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
     m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
   return (
-    <div className="px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
-      <div className="flex-1 flex items-center gap-2 justify-end text-right min-w-0">
-        <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.local}</span>
-        <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={28} />
+    <>
+      <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+        <div className="flex-1 flex items-center gap-2 justify-end text-right min-w-0">
+          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.local}</span>
+          <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={28} />
+        </div>
+        <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 52 }}>
+          {played ? (
+            <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+          ) : m.hora
+            ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
+            : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
+        </div>
+        <div className="flex-1 flex items-center gap-2 min-w-0">
+          <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={28} />
+          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.visitante}</span>
+        </div>
+      </button>
+      {showDetail && jornada && (
+        <PartidoDetailScreen partido={m} jornada={jornada} players={players || []} teamCrests={teamCrests} onClose={() => setShowDetail(false)} />
+      )}
+    </>
+  );
+}
+
+// Aggregado de estadísticas de TODO un equipo real (no de tu plantilla) en una
+// jornada concreta, sumando a todas las jugadoras cuyo "team" coincide.
+function aggregateTeamStats(teamName, jornada, players) {
+  const totals = { reb: 0, ast: 0, fp: 0, pd: 0, tap: 0 };
+  Object.entries(jornada?.stats || {}).forEach(([pid, s]) => {
+    const p = players.find((x) => x.id === pid);
+    if (!p || p.team !== teamName) return;
+    totals.reb += (s.rebofen || 0) + (s.rebdefe || 0);
+    totals.ast += s.asist || 0;
+    totals.fp += s.faltas || 0;
+    totals.pd += s.pd || 0;
+    totals.tap += s.tap || 0;
+  });
+  return totals;
+}
+
+// Ficha de un partido: marcador (con cuartos si están rellenados en
+// Supabase) y comparativa de estadísticas de equipo, sumando las
+// estadísticas de todas las jugadoras de cada equipo real esa jornada.
+function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose }) {
+  const played = m.marcadorLocal !== "" && m.marcadorLocal != null && m.marcadorVisitante !== "" && m.marcadorVisitante != null;
+  const quarters = [
+    [m.p1Local, m.p1Visitante], [m.p2Local, m.p2Visitante], [m.p3Local, m.p3Visitante], [m.p4Local, m.p4Visitante],
+  ];
+  const hasQuarters = quarters.some(([a, b]) => (a !== "" && a != null) || (b !== "" && b != null));
+
+  const localStats = useMemo(() => aggregateTeamStats(m.local, jornada, players), [m.local, jornada, players]);
+  const visitStats = useMemo(() => aggregateTeamStats(m.visitante, jornada, players), [m.visitante, jornada, players]);
+  const hasStats = Object.keys(jornada?.stats || {}).length > 0;
+  const rows = [
+    { key: "reb", label: "REB" }, { key: "ast", label: "AST" }, { key: "fp", label: "FP" },
+    { key: "pd", label: "PD" }, { key: "tap", label: "TAP" },
+  ];
+  const maxOf = (key) => Math.max(localStats[key], visitStats[key], 1);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Partido</div>
       </div>
-      <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 52 }}>
-        {played ? (
-          <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
-        ) : m.hora
-          ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
-          : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
-      </div>
-      <div className="flex-1 flex items-center gap-2 min-w-0">
-        <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={28} />
-        <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.visitante}</span>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="fl-mono text-[11px]" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ") || "Fecha por confirmar"}</span>
+          <span className="fl-mono text-[10px] px-2 py-1 rounded-full font-semibold" style={{ background: played ? C.babySoft : C.navy800, color: played ? C.baby : C.muted }}>
+            {played ? "Finalizado" : "Pendiente"}
+          </span>
+        </div>
+
+        <div className="fl-row p-4 mb-5">
+          {hasQuarters && (
+            <div className="flex items-center justify-end gap-2 mb-1.5 pr-0.5">
+              {["P1", "P2", "P3", "P4"].map((q) => <span key={q} className="fl-mono text-[9px] text-center" style={{ color: C.muted, width: 22 }}>{q}</span>)}
+              <span style={{ width: 34 }} />
+            </div>
+          )}
+          {[
+            { name: m.local, score: m.marcadorLocal, p: quarters.map((q) => q[0]), color: C.baby },
+            { name: m.visitante, score: m.marcadorVisitante, p: quarters.map((q) => q[1]), color: C.principal },
+          ].map((team, i) => (
+            <div key={i} className="flex items-center gap-2.5 py-2">
+              <TeamCrest name={team.name} photo={teamCrests?.[team.name]} size={32} />
+              <span className="fl-body text-sm font-medium flex-1 truncate" style={{ color: C.white }}>{team.name}</span>
+              {hasQuarters && team.p.map((v, qi) => (
+                <span key={qi} className="fl-mono text-xs text-center" style={{ color: C.muted, width: 22 }}>{v !== "" && v != null ? v : "–"}</span>
+              ))}
+              <span className="fl-mono text-xl font-bold text-right" style={{ color: team.color, width: 34 }}>{played ? team.score : "–"}</span>
+            </div>
+          ))}
+        </div>
+
+        {!hasStats ? (
+          <EmptyState compact title="Sin estadísticas todavía" text="En cuanto se carguen las estadísticas de esta jornada, verás aquí la comparativa del partido." />
+        ) : (
+          <div>
+            <div className="fl-mono text-[10px] mb-2.5" style={{ color: C.muted }}>COMPARATIVA DEL EQUIPO</div>
+            <div className="space-y-3">
+              {rows.map((r) => {
+                const lv = localStats[r.key], vv = visitStats[r.key], mx = maxOf(r.key);
+                return (
+                  <div key={r.key} className="flex items-center gap-2">
+                    <span className="fl-mono text-xs font-semibold text-right" style={{ color: C.white, width: 26 }}>{lv}</span>
+                    <div className="flex-1 h-1.5 rounded-full flex justify-end overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
+                      <div style={{ width: `${(lv / mx) * 100}%`, background: C.baby, height: "100%" }} />
+                    </div>
+                    <span className="fl-mono text-[9px] font-semibold text-center flex-shrink-0" style={{ color: C.muted, width: 28 }}>{r.label}</span>
+                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
+                      <div style={{ width: `${(vv / mx) * 100}%`, background: C.principal, height: "100%" }} />
+                    </div>
+                    <span className="fl-mono text-xs font-semibold" style={{ color: C.white, width: 26 }}>{vv}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3015,7 +3124,7 @@ function PartidoRow({ m, teamCrests }) {
 
 // Calendario completo: pantalla a pantalla completa con una jornada por pestaña
 // (J1, J2…) y sus partidos agrupados por fecha, al estilo del calendario oficial.
-function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
+function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players }) {
   const [idx, setIdx] = useState(initialIndex ?? Math.max(jornadas.length - 1, 0));
   const jornada = jornadas[idx];
   const grouped = useMemo(() => groupPartidosByFecha(jornada?.partidos), [jornada]);
@@ -3052,7 +3161,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose }) {
               <div key={gi}>
                 {g.fecha && <div className="fl-mono text-[10px] mb-1.5 uppercase" style={{ color: C.muted }}>{g.fecha}</div>}
                 <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
-                  {g.partidos.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} />)}
+                  {g.partidos.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={jornada} players={players} />)}
                 </div>
               </div>
             ))}
@@ -3313,6 +3422,7 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
 function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
+  const [detailPartido, setDetailPartido] = useState(null);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const marketAssets = (market.assetIds || []).length;
@@ -3400,7 +3510,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           <SectionTitle>Partidos de la jornada</SectionTitle>
           <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
             {partidos.map(m => (
-              <div key={m.id} className="px-3.5 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+              <button key={m.id} onClick={() => setDetailPartido(m)} className="fl-tap w-full text-left px-3.5 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
                 <div className="flex-1 flex flex-col items-center gap-1 text-center">
                   <TeamCrest name={m.local} photo={teamCrests?.[m.local]} />
                   <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.local}</span>
@@ -3419,10 +3529,14 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
                   <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} />
                   <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.visitante}</span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
+      )}
+
+      {detailPartido && (
+        <PartidoDetailScreen partido={detailPartido} jornada={lastJornada} players={players} teamCrests={teamCrests} onClose={() => setDetailPartido(null)} />
       )}
 
       {jornadas.length > 0 && (
@@ -3433,7 +3547,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       )}
 
       {showCalendar && (
-        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests}
+        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players}
           initialIndex={Math.max(jornadas.length - 1, 0)} onClose={() => setShowCalendar(false)} />
       )}
 
