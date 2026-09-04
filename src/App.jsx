@@ -1052,6 +1052,7 @@ async function readJornadas() {
       const map = statsByJornada[s.jornada_id] || (statsByJornada[s.jornada_id] = {});
       map[s.player_id] = {
         minutos: s.minutos || 0, puntos: s.puntos || 0, t3: s.t3 || 0, tlibre: s.tlibre || 0,
+        t2: s.t2 || 0, t2Intentados: s.t2_intentados || 0, t3Intentados: s.t3_intentados || 0, tlibreIntentados: s.tlibre_intentados || 0,
         rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
@@ -1094,6 +1095,7 @@ async function writeJornada(jornada) {
       const rows = statsEntries.map(([playerId, s]) => ({
         jornada_id: id, player_id: playerId,
         minutos: s.minutos || 0, puntos: s.puntos || 0, t3: s.t3 || 0, tlibre: s.tlibre || 0,
+        t2: s.t2 || 0, t2_intentados: s.t2Intentados || 0, t3_intentados: s.t3Intentados || 0, tlibre_intentados: s.tlibreIntentados || 0,
         rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
@@ -3036,6 +3038,45 @@ function aggregateTeamStats(teamName, jornada, players) {
   });
   return totals;
 }
+// Tiros metidos/intentados de TODO un equipo real, sumando a sus jugadoras esa jornada.
+function aggregateTeamShooting(teamName, jornada, players) {
+  const totals = { t2m: 0, t2a: 0, t3m: 0, t3a: 0, tlm: 0, tla: 0 };
+  Object.entries(jornada?.stats || {}).forEach(([pid, s]) => {
+    const p = players.find((x) => x.id === pid);
+    if (!p || p.team !== teamName) return;
+    totals.t2m += s.t2 || 0; totals.t2a += s.t2Intentados || 0;
+    totals.t3m += s.t3 || 0; totals.t3a += s.t3Intentados || 0;
+    totals.tlm += s.tlibre || 0; totals.tla += s.tlibreIntentados || 0;
+  });
+  return totals;
+}
+
+// Barra horizontal a prueba de fallos: el relleno usa position:absolute con un
+// ancho en % SOBRE UN CONTENEDOR CON POSITION:RELATIVE, así que su tamaño
+// nunca depende de c\u00e1lculos de flexbox (que pod\u00edan hacer que dos valores muy
+// distintos, p. ej. 1 y 9, se vieran con la barra pr\u00e1cticamente igual).
+function StatBar({ pct, color, align = "left" }) {
+  return (
+    <div style={{ position: "relative", width: "100%", height: 10, borderRadius: 999, background: "rgba(255,255,255,0.07)", overflow: "hidden" }}>
+      <div style={{ position: "absolute", top: 0, bottom: 0, [align === "left" ? "right" : "left"]: 0, width: `${pct}%`, background: color, borderRadius: 999 }} />
+    </div>
+  );
+}
+
+// Anillo de porcentaje (círculo con un arco de color proporcional al %).
+function PercentRing({ pct, color, size = 60, strokeWidth = 6 }) {
+  const r = (size - strokeWidth) / 2;
+  const c = 2 * Math.PI * r;
+  const offset = c * (1 - Math.min(100, Math.max(0, pct)) / 100);
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.09)" strokeWidth={strokeWidth} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={strokeWidth}
+        strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round" transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="central" fontSize={size * 0.26} fontWeight="700" fill={color} fontFamily="monospace">{pct}%</text>
+    </svg>
+  );
+}
 
 // Ficha de un partido: marcador (con cuartos si están rellenados en
 // Supabase) y comparativa de estadísticas de equipo, sumando las
@@ -3049,12 +3090,16 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
 
   const localStats = useMemo(() => aggregateTeamStats(m.local, jornada, players), [m.local, jornada, players]);
   const visitStats = useMemo(() => aggregateTeamStats(m.visitante, jornada, players), [m.visitante, jornada, players]);
+  const localShoot = useMemo(() => aggregateTeamShooting(m.local, jornada, players), [m.local, jornada, players]);
+  const visitShoot = useMemo(() => aggregateTeamShooting(m.visitante, jornada, players), [m.visitante, jornada, players]);
   const hasStats = Object.keys(jornada?.stats || {}).length > 0;
+  const hasShooting = (localShoot.t2a + localShoot.t3a + localShoot.tla + visitShoot.t2a + visitShoot.t3a + visitShoot.tla) > 0;
   const rows = [
     { key: "reb", label: "REB" }, { key: "ast", label: "AST" }, { key: "fp", label: "FP" },
     { key: "pd", label: "PD" }, { key: "tap", label: "TAP" },
   ];
   const maxOf = (key) => Math.max(localStats[key], visitStats[key], 1);
+  const pct = (made, att) => (att > 0 ? Math.round((made / att) * 100) : 0);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -3095,25 +3140,46 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
         {!hasStats ? (
           <EmptyState compact title="Sin estadísticas todavía" text="En cuanto se carguen las estadísticas de esta jornada, verás aquí la comparativa del partido." />
         ) : (
-          <div>
-            <div className="fl-mono text-[10px] mb-2.5" style={{ color: C.muted }}>COMPARATIVA DEL EQUIPO</div>
-            <div className="space-y-3">
+          <div className="mb-6">
+            <div className="fl-mono text-xs font-semibold mb-3" style={{ color: C.muted }}>COMPARATIVA DEL EQUIPO</div>
+            <div className="space-y-4">
               {rows.map((r) => {
                 const lv = localStats[r.key], vv = visitStats[r.key], mx = maxOf(r.key);
                 return (
-                  <div key={r.key} className="flex items-center gap-2">
-                    <span className="fl-mono text-xs font-semibold text-right" style={{ color: C.white, width: 26 }}>{lv}</span>
-                    <div className="flex-1 h-1.5 rounded-full flex justify-end overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
-                      <div style={{ width: `${(lv / mx) * 100}%`, background: C.baby, height: "100%" }} />
-                    </div>
-                    <span className="fl-mono text-[9px] font-semibold text-center flex-shrink-0" style={{ color: C.muted, width: 28 }}>{r.label}</span>
-                    <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
-                      <div style={{ width: `${(vv / mx) * 100}%`, background: C.principal, height: "100%" }} />
-                    </div>
-                    <span className="fl-mono text-xs font-semibold" style={{ color: C.white, width: 26 }}>{vv}</span>
+                  <div key={r.key} className="flex items-center gap-3">
+                    <span className="fl-mono text-sm font-bold text-right" style={{ color: C.white, width: 30 }}>{lv}</span>
+                    <div className="flex-1"><StatBar pct={(lv / mx) * 100} color={C.baby} align="left" /></div>
+                    <span className="fl-mono text-[10px] font-bold text-center flex-shrink-0" style={{ color: C.muted, width: 34 }}>{r.label}</span>
+                    <div className="flex-1"><StatBar pct={(vv / mx) * 100} color={C.principal} align="right" /></div>
+                    <span className="fl-mono text-sm font-bold" style={{ color: C.white, width: 30 }}>{vv}</span>
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {hasShooting && (
+          <div>
+            <div className="fl-mono text-xs font-semibold mb-3" style={{ color: C.muted }}>PORCENTAJES DE TIRO</div>
+            <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
+              {[
+                { label: "TL", lm: localShoot.tlm, la: localShoot.tla, vm: visitShoot.tlm, va: visitShoot.tla },
+                { label: "T2", lm: localShoot.t2m, la: localShoot.t2a, vm: visitShoot.t2m, va: visitShoot.t2a },
+                { label: "T3", lm: localShoot.t3m, la: localShoot.t3a, vm: visitShoot.t3m, va: visitShoot.t3a },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center justify-between px-3 py-4" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                  <div className="flex flex-col items-center" style={{ width: 76 }}>
+                    <PercentRing pct={pct(row.lm, row.la)} color={C.baby} />
+                    <span className="fl-mono text-[11px] mt-1.5" style={{ color: C.muted }}>{row.lm}/{row.la}</span>
+                  </div>
+                  <span className="fl-body text-sm font-semibold" style={{ color: C.white }}>{row.label}</span>
+                  <div className="flex flex-col items-center" style={{ width: 76 }}>
+                    <PercentRing pct={pct(row.vm, row.va)} color={C.principal} />
+                    <span className="fl-mono text-[11px] mt-1.5" style={{ color: C.muted }}>{row.vm}/{row.va}</span>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
