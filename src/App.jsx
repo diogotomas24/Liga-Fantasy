@@ -1699,8 +1699,8 @@ function Onboarding({ onEnter, onGoogle }) {
       <GlobalStyle />
       <div className="w-full max-w-sm">
         <div className="text-center mb-6">
-          <div className="fl-mono text-[11px] tracking-[0.2em]" style={{ color: C.principal }}>TEMPORADA 2025/26 · GRUPO A2 · BALONCESTO</div>
-          <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fantasy Liga<br />Femenina Aragón</h1>
+          <div className="fl-mono text-sm tracking-[0.2em]" style={{ color: C.white }}>TEMPORADA 2026/2027</div>
+          <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fantasy Liga<br />Copa Aragón</h1>
         </div>
         <div className="fl-card p-5">
           <button disabled={googleBusy} onClick={submitGoogle}
@@ -2611,7 +2611,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
       <header className="px-4 pb-4 text-center relative" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
-        <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.principal }}>GRUPO A2 · ARAGÓN · BALONCESTO</div>
+        <div className="fl-mono text-sm tracking-[0.2em]" style={{ color: C.principal }}>COPA ARAGÓN</div>
         <h1 className="fl-display text-2xl uppercase mt-0.5" style={{ color: C.white }}>Mis Ligas</h1>
         <div className="flex items-center justify-center gap-2 mt-1.5">
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile?.name}</span>
