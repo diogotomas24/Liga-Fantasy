@@ -816,9 +816,22 @@ async function signUpAccount(email, password, name) {
     if (error) throw error;
     const userId = data.user?.id;
     if (!userId) return { ok: false, error: "No se pudo crear la cuenta." };
+    // Supabase no siempre lanza un error cuando el email ya existe (por seguridad, para no
+    // revelar qué emails están registrados): en vez de eso, devuelve "éxito" pero con
+    // identities vacío. Hay que detectarlo aquí, o si no el fallo real sale luego disfrazado
+    // de "nombre en uso" al intentar guardar el perfil sobre una cuenta que ya tenía uno.
+    if (Array.isArray(data.user?.identities) && data.user.identities.length === 0) {
+      return { ok: false, error: "Ese email ya tiene una cuenta. Prueba a iniciar sesión." };
+    }
     const { error: profErr } = await supabase.from("profiles").insert({ id: userId, name: name.trim() });
     if (profErr) {
-      if (profErr.code === "23505") return { ok: false, error: "Ese nombre ya está en uso. Elige otro." };
+      if (profErr.code === "23505") {
+        // Distingue SOBRE QUÉ columna ha chocado: si es el id (clave primaria), esta
+        // cuenta ya tenía un perfil de antes (email repetido); si no, el nombre es el que
+        // ya está cogido por otra persona.
+        const onId = /pkey|profiles_pkey/i.test(profErr.message || "");
+        return { ok: false, error: onId ? "Ese email ya tiene una cuenta. Prueba a iniciar sesión." : "Ese nombre ya está en uso. Elige otro." };
+      }
       return { ok: false, error: "No se pudo guardar tu nombre." };
     }
     // Sin sesión todavía = Supabase exige confirmar el email antes de poder entrar.
