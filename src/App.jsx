@@ -3,7 +3,7 @@ import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
-  ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical,
+  ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -3859,20 +3859,42 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
   const [detailPartido, setDetailPartido] = useState(null);
+  const [showValorChart, setShowValorChart] = useState(false);
+  const [showAllMovers, setShowAllMovers] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
-  const marketAssets = (market.assetIds || []).length;
   const lastJornada = findCurrentJornada(jornadas);
   const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
   const partidos = lastJornada?.partidos || [];
   const myTripleEntry = lastJornada ? (tripleEntries || []).find(e => e.jornadaId === lastJornada.id && e.userId === profile.name) : null;
+
+  // Valor de plantilla hoy, y cuánto ha cambiado hoy (basePrice de hoy vs
+  // prevBasePrice, que el motor de precios diario deja siempre como "el
+  // valor de justo antes del último movimiento").
+  const valorHoy = (myTeam.squad || []).reduce((s, e) => { const p = players.find(x => x.id === e.id); return s + (p?.basePrice || 0); }, 0);
+  const valorAyer = (myTeam.squad || []).reduce((s, e) => { const p = players.find(x => x.id === e.id); return s + (p?.prevBasePrice ?? p?.basePrice ?? 0); }, 0);
+  const cambioValor = valorHoy - valorAyer;
+  const cambioPct = valorAyer > 0 ? (cambioValor / valorAyer) * 100 : 0;
+
+  // Top subidas/bajadas de TODA la competición (cualquier jugadora exista o no en tu plantilla).
+  const movers = useMemo(() => {
+    const changes = players
+      .filter(p => p.position !== "DT")
+      .map(p => ({ player: p, delta: (p.basePrice || 0) - (p.prevBasePrice ?? p.basePrice ?? 0) }))
+      .map(c => ({ ...c, pct: (c.player.prevBasePrice || 0) > 0 ? (c.delta / c.player.prevBasePrice) * 100 : 0 }));
+    const gainers = changes.filter(c => c.delta > 0).sort((a, b) => b.delta - a.delta);
+    const losers = changes.filter(c => c.delta < 0).sort((a, b) => a.delta - b.delta);
+    return { gainers, losers };
+  }, [players]);
 
   return (
     <div className="space-y-4">
       <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
         <div className="flex items-center justify-between">
           <div>
-            <div className="fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>TU LIGA</div>
+            <div className="flex items-center gap-1.5 fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>
+              <Trophy size={12} /> TU LIGA
+            </div>
             <div className="fl-display text-lg uppercase" style={{ color: C.white }}>{profile.name}</div>
           </div>
           <div className="text-right">
@@ -3882,36 +3904,87 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
-        <StatChip label="Disponible" value={fmtCredits(budgetAvailable)} accent={C.baby} />
-        <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} accent={C.white} />
-        <StatChip label="Puntos" value={myRow?.total ?? 0} accent={C.positive} />
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="fl-row p-3.5" style={{ background: `linear-gradient(135deg, ${C.baby}22, ${C.navy800})`, border: `1px solid ${C.baby}55` }}>
+          <div className="flex items-center gap-1.5">
+            <Coins size={14} color={C.baby} />
+            <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>DINERO DISPONIBLE</span>
+          </div>
+          <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.baby }}>{fmtCredits(budgetAvailable)}</div>
+        </div>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap fl-row p-3.5 text-left" style={{ background: `linear-gradient(135deg, ${C.principal}22, ${C.navy800})`, border: `1px solid ${C.principal}55` }}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <TrendingUp size={14} color={C.principal} />
+              <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</span>
+            </div>
+            <ChevronRight size={14} color={C.muted} />
+          </div>
+          <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+          {cambioValor !== 0 && (
+            <div className="flex items-center gap-1 mt-0.5">
+              {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
+              <span className="fl-mono text-[10px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
+                {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
+              </span>
+            </div>
+          )}
+        </button>
       </div>
 
-      <button onClick={() => onGoTo("mercado")} className="fl-tap w-full fl-row p-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <Gavel size={18} color={C.baby} />
-          <div className="text-left">
-            <div className="fl-body text-sm font-medium" style={{ color: C.white }}>Mercado de subastas</div>
-            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{marketAssets} activos en juego</div>
+      {(movers.gainers.length > 0 || movers.losers.length > 0) && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <BarChart3 size={13} color={C.muted} />
+              <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>TOP {showAllMovers ? 10 : 3} SUBIDAS / BAJADAS</span>
+            </div>
+            <button onClick={() => setShowAllMovers(v => !v)} className="fl-tap fl-mono text-[10px] flex items-center gap-0.5" style={{ color: C.principal }}>
+              {showAllMovers ? "Ver menos" : "Ver todas"} <ChevronRight size={11} />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="fl-row p-3">
+              <div className="flex items-center gap-1 mb-2"><TrendingUp size={12} color={C.positive} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.positive }}>MÁS HAN SUBIDO</span></div>
+              <div className="space-y-2">
+                {movers.gainers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }) => (
+                  <div key={player.id} className="flex items-center gap-2">
+                    <PlayerPhoto url={player.photo} size={30} rounded={999} />
+                    <div className="flex-1 min-w-0">
+                      <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                      <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{POSITIONS.find(p => p.key === player.position)?.label} · {player.team}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="fl-mono text-[10px] font-bold" style={{ color: C.positive }}>+{fmtCredits(delta)}</div>
+                      <div className="fl-mono text-[9px]" style={{ color: C.positive }}>(+{pct.toFixed(1)}%)</div>
+                    </div>
+                  </div>
+                ))}
+                {movers.gainers.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin movimiento hoy</div>}
+              </div>
+            </div>
+            <div className="fl-row p-3">
+              <div className="flex items-center gap-1 mb-2"><TrendingDown size={12} color={C.negative} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.negative }}>MÁS HAN BAJADO</span></div>
+              <div className="space-y-2">
+                {movers.losers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }) => (
+                  <div key={player.id} className="flex items-center gap-2">
+                    <PlayerPhoto url={player.photo} size={30} rounded={999} />
+                    <div className="flex-1 min-w-0">
+                      <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                      <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{POSITIONS.find(p => p.key === player.position)?.label} · {player.team}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div className="fl-mono text-[10px] font-bold" style={{ color: C.negative }}>{fmtCredits(delta)}</div>
+                      <div className="fl-mono text-[9px]" style={{ color: C.negative }}>({pct.toFixed(1)}%)</div>
+                    </div>
+                  </div>
+                ))}
+                {movers.losers.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin movimiento hoy</div>}
+              </div>
+            </div>
           </div>
         </div>
-        <div className="text-right flex items-center gap-2">
-          <CountdownChip closesAt={market.closesAt} opensAt={market.opensAt} isOpen={isMarketOpen} />
-          <ChevronRight size={16} color={C.muted} />
-        </div>
-      </button>
-
-      <button onClick={() => onGoTo("equipo")} className="fl-tap w-full fl-row p-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <ShieldCheck size={18} color={C.baby} />
-          <div className="text-left">
-            <div className="fl-body text-sm font-medium" style={{ color: C.white }}>Mi equipo</div>
-            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{myTeam.squad.length} fichajes en plantilla</div>
-          </div>
-        </div>
-        <ChevronRight size={16} color={C.muted} />
-      </button>
+      )}
 
       <div>
         <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
@@ -3921,24 +3994,28 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       </div>
 
       {lastJornada && partidos.length > 0 && (
-        <div className="relative rounded-2xl p-[1.5px]" style={{
-          background: `linear-gradient(120deg, ${C.principal}, ${C.gold}, ${C.baby})`,
-          boxShadow: `0 0 22px ${C.principal}40, 0 0 34px ${C.baby}30`,
-        }}>
-          <button onClick={() => setShowTriple(true)} className="fl-tap w-full flex items-center justify-between p-3.5 rounded-2xl"
-            style={{ background: C.navy800 }}>
-            <div className="flex items-center gap-2.5">
-              <span style={{ fontSize: 20, lineHeight: 1 }}>🏀</span>
-              <div className="text-left">
-                <div className="fl-body text-sm font-semibold" style={{ color: C.white }}>Triple Fantasy</div>
-                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>
-                  {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : `Entrada ${fmtCredits(TRIPLE_ENTRY_FEE)} · hasta ${fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}`}
-                </div>
-              </div>
+        <button onClick={() => setShowTriple(true)} className="fl-tap w-full relative overflow-hidden rounded-2xl p-4 flex items-center gap-3"
+          style={{
+            background: `linear-gradient(120deg, #2A0E1E 0%, #4A1224 55%, #5C2A0E 100%)`,
+            border: `1.5px solid transparent`,
+            backgroundImage: `linear-gradient(#2A0E1E, #4A1224), linear-gradient(120deg, ${C.principal}, ${C.gold}, ${C.baby})`,
+            backgroundOrigin: "border-box", backgroundClip: "padding-box, border-box",
+            boxShadow: `0 0 22px ${C.principal}40, 0 0 34px ${C.baby}30`,
+          }}>
+          <span style={{ position: "absolute", right: -18, top: "50%", transform: "translateY(-50%) rotate(12deg)", fontSize: 92, opacity: 0.16, lineHeight: 1 }}>🏀</span>
+          <div className="rounded-full flex items-center justify-center flex-shrink-0" style={{ width: 42, height: 42, background: "rgba(255,255,255,0.08)" }}>
+            <span style={{ fontSize: 22, lineHeight: 1 }}>🏀</span>
+          </div>
+          <div className="text-left flex-1 relative z-10">
+            <div className="fl-display text-base uppercase" style={{ color: C.white }}>Triple Fantasy</div>
+            <div className="fl-mono text-[11px] mt-0.5" style={{ color: "rgba(255,255,255,0.75)" }}>
+              {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : (
+                <>Entrada <span style={{ color: C.principal, fontWeight: 700 }}>{fmtCredits(TRIPLE_ENTRY_FEE)}</span> · hasta {fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}</>
+              )}
             </div>
-            <ChevronRight size={16} color={C.principal} />
-          </button>
-        </div>
+          </div>
+          <ChevronRight size={18} color="rgba(255,255,255,0.6)" className="relative z-10" />
+        </button>
       )}
 
       {partidos.length > 0 && (
@@ -3992,6 +4069,68 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests}
           onJoin={onJoinTriple} onClose={() => setShowTriple(false)} />
       )}
+
+      {showValorChart && (
+        <ValorPlantillaChartModal myTeam={myTeam} players={players} onClose={() => setShowValorChart(false)} />
+      )}
+    </div>
+  );
+}
+
+// Gráfico de la evolución del valor total de la plantilla, día a día, sumando
+// el valor histórico de cada jugadora que tienes en cada fecha (se apoya en
+// el price_history de cada una, que ya guarda el motor de precios diario).
+function ValorPlantillaChartModal({ myTeam, players, onClose }) {
+  const squadPlayers = (myTeam.squad || []).map(e => players.find(p => p.id === e.id)).filter(Boolean);
+  const points = useMemo(() => {
+    const allDates = new Set();
+    squadPlayers.forEach(p => (p.priceHistory || []).forEach(h => h.date && allDates.add(h.date)));
+    const dates = [...allDates].sort();
+    if (dates.length === 0) return [];
+    return dates.map(date => {
+      const total = squadPlayers.reduce((s, p) => {
+        const hist = (p.priceHistory || []).filter(h => h.date <= date);
+        const value = hist.length > 0 ? hist[hist.length - 1].value : p.basePrice;
+        return s + (value || 0);
+      }, 0);
+      return { date, value: total };
+    });
+  }, [squadPlayers]);
+
+  const values = points.map(p => p.value);
+  const max = Math.max(...values, 1), min = Math.min(...values, 0);
+  const range = Math.max(max - min, 1);
+  const w = 300, h = 120;
+  const pathD = points.map((p, i) => {
+    const x = points.length > 1 ? (i / (points.length - 1)) * w : 0;
+    const y = h - ((p.value - min) / range) * h;
+    return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(" ");
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Valor de plantilla</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        {points.length < 2 ? (
+          <EmptyState compact title="Todavía no hay histórico suficiente" text="En cuanto pasen unos días con el mercado en marcha, verás aquí la evolución de tu plantilla." />
+        ) : (
+          <>
+            <div className="fl-mono text-2xl font-bold mb-1" style={{ color: C.white }}>{fmtCredits(values[values.length - 1])}</div>
+            <div className="fl-row p-4">
+              <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
+                <path d={pathD} fill="none" stroke={C.principal} strokeWidth={2} />
+              </svg>
+              <div className="flex items-center justify-between mt-2">
+                <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[0]?.date}</span>
+                <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[points.length - 1]?.date}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
