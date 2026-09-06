@@ -626,7 +626,14 @@ function daysBetweenDates(a, b) {
   const da = new Date(a + "T00:00:00"), db = new Date(b + "T00:00:00");
   return Math.round((db - da) / (24 * 3600 * 1000));
 }
-function toDateStr(d) { return d.toISOString().slice(0, 10); }
+// Fecha del día EN LOCAL (no en UTC): con toISOString() el cambio de día
+// llegaría 1-2 horas tarde para alguien en España (o pronto para quien esté
+// más al oeste), según la época del año. Así se ajusta a la medianoche real
+// del dispositivo de quien tenga la app abierta.
+function toDateStr(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 const marketPricingService = {
   // Clasificación real de los equipos (no de fantasy), calculada sola a
