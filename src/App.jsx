@@ -5231,7 +5231,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
               ))}
             </div>
           )}
-          <EnVentaSection teams={teams} players={players} teamCrests={teamCrests}
+          <EnVentaSection teams={teams} players={players} teamCrests={teamCrests} me={profile.name}
             onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
             onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
             onOpenPlayer={setDetailPlayer} />
@@ -5315,7 +5315,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
 // muestran cláusula porque, mientras están libres, no la tienen.
 // Jugadoras marcadas "en venta" por cualquier equipo de la liga, visibles
 // directamente en el Mercado (no solo dentro de su ficha).
-function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer, teamCrests }) {
+function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer, teamCrests, me }) {
   const rows = [];
   Object.entries(teams || {}).forEach(([name, team]) => {
     (team.squad || []).forEach(entry => {
@@ -5331,6 +5331,7 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
       <div className="space-y-3">
         {rows.map(({ owner, entry, player }) => {
           const locked = teamService.isClauseLocked(entry);
+          const isMine = owner === me;
           return (
             <div key={player.id} className="fl-row p-4 fl-pop">
               <div className="flex items-center gap-3.5">
@@ -5350,18 +5351,22 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
                     <div className="mt-1.5"><ClauseBadge entry={entry} /></div>
                   </div>
                 </button>
-                <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                  {!locked && (
-                    <button onClick={() => onSelectClause(owner, player, entry)}
-                      className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
-                      {fmtCredits(entry.clause || player.basePrice)}
+                {isMine ? (
+                  <span className="fl-mono text-[10px] flex-shrink-0" style={{ color: C.muted }}>En propiedad</span>
+                ) : (
+                  <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                    {!locked && (
+                      <button onClick={() => onSelectClause(owner, player, entry)}
+                        className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.gold, border: `1px solid ${C.gold}` }}>
+                        {fmtCredits(entry.clause || player.basePrice)}
+                      </button>
+                    )}
+                    <button onClick={() => onSelectOffer(owner, player)}
+                      className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                      Hacer oferta
                     </button>
-                  )}
-                  <button onClick={() => onSelectOffer(owner, player)}
-                    className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
-                    Hacer oferta
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           );
