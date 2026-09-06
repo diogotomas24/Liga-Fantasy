@@ -40,7 +40,7 @@ const C = {
 const BUDGET_TOTAL = 100; // millones (créditos Fantasy)
 const MARKET_ASSET_COUNT = 8;
 const MAX_COACHES = 1;
-const MAX_SQUAD_JUGADORAS = 11; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
+const MAX_SQUAD_JUGADORAS = 12; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
 const INITIAL_SQUAD_COUNT = 8; // jugadoras del reparto inicial (el resto de la plantilla se completa luego vía mercado/cláusulas)
 const INITIAL_SQUAD_VALUE_RANGE = { min: 80, max: 90 }; // valor de equipo del reparto inicial, aparte del presupuesto de mercado
 
@@ -170,6 +170,7 @@ function calcPlayerPoints(stats, position) {
 function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
   const lineup = (jornada.lineups && jornada.lineups[teamName]) || currentLineup;
   if (!lineup) return 0;
+  if (lineup.debtLocked) return 0; // estaba endeudada cuando empezó la jornada: no puntúa
   const ids = [...(lineup.starters || [])];
   if (lineup.titularCoach) ids.push(lineup.titularCoach);
   return ids.reduce((s, id) => {
@@ -200,6 +201,17 @@ const teamService = {
     };
   },
   squadIds(team) { return (team?.squad || []).map(e => e.id); },
+  // Valor de mercado ACTUAL de toda la plantilla (no lo que se pagó, sino lo
+  // que valen ahora mismo sus fichajes), usado para calcular hasta cuánto se
+  // puede uno endeudar.
+  currentSquadValue(team, players) {
+    const ids = new Set(teamService.squadIds(team));
+    return players.filter(p => ids.has(p.id)).reduce((s, p) => s + (p.basePrice || 0), 0);
+  },
+  // Máximo que se puede deber: 20% del valor actual de la plantilla.
+  maxDebt(team, players) {
+    return teamService.currentSquadValue(team, players) * 0.20;
+  },
   squadJugadorasCount(team, players) {
     const ids = new Set(teamService.squadIds(team));
     return players.filter(p => ids.has(p.id) && p.position !== "DT").length;
@@ -370,7 +382,7 @@ const auctionService = {
       return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras. Libera a alguna antes de pujar.` };
     }
     const available = auctionService.availableBudget(team, bids, marketId, userId, asset.id);
-    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
+    if (amount > available + teamService.maxDebt(team, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(available)}.` };
     return { ok: true };
   },
   upsertBid(bids, { marketId, assetId, userId, amount }) {
@@ -382,6 +394,10 @@ const auctionService = {
       return next;
     }
     return [...bids, { id: uid("bid"), marketId, assetId, userId, amount, createdAt: now, status: "active" }];
+  },
+  // Retira tu propia puja activa antes de que se cierre el mercado.
+  withdrawBid(bids, { marketId, assetId, userId }) {
+    return bids.filter(b => !(b.marketId === marketId && b.assetId === assetId && b.userId === userId && b.status === "active"));
   },
   // Resuelve un mercado cerrado: gana la puja más alta; empate -> más antigua (createdAt)
   resolveMarket(market, bids, players, teams) {
@@ -434,7 +450,7 @@ const clauseService = {
       return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras.` };
     }
     const available = auctionService.availableBudget(buyerTeam, bids || [], marketId, buyerName);
-    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
+    if (amount > available + teamService.maxDebt(buyerTeam, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(available)}.` };
     return { ok: true, clause };
   },
   execute(buyerTeam, sellerTeam, asset, amount) {
@@ -466,7 +482,7 @@ const offerService = {
       return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras.` };
     }
     const available = auctionService.availableBudget(buyerTeam, bids || [], marketId, buyerName);
-    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
+    if (amount > available + teamService.maxDebt(buyerTeam, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(available)}.` };
     const already = offers.find(o => o.status === "pending" && o.fromUser === buyerName && o.assetId === asset.id && o.toUser === sellerName);
     if (already) return { ok: false, error: "Ya tienes una oferta pendiente por esta jugadora." };
     return { ok: true };
@@ -2171,7 +2187,12 @@ export default function App() {
         let changed = false;
         Object.values(allTeams).forEach((t) => {
           const key = `${t.leagueId}::${t.name}`;
-          if (!lineups[key] && t.lineup) { lineups[key] = t.lineup; changed = true; }
+          if (!lineups[key] && t.lineup) {
+            // Si está endeudada justo cuando empieza la jornada, esa jornada no puntúa.
+            const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
+            lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
+            changed = true;
+          }
         });
         if (changed) await writeJornada({ ...jornada, lineups });
         await writeShared("lineupLocked", [...locked, jornada.id]);
@@ -2473,6 +2494,10 @@ export default function App() {
           (historyEntry.results || []).forEach((r) => {
             const asset = freshPlayers.find((p) => p.id === r.assetId);
             if (asset) sendPushNotification(leagueId, r.winnerUserId, "✅ ¡Fichaje del mercado!", `Has ganado la puja por ${asset.name} por ${fmtCredits(r.amount)}.`);
+            const winnerTeam = teamsNext[r.winnerUserId];
+            if (winnerTeam && ((winnerTeam.budgetTotal || 0) - (winnerTeam.budgetSpent || 0)) < 0) {
+              sendPushNotification(leagueId, r.winnerUserId, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
+            }
           });
         }
       }
@@ -2613,6 +2638,17 @@ export default function App() {
     return { ok: true };
   }, [market, bids, players, profile, activeLeagueId]);
 
+  const withdrawBid = useCallback(async (asset) => {
+    const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
+    const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
+    const open = freshMarket && Date.now() >= freshMarket.opensAt && Date.now() < freshMarket.closesAt;
+    if (!open) return { ok: false, error: "El mercado está cerrado ahora mismo." };
+    const nextBids = auctionService.withdrawBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name });
+    await writeShared(leagueKey(activeLeagueId, "bids"), nextBids);
+    setBids(nextBids);
+    return { ok: true };
+  }, [market, bids, profile, activeLeagueId]);
+
   const buyClause = useCallback(async (sellerName, asset, amount) => {
     const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
     const check = clauseService.validateBuyout({
@@ -2624,6 +2660,9 @@ export default function App() {
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
     sendPushNotification(activeLeagueId, sellerName, "🔒 ¡Te han clausulado!", `${profile.name} se ha llevado a ${asset.name} por ${fmtCredits(amount)}.`);
     sendPushNotification(activeLeagueId, profile.name, "✅ Fichaje confirmado", `Has fichado a ${asset.name} por ${fmtCredits(amount)}.`);
+    if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
+      sendPushNotification(activeLeagueId, profile.name, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
+    }
     return { ok: true };
   }, [profile, players, bids, market, activeLeagueId]);
 
@@ -2677,7 +2716,7 @@ export default function App() {
   // presupuesto y la cláusula sube el DOBLE de lo pagado.
   const raiseClause = useCallback(async (assetId, payAmount) => {
     if (!Number.isFinite(payAmount) || payAmount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (payAmount > budgetAvailable) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(budgetAvailable)}.` };
+    if (payAmount > budgetAvailable + teamService.maxDebt(myTeam, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(budgetAvailable)}.` };
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const entry = teamService.getSquadEntry(fresh, assetId);
     if (!entry) return { ok: false, error: "Ya no tienes esta jugadora." };
@@ -2685,7 +2724,7 @@ export default function App() {
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     return { ok: true };
-  }, [profile, activeLeagueId, budgetAvailable]);
+  }, [profile, activeLeagueId, budgetAvailable, myTeam, players]);
 
   // Triple Fantasy: pronosticar los 7 partidos + MVP de la jornada, pagando 1 M€ de entrada.
   const joinTriple = useCallback(async (jornadaId, picks, mvpChoice, mvpOptions) => {
@@ -2746,6 +2785,12 @@ export default function App() {
       await Promise.all([writeTeam(activeLeagueId, offer.fromUser, nextBuyer), writeTeam(activeLeagueId, offer.toUser, nextSeller)]);
       setTeams(t => ({ ...t, [offer.fromUser]: nextBuyer, [offer.toUser]: nextSeller }));
       sendPushNotification(activeLeagueId, offer.fromUser, "✅ ¡Te han aceptado la oferta!", `Has fichado a ${asset.name} por ${fmtCredits(offer.amount)}.`);
+      if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
+        sendPushNotification(activeLeagueId, offer.fromUser, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
+      }
+    } else if (action === "reject") {
+      const asset = players.find(p => p.id === offer.assetId);
+      sendPushNotification(activeLeagueId, offer.fromUser, "❌ Te han rechazado la oferta", `${offer.toUser} ha rechazado tu oferta de ${fmtCredits(offer.amount)} por ${asset?.name || "esa jugadora"}.`);
     }
     const nextStatus = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "cancelled";
     const nextOffers = offerService.setStatus(freshOffers, offerId, nextStatus);
@@ -2807,7 +2852,7 @@ export default function App() {
           {tab === "mercado" && (
             <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory} activity={activity}
               profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
-              budgetAvailable={budgetAvailable} onBid={placeBid} onBuyClause={buyClause}
+              budgetAvailable={budgetAvailable} onBid={placeBid} onWithdrawBid={withdrawBid} onBuyClause={buyClause}
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
               jornadas={jornadas} teamCrests={teamCrests}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
@@ -5099,7 +5144,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
+function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("mercado");
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
@@ -5161,7 +5206,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
             <div className="space-y-3">
               {assets.map(asset => (
                 <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
-                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onOpenPlayer={setDetailPlayer} teamCrests={teamCrests} />
+                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onWithdrawBid={onWithdrawBid} onOpenPlayer={setDetailPlayer} teamCrests={teamCrests} />
               ))}
             </div>
           )}
@@ -5587,12 +5632,13 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   );
 }
 
-function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onOpenPlayer, teamCrests }) {
+function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onOpenPlayer, teamCrests }) {
   const [showKeypad, setShowKeypad] = useState(false);
   const minEuros = Math.round((asset.basePrice || 1) * 1000000);
   const [amountEuros, setAmountEuros] = useState(String(minEuros));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [withdrawing, setWithdrawing] = useState(false);
 
   const bidCount = auctionService.bidsForAsset(bids, market.id, asset.id).filter(b => b.status === "active").length;
   const myBid = auctionService.userBidForAsset(bids, market.id, asset.id, profile.name);
@@ -5612,6 +5658,12 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
     setBusy(false);
     if (!res.ok) setError(res.error);
     else setShowKeypad(false);
+  };
+
+  const withdraw = async () => {
+    setWithdrawing(true);
+    await onWithdrawBid(asset);
+    setWithdrawing(false);
   };
 
   return (
@@ -5636,11 +5688,20 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
             <div className="mt-1.5"><BidStatusPill status={status} /></div>
           </div>
         </button>
-        <button onClick={openKeypad} disabled={!isMarketOpen || owned}
-          className="fl-tap fl-mono text-xs font-semibold rounded-md px-3.5 py-2.5 disabled:opacity-40 flex-shrink-0"
-          style={{ background: owned ? "transparent" : C.baby, color: owned ? C.muted : C.ink, border: owned ? `1px solid ${C.line}` : "none" }}>
-          {owned ? "Tuya" : myBid ? "Editar" : "Pujar"}
-        </button>
+        <div className="flex flex-col gap-1.5 flex-shrink-0">
+          <button onClick={openKeypad} disabled={!isMarketOpen || owned}
+            className="fl-tap fl-mono text-xs font-semibold rounded-md px-3.5 py-2.5 disabled:opacity-40"
+            style={{ background: owned ? "transparent" : C.baby, color: owned ? C.muted : C.ink, border: owned ? `1px solid ${C.line}` : "none" }}>
+            {owned ? "Tuya" : myBid ? "Editar" : "Pujar"}
+          </button>
+          {myBid && !owned && (
+            <button onClick={withdraw} disabled={!isMarketOpen || withdrawing}
+              className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-3.5 py-1.5 disabled:opacity-40"
+              style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+              {withdrawing ? <Loader2 size={12} className="animate-spin mx-auto" /> : "Retirar"}
+            </button>
+          )}
+        </div>
       </div>
       {error && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{error}</div>}
       {showKeypad && (
