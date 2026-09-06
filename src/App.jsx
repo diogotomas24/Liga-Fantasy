@@ -3907,27 +3907,29 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
-        <div className="relative overflow-hidden rounded-2xl p-3.5" style={{ background: `linear-gradient(135deg, ${C.baby} 0%, #B85400 100%)`, boxShadow: `0 0 18px ${C.baby}33` }}>
-          <span style={{ position: "absolute", right: -16, bottom: -20, fontSize: 78, opacity: 0.16, lineHeight: 1 }}>🏀</span>
+        <div className="relative overflow-hidden rounded-2xl p-3.5" style={{ background: C.navy800, border: `2px solid ${C.baby}`, boxShadow: `0 0 16px ${C.baby}55` }}>
+          <span style={{ position: "absolute", right: -14, bottom: -18, fontSize: 76, opacity: 0.14, lineHeight: 1 }}>🏀</span>
           <div className="relative z-10">
-            <div className="flex items-center gap-1.5">
-              <Coins size={14} color={C.white} />
-              <span className="fl-mono text-[9px] font-semibold tracking-wide" style={{ color: "rgba(255,255,255,0.85)" }}>DINERO DISPONIBLE</span>
+            <div className="flex items-center justify-between mb-1">
+              <div className="rounded-full flex items-center justify-center" style={{ width: 26, height: 26, background: `${C.baby}22` }}>
+                <Coins size={14} color={C.baby} />
+              </div>
             </div>
-            <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(budgetAvailable)}</div>
+            <div className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>DINERO DISPONIBLE</div>
+            <div className="fl-mono text-xl font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(budgetAvailable)}</div>
           </div>
         </div>
-        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl p-3.5 text-left" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #7A0D40 100%)`, boxShadow: `0 0 18px ${C.principal}33` }}>
-          <span style={{ position: "absolute", right: -16, bottom: -20, fontSize: 78, opacity: 0.16, lineHeight: 1 }}>🏀</span>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl p-3.5 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
+          <span style={{ position: "absolute", right: -14, bottom: -18, fontSize: 76, opacity: 0.14, lineHeight: 1 }}>🏀</span>
           <div className="relative z-10">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <TrendingUp size={14} color={C.white} />
-                <span className="fl-mono text-[9px] font-semibold tracking-wide" style={{ color: "rgba(255,255,255,0.85)" }}>VALOR DE PLANTILLA</span>
+            <div className="flex items-center justify-between mb-1">
+              <div className="rounded-full flex items-center justify-center" style={{ width: 26, height: 26, background: `${C.principal}22` }}>
+                <TrendingUp size={14} color={C.principal} />
               </div>
-              <ChevronRight size={14} color="rgba(255,255,255,0.7)" />
+              <ChevronRight size={14} color={C.muted} />
             </div>
-            <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+            <div className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
+            <div className="fl-mono text-xl font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
             {cambioValor !== 0 && (
               <div className="flex items-center gap-1 mt-0.5">
                 {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
@@ -3944,20 +3946,20 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
-              <BarChart3 size={13} color={C.muted} />
-              <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>TOP {showAllMovers ? 10 : 3} SUBIDAS / BAJADAS</span>
+              <TrendingUp size={14} color={C.principal} />
+              <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Top {showAllMovers ? 10 : 3} subidas / bajadas</span>
             </div>
-            <button onClick={() => setShowAllMovers(v => !v)} className="fl-tap fl-mono text-[10px] flex items-center gap-0.5" style={{ color: C.principal }}>
+            <button onClick={() => setShowAllMovers(v => !v)} className="fl-tap fl-mono text-[10px] flex items-center gap-0.5" style={{ color: C.muted }}>
               {showAllMovers ? "Ver menos" : "Ver todas"} <ChevronRight size={11} />
             </button>
           </div>
           <div className="grid grid-cols-2 gap-2.5">
             <div className="fl-row p-3">
               <div className="flex items-center gap-1 mb-2"><TrendingUp size={12} color={C.positive} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.positive }}>MÁS HAN SUBIDO</span></div>
-              <div className="space-y-2">
-                {movers.gainers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }) => (
-                  <div key={player.id} className="flex items-center gap-2">
-                    <PlayerPhoto url={player.photo} size={30} rounded={999} />
+              <div>
+                {movers.gainers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }, i) => (
+                  <div key={player.id} className="flex items-center gap-2 py-2" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                    <div style={{ borderRadius: 999, border: `1.5px solid ${C.positive}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
                     <div className="flex-1 min-w-0">
                       <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
                       <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{POSITIONS.find(p => p.key === player.position)?.label} · {player.team}</div>
@@ -3973,10 +3975,10 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
             </div>
             <div className="fl-row p-3">
               <div className="flex items-center gap-1 mb-2"><TrendingDown size={12} color={C.negative} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.negative }}>MÁS HAN BAJADO</span></div>
-              <div className="space-y-2">
-                {movers.losers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }) => (
-                  <div key={player.id} className="flex items-center gap-2">
-                    <PlayerPhoto url={player.photo} size={30} rounded={999} />
+              <div>
+                {movers.losers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }, i) => (
+                  <div key={player.id} className="flex items-center gap-2 py-2" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                    <div style={{ borderRadius: 999, border: `1.5px solid ${C.negative}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
                     <div className="flex-1 min-w-0">
                       <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
                       <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{POSITIONS.find(p => p.key === player.position)?.label} · {player.team}</div>
