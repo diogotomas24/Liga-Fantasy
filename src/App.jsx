@@ -177,14 +177,75 @@ function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
   const lineup = snapshot || (hasJornadaEffectivelyStarted(jornada) ? null : currentLineup);
   if (!lineup) return 0;
   if (lineup.debtLocked) return 0; // estaba endeudada cuando empezó la jornada: no puntúa
-  const ids = [...(lineup.starters || [])];
-  if (lineup.titularCoach) ids.push(lineup.titularCoach);
-  return ids.reduce((s, id) => {
-    const player = players.find(p => p.id === id);
-    if (!player) return s;
-    const pts = calcPlayerPoints(jornada.stats?.[id], player.position);
-    return s + (id === lineup.captainId ? pts * 2 : pts); // la capitana duplica sus puntos
-  }, 0);
+
+  const bench = lineup.bench || {};
+  const captainId = lineup.captainId;
+
+  // Agrupa a las titulares por posición, con su puntuación "efectiva" (con el
+  // x2 de capitana ya aplicado si corresponde) — la comparación contra el
+  // banquillo se hace SIEMPRE con ese valor ya doblado, nunca con el bruto.
+  const byPos = {};
+  (lineup.starters || []).forEach((id) => {
+    const player = players.find((p) => p.id === id);
+    if (!player) return;
+    const raw = calcPlayerPoints(jornada.stats?.[id], player.position);
+    const effective = id === captainId ? raw * 2 : raw;
+    (byPos[player.position] = byPos[player.position] || []).push({ id, effective });
+  });
+
+  let total = 0;
+  Object.entries(byPos).forEach(([pos, list]) => {
+    const benchId = bench[pos];
+    const benchPlayer = benchId ? players.find((p) => p.id === benchId) : null;
+    if (benchPlayer && list.length > 0) {
+      const benchRaw = calcPlayerPoints(jornada.stats?.[benchId], pos);
+      // Localiza a la titular "más floja" de esa posición (por puntuación ya
+      // con el x2 aplicado donde toque) — es la única que se puede sustituir.
+      let worstIdx = 0;
+      list.forEach((s, i) => { if (s.effective < list[worstIdx].effective) worstIdx = i; });
+      if (benchRaw > list[worstIdx].effective) {
+        // Entra la del banquillo SIN bonus de capitana: ese bonus iba ligado
+        // a la jugadora concreta, y se pierde si es precisamente ella la que sale.
+        list[worstIdx] = { id: benchId, effective: benchRaw };
+      }
+    }
+    list.forEach((s) => { total += s.effective; });
+  });
+
+  if (lineup.titularCoach) {
+    const coach = players.find((p) => p.id === lineup.titularCoach);
+    if (coach) total += calcPlayerPoints(jornada.stats?.[lineup.titularCoach], coach.position);
+  }
+  return total;
+}
+
+// Igual que computeTeamJornadaPoints, pero en vez de devolver el total,
+// devuelve QUÉ cambios automáticos banquillo↔titular se han producido, para
+// poder marcarlo visualmente en la pantalla de Puntos.
+function computeLineupSwaps(lineup, jornada, players) {
+  if (!lineup) return {};
+  const bench = lineup.bench || {};
+  const captainId = lineup.captainId;
+  const byPos = {};
+  (lineup.starters || []).forEach((id) => {
+    const player = players.find((p) => p.id === id);
+    if (!player) return;
+    const raw = calcPlayerPoints(jornada.stats?.[id], player.position);
+    const effective = id === captainId ? raw * 2 : raw;
+    (byPos[player.position] = byPos[player.position] || []).push({ id, effective });
+  });
+  const swaps = {};
+  Object.entries(byPos).forEach(([pos, list]) => {
+    const benchId = bench[pos];
+    const benchPlayer = benchId ? players.find((p) => p.id === benchId) : null;
+    if (benchPlayer && list.length > 0) {
+      const benchRaw = calcPlayerPoints(jornada.stats?.[benchId], pos);
+      let worstIdx = 0;
+      list.forEach((s, i) => { if (s.effective < list[worstIdx].effective) worstIdx = i; });
+      if (benchRaw > list[worstIdx].effective) swaps[pos] = { outId: list[worstIdx].id, inId: benchId };
+    }
+  });
+  return swaps;
 }
 
 /* =============================================================================
@@ -4596,6 +4657,9 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
   ];
   const bench = usedLineup?.bench || { BASE: null, ALERO: null, PIVOT: null };
   const coachId = usedLineup?.titularCoach || null;
+  const swaps = useMemo(() => computeLineupSwaps(usedLineup, jornada, players), [usedLineup, jornada, players]);
+  const swappedOutIds = new Set(Object.values(swaps).map(s => s.outId));
+  const swappedInIds = new Set(Object.values(swaps).map(s => s.inId));
 
   return (
     <div>
@@ -4615,6 +4679,15 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
         ))}
       </div>
 
+      {Object.keys(swaps).length > 0 && (
+        <div className="fl-row p-3 mb-3 flex items-center gap-2" style={{ border: `1px solid ${C.gold}55` }}>
+          <RefreshCw size={14} color={C.gold} />
+          <p className="fl-body text-xs" style={{ color: C.muted }}>
+            Cambio automático: la del banquillo puntuó más que su titular en la misma posición, así que cuenta ella. Mira las flechas <span style={{ color: C.negative }}>↓</span>/<span style={{ color: C.positive }}>↑</span> en la pista.
+          </p>
+        </div>
+      )}
+
       {!usedLineup || (usedLineup.starters || []).length === 0 ? (
         <EmptyState compact title="Sin alineación guardada" text="No se guardó una alineación para esta jornada." />
       ) : (
@@ -4629,15 +4702,20 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                   <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-3"}`}>
                     {slots.map((id, i) => {
                       const p = id ? findPlayer(id) : null;
+                      const isOut = id && swappedOutIds.has(id);
                       return (
                         <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
-                          <div className="relative">
+                          <div className="relative" style={{ opacity: isOut ? 0.45 : 1 }}>
                             <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                                style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
+                                style={{ background: C.navy900, color: isOut ? C.muted : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isOut ? C.negative : C.line}`, textDecoration: isOut ? "line-through" : "none" }}>
                                 {pointsFor(id)}
                               </span>
+                            )}
+                            {isOut && (
+                              <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
+                                style={{ width: 18, height: 18, background: C.negative, color: C.white }}>↓</span>
                             )}
                           </div>
                         </div>
@@ -4655,14 +4733,19 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
               {POSITIONS.map(pos => {
                 const id = bench[pos.key];
                 const p = id ? findPlayer(id) : null;
+                const isIn = id && swappedInIds.has(id);
                 return (
                   <div key={pos.key} className="relative">
                     <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} />
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: C.navy900, color: pointsFor(id) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
+                        style={{ background: C.navy900, color: isIn ? C.gold : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isIn ? C.gold : C.line}` }}>
                         {pointsFor(id)}
                       </span>
+                    )}
+                    {isIn && (
+                      <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
+                        style={{ width: 18, height: 18, background: C.positive, color: C.white }}>↑</span>
                     )}
                   </div>
                 );
