@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2,
+  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
@@ -3889,46 +3889,54 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
   return (
     <div className="space-y-4">
-      <div className="fl-row p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
-        <div className="flex items-center justify-between">
+      <div className="relative overflow-hidden rounded-2xl p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, ${C.baby} 100%)`, boxShadow: `0 0 30px ${C.principal}44` }}>
+        <span style={{ position: "absolute", right: -22, bottom: -30, fontSize: 130, opacity: 0.14, lineHeight: 1 }}>🏀</span>
+        <div className="flex items-center justify-between relative z-10">
           <div>
             <div className="flex items-center gap-1.5 fl-mono text-[10px] tracking-[0.15em]" style={{ color: "rgba(255,255,255,0.85)" }}>
               <Trophy size={12} /> TU LIGA
             </div>
-            <div className="fl-display text-lg uppercase" style={{ color: C.white }}>{profile.name}</div>
+            <div className="fl-display text-2xl uppercase" style={{ color: C.white }}>{profile.name}</div>
           </div>
           <div className="text-right">
-            <div className="fl-mono text-2xl font-semibold" style={{ color: C.white }}>{myRow ? `#${myRow.rank}` : "—"}</div>
+            <Crown size={16} color={C.white} style={{ marginLeft: "auto" }} />
+            <div className="fl-mono text-3xl font-bold" style={{ color: C.white }}>{myRow ? `#${myRow.rank}` : "—"}</div>
             <div className="fl-mono text-[9px]" style={{ color: "rgba(255,255,255,0.75)" }}>POSICIÓN</div>
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
-        <div className="fl-row p-3.5" style={{ background: `linear-gradient(135deg, ${C.baby}22, ${C.navy800})`, border: `1px solid ${C.baby}55` }}>
-          <div className="flex items-center gap-1.5">
-            <Coins size={14} color={C.baby} />
-            <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>DINERO DISPONIBLE</span>
-          </div>
-          <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.baby }}>{fmtCredits(budgetAvailable)}</div>
-        </div>
-        <button onClick={() => setShowValorChart(true)} className="fl-tap fl-row p-3.5 text-left" style={{ background: `linear-gradient(135deg, ${C.principal}22, ${C.navy800})`, border: `1px solid ${C.principal}55` }}>
-          <div className="flex items-center justify-between">
+        <div className="relative overflow-hidden rounded-2xl p-3.5" style={{ background: `linear-gradient(135deg, ${C.baby} 0%, #B85400 100%)`, boxShadow: `0 0 18px ${C.baby}33` }}>
+          <span style={{ position: "absolute", right: -16, bottom: -20, fontSize: 78, opacity: 0.16, lineHeight: 1 }}>🏀</span>
+          <div className="relative z-10">
             <div className="flex items-center gap-1.5">
-              <TrendingUp size={14} color={C.principal} />
-              <span className="fl-mono text-[10px] tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</span>
+              <Coins size={14} color={C.white} />
+              <span className="fl-mono text-[9px] font-semibold tracking-wide" style={{ color: "rgba(255,255,255,0.85)" }}>DINERO DISPONIBLE</span>
             </div>
-            <ChevronRight size={14} color={C.muted} />
+            <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(budgetAvailable)}</div>
           </div>
-          <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
-          {cambioValor !== 0 && (
-            <div className="flex items-center gap-1 mt-0.5">
-              {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
-              <span className="fl-mono text-[10px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
-                {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
-              </span>
+        </div>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl p-3.5 text-left" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #7A0D40 100%)`, boxShadow: `0 0 18px ${C.principal}33` }}>
+          <span style={{ position: "absolute", right: -16, bottom: -20, fontSize: 78, opacity: 0.16, lineHeight: 1 }}>🏀</span>
+          <div className="relative z-10">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <TrendingUp size={14} color={C.white} />
+                <span className="fl-mono text-[9px] font-semibold tracking-wide" style={{ color: "rgba(255,255,255,0.85)" }}>VALOR DE PLANTILLA</span>
+              </div>
+              <ChevronRight size={14} color="rgba(255,255,255,0.7)" />
             </div>
-          )}
+            <div className="fl-mono text-lg font-bold mt-1" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+            {cambioValor !== 0 && (
+              <div className="flex items-center gap-1 mt-0.5">
+                {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
+                <span className="fl-mono text-[10px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
+                  {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
+                </span>
+              </div>
+            )}
+          </div>
         </button>
       </div>
 
