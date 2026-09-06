@@ -3912,44 +3912,56 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           background: `linear-gradient(120deg, #FFD24D 0%, #FF8A00 35%, #241200 65%, #FF8A00 100%)`,
           boxShadow: `0 0 14px #FF8A0099, 0 0 28px #FF8A0044`,
         }}>
-          <div className="relative overflow-hidden rounded-2xl p-3.5" style={{ background: `radial-gradient(140% 90% at 50% 140%, #4A2600 0%, #0A0A0C 60%)` }}>
-            {/* Balón dorado semitransparente, recortado en el borde derecho */}
-            <div style={{
-              position: "absolute", right: -34, top: -6, width: 110, height: 110, borderRadius: "50%",
-              background: `radial-gradient(circle at 35% 30%, rgba(255,217,138,0.35), rgba(255,138,0,0.16) 55%, transparent 75%)`,
-              maskImage: `linear-gradient(to left, black 25%, transparent 85%)`,
-              WebkitMaskImage: `linear-gradient(to left, black 25%, transparent 85%)`,
-            }}>
-              <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "1.5px solid rgba(255,205,140,0.3)" }} />
-              <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1.5, background: "rgba(255,205,140,0.25)" }} />
-              <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1.5, background: "rgba(255,205,140,0.25)" }} />
-            </div>
+          <div className="relative overflow-hidden rounded-2xl px-3 py-2.5" style={{ background: `radial-gradient(130% 100% at 50% 135%, #FF8A0066 0%, #3D1F00 32%, #0A0A0C 68%)` }}>
+            {/* Balón de baloncesto de verdad (costuras curvas con SVG), dorado y semitransparente, recortado en el borde */}
+            <svg viewBox="0 0 100 100" style={{ position: "absolute", right: -32, top: -14, width: 100, height: 100 }}>
+              <defs>
+                <radialGradient id="ballGradDinero" cx="35%" cy="30%">
+                  <stop offset="0%" stopColor="#FFE0A0" stopOpacity="0.55" />
+                  <stop offset="60%" stopColor="#FF8A00" stopOpacity="0.22" />
+                  <stop offset="100%" stopColor="#FF8A00" stopOpacity="0" />
+                </radialGradient>
+                <linearGradient id="fadeDinero" x1="100%" y1="0%" x2="0%" y2="0%">
+                  <stop offset="0%" stopColor="white" stopOpacity="1" />
+                  <stop offset="65%" stopColor="white" stopOpacity="0" />
+                </linearGradient>
+                <mask id="maskDinero"><rect x="0" y="0" width="100" height="100" fill="url(#fadeDinero)" /></mask>
+              </defs>
+              <g mask="url(#maskDinero)">
+                <circle cx="50" cy="50" r="46" fill="url(#ballGradDinero)" stroke="rgba(255,220,170,0.4)" strokeWidth="1.5" />
+                <line x1="50" y1="4" x2="50" y2="96" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
+                <line x1="4" y1="50" x2="96" y2="50" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
+                <path d="M 50 4 Q 18 50 50 96" fill="none" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
+                <path d="M 50 4 Q 82 50 50 96" fill="none" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
+              </g>
+            </svg>
             <div className="relative z-10">
-              <ChevronRight size={16} color="#FF8A00" style={{ position: "absolute", top: -2, right: 0 }} />
-              <div className="flex items-center gap-2.5">
-                <div className="relative flex-shrink-0" style={{ width: 30, height: 24 }}>
-                  <div style={{ position: "absolute", left: 0, bottom: 0, width: 22, height: 13, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
-                  <div style={{ position: "absolute", left: 7, bottom: 5, width: 22, height: 13, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
+              <ChevronRight size={15} color="#FF8A00" style={{ position: "absolute", top: -1, right: 0 }} />
+              <div className="flex items-center gap-2">
+                <div className="relative flex-shrink-0" style={{ width: 28, height: 22 }}>
+                  <div style={{ position: "absolute", left: 0, bottom: 0, width: 20, height: 12, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
+                  <div style={{ position: "absolute", left: 6, bottom: 4, width: 20, height: 12, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
                 </div>
                 <div>
-                  <div className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
-                  <div className="fl-mono text-xl font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
+                  <div className="fl-mono text-[8.5px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
+                  <div className="fl-mono text-lg font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
                 </div>
               </div>
             </div>
+
           </div>
         </div>
-        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl p-3.5 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2.5 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
           <span style={{ position: "absolute", right: -14, bottom: -18, fontSize: 76, opacity: 0.14, lineHeight: 1 }}>🏀</span>
           <div className="relative z-10">
-            <div className="flex items-center justify-between mb-1">
-              <div className="rounded-full flex items-center justify-center" style={{ width: 26, height: 26, background: `${C.principal}22` }}>
-                <TrendingUp size={14} color={C.principal} />
+            <div className="flex items-center justify-between mb-0.5">
+              <div className="rounded-full flex items-center justify-center" style={{ width: 22, height: 22, background: `${C.principal}22` }}>
+                <TrendingUp size={12} color={C.principal} />
               </div>
               <ChevronRight size={14} color={C.muted} />
             </div>
-            <div className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
-            <div className="fl-mono text-xl font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+            <div className="fl-mono text-[8.5px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
+            <div className="fl-mono text-lg font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
             {cambioValor !== 0 && (
               <div className="flex items-center gap-1 mt-0.5">
                 {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
