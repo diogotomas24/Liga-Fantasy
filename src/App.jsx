@@ -168,7 +168,13 @@ function calcPlayerPoints(stats, position) {
 
 
 function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
-  const lineup = (jornada.lineups && jornada.lineups[teamName]) || currentLineup;
+  const snapshot = jornada.lineups && jornada.lineups[teamName];
+  // Una vez empezada la jornada, SOLO vale la alineación ya bloqueada (o 0 si
+  // no hay ninguna, por ejemplo por haberte unido a la liga después de que
+  // ya hubiera arrancado) — nunca la alineación actual en vivo, aunque haya
+  // cambiado después. Antes de que empiece, sí se usa la actual como
+  // previsión de lo que puntuarías si se bloqueara ahora mismo.
+  const lineup = snapshot || (hasJornadaEffectivelyStarted(jornada) ? null : currentLineup);
   if (!lineup) return 0;
   if (lineup.debtLocked) return 0; // estaba endeudada cuando empezó la jornada: no puntúa
   const ids = [...(lineup.starters || [])];
@@ -2263,10 +2269,22 @@ export default function App() {
         await Promise.all(updates.map((u) => supabase.from("players").update({
           base_price: u.basePrice, prev_base_price: u.prevBasePrice, price_history: u.priceHistory, market_cycle: u.marketCycle,
         }).eq("id", u.id)));
+        const finalPlayers = freshPlayers.map((p) => {
+          const u = updates.find((x) => x.id === p.id);
+          return u ? { ...p, basePrice: u.basePrice, prevBasePrice: u.prevBasePrice, priceHistory: u.priceHistory, marketCycle: u.marketCycle } : p;
+        });
         setPlayers((prev) => prev.map((p) => {
           const u = updates.find((x) => x.id === p.id);
           return u ? { ...p, basePrice: u.basePrice, prevBasePrice: u.prevBasePrice, priceHistory: u.priceHistory, marketCycle: u.marketCycle } : p;
         }));
+        // La cláusula nunca puede quedar por debajo del valor de mercado actual:
+        // se sube sola en TODOS los equipos de TODAS las ligas que la tengan.
+        const bumpWrites = [];
+        Object.values(allTeams).forEach((t) => {
+          const bumped = teamService.bumpClausesToMarket(t, finalPlayers);
+          if (bumped !== t) bumpWrites.push(writeTeam(t.leagueId, t.name, bumped));
+        });
+        if (bumpWrites.length > 0) await Promise.all(bumpWrites);
       }
       await writeShared("marketPricingLastRun", todayStr);
     } catch {}
@@ -4553,7 +4571,10 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
   const jornada = jornadas[selectedIdx];
   const savedLineup = jornada?.lineups?.[`${leagueId}::${teamName}`] || null;
-  const usedLineup = savedLineup || lineup; // si no hay snapshot guardado, se cae a la alineación actual (mejor que nada)
+  // Igual que en el cálculo de puntos: una vez empezada la jornada, solo vale
+  // la alineación ya bloqueada (o ninguna, si no hay snapshot). Antes de que
+  // empiece, se usa la actual como previsión.
+  const usedLineup = savedLineup || (hasJornadaEffectivelyStarted(jornada) ? null : lineup);
   const total = history[selectedIdx]?.pts ?? 0;
 
   const findPlayer = (id) => players.find(p => p.id === id) || null;
