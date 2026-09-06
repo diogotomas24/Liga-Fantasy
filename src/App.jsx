@@ -180,30 +180,6 @@ function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
   }, 0);
 }
 
-// Aplica el movimiento de valor de mercado (Valor Fantasy) tras cerrar una jornada
-function applyMarketMovement(players, jornada, teams) {
-  const totalManagers = Math.max(Object.keys(teams).length, 1);
-  const ownersCount = {};
-  Object.values(teams).forEach(t => (t.squad || []).forEach(e => {
-    ownersCount[e.id] = (ownersCount[e.id] || 0) + 1;
-  }));
-  return players.map(p => {
-    const stats = jornada.stats?.[p.id];
-    if (!stats) return p;
-    const pts = calcPlayerPoints(stats, p.position);
-    const performanceDelta = Math.round(pts / 6);
-    const ratio = (ownersCount[p.id] || 0) / totalManagers;
-    let demandDelta = 0;
-    if (ratio >= 0.66) demandDelta = 1;
-    else if (ratio === 0) demandDelta = -1;
-    const newValue = Math.min(40, Math.max(1, (p.basePrice || 1) + performanceDelta + demandDelta));
-    // Guardamos un snapshot del valor tras cada jornada para poder dibujar el
-    // gráfico de "Valor histórico" (nos quedamos con los últimos 30).
-    const history = [...(p.priceHistory || []), { jornadaId: jornada.id, label: jornada.name, value: newValue }].slice(-30);
-    return { ...p, prevBasePrice: p.basePrice, basePrice: newValue, priceHistory: history };
-  });
-}
-
 /* =============================================================================
    SERVICIOS (lógica de negocio separada de la UI)
    Pensados para poder moverse a un backend/BD real sin tocar los componentes.
@@ -627,6 +603,205 @@ const idealFiveService = {
   },
 };
 
+// --- marketPricingService ----------------------------------------------------
+// Motor de precios "estilo bolsa" diseñado a medida (ver conversación de
+// diseño): cada jugadora (nunca entrenadoras/es, que siguen con su sistema
+// simple aparte) se revaloriza TODOS LOS DÍAS, haya jornada o no.
+//
+// Cada día que se juega su partido, se calcula un "empuje base" grande (una
+// sola vez), que luego se REPARTE a lo largo de la semana con más fuerza el
+// día siguiente (el "pico") y decreciendo hasta quedarse plano si todavía no
+// ha vuelto a jugar. Encima de eso, cada día se suman empujones pequeños
+// (demanda de mercado, dificultad de próximos rivales, inactividad, hype),
+// y todo el conjunto se amortigua si la jugadora ya es muy cara (>85M), para
+// que las caras no se disparen tanto en euros como las baratas.
+const MARKET_BRAKE_THRESHOLD = 85; // millones: a partir de aquí empieza a frenar
+const WEEK_WEIGHTS = [1.0, 1.3, 0.9, 0.9, 0.9, 0.7]; // día 0..5 desde su último partido; día 6+ se queda en 0.7
+
+function marketBrakeFactor(priceM) {
+  if (!priceM || priceM <= MARKET_BRAKE_THRESHOLD) return 1;
+  return Math.min(1, Math.pow(MARKET_BRAKE_THRESHOLD / priceM, 2));
+}
+function daysBetweenDates(a, b) {
+  const da = new Date(a + "T00:00:00"), db = new Date(b + "T00:00:00");
+  return Math.round((db - da) / (24 * 3600 * 1000));
+}
+function toDateStr(d) { return d.toISOString().slice(0, 10); }
+
+const marketPricingService = {
+  // Clasificación real de los equipos (no de fantasy), calculada sola a
+  // partir de todos los marcadores ya introducidos en "partidos".
+  computeStandings(jornadas) {
+    const table = {}; // team -> { wins, played }
+    (jornadas || []).forEach((j) => {
+      (j.partidos || []).forEach((p) => {
+        const winner = tripleFantasyService.matchWinner(p);
+        if (!winner) return;
+        [p.local, p.visitante].forEach((team) => {
+          if (!table[team]) table[team] = { wins: 0, played: 0 };
+          table[team].played += 1;
+        });
+        table[winner === "local" ? p.local : p.visitante].wins += 1;
+      });
+    });
+    const teams = Object.keys(table);
+    const withPct = teams.map((t) => ({ team: t, winPct: table[t].played > 0 ? table[t].wins / table[t].played : 0.5 }));
+    withPct.sort((a, b) => b.winPct - a.winPct);
+    const standings = {};
+    withPct.forEach((t, i) => { standings[t.team] = { rank: i + 1, winPct: t.winPct }; });
+    return { standings, totalTeams: teams.length || 1 };
+  },
+
+  // Media de victorias de los próximos 2 rivales programados de un equipo,
+  // buscando en el calendario a partir de "fromDateStr". null si no hay
+  // partidos futuros con fecha reconocible.
+  nextTwoOpponentsAvgWinPct(teamName, jornadas, fromDateStr, standings) {
+    const upcoming = [];
+    (jornadas || []).forEach((j) => (j.partidos || []).forEach((p) => {
+      if (p.local !== teamName && p.visitante !== teamName) return;
+      const d = parseFechaDDMMYYYY(p.fecha);
+      if (!d || toDateStr(d) <= fromDateStr) return;
+      const opponent = p.local === teamName ? p.visitante : p.local;
+      upcoming.push({ date: d, opponent });
+    }));
+    if (upcoming.length === 0) return null;
+    upcoming.sort((a, b) => a.date - b.date);
+    const next2 = upcoming.slice(0, 2).map((u) => (standings[u.opponent]?.winPct ?? 0.5));
+    return next2.reduce((a, b) => a + b, 0) / next2.length;
+  },
+
+  // Media de puntos Fantasy de todas las jugadoras (sin entrenadoras/es) que
+  // tienen estadística en esa jornada.
+  leagueAveragePoints(jornada, players) {
+    const vals = Object.entries(jornada.stats || {})
+      .map(([pid, s]) => { const pl = players.find((x) => x.id === pid); return pl && pl.position !== "DT" ? calcPointsBreakdown(s, pl.position).total : null; })
+      .filter((v) => v !== null);
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  },
+
+  // Busca si esta jugadora tiene un partido con marcador ya puesto en la
+  // fecha indicada, y devuelve también su jornada y estadística de ese día.
+  findMatchOnDate(player, jornadas, dateStr) {
+    for (const jornada of jornadas || []) {
+      for (const partido of jornada.partidos || []) {
+        if (partido.local !== player.team && partido.visitante !== player.team) continue;
+        const d = parseFechaDDMMYYYY(partido.fecha);
+        if (!d || toDateStr(d) !== dateStr) continue;
+        const winner = tripleFantasyService.matchWinner(partido);
+        if (!winner) continue; // sin marcador todavía: no cuenta como "jugado" para el precio
+        const stats = jornada.stats?.[player.id];
+        if (!stats) continue;
+        return { jornada, partido, stats, winner };
+      }
+    }
+    return null;
+  },
+
+  // El empuje "grande", una sola vez, el día de su partido.
+  computeBigPush({ stats, leagueAvgPoints, teamRank, totalTeams, opponentWinPct, won, isMvpPartido, minutesJump, isConsistentGood }) {
+    const puntosFactor = ((stats.puntos || 0) - leagueAvgPoints) * 0.0010;
+    let resultadoFactor = 0;
+    if (won === true) resultadoFactor = 0.0025 * (1 + (opponentWinPct - 0.5));
+    else if (won === false) resultadoFactor = -0.0025 * (1 + (0.5 - opponentWinPct));
+    const posicionFactor = totalTeams > 0 ? ((totalTeams - teamRank) / totalTeams) * 0.0025 : 0;
+    const mvpPartidoFactor = isMvpPartido ? 0.005 : 0;
+    const minutosFactor = minutesJump ? 0.0015 : 0;
+    const consistenciaFactor = isConsistentGood ? 0.0015 : 0;
+    return puntosFactor + resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor;
+  },
+
+  // Multiplicador de racha (caliente si encadena empujes positivos, fría si
+  // encadena negativos). Tope ×1,25 en ambos sentidos.
+  streakMultiplier(streakCount) {
+    if (!streakCount || streakCount <= 0) return 1;
+    return Math.min(1.25, 1 + 0.05 * streakCount);
+  },
+
+  // Cuánto pesa hoy el empuje base fijado el día de su último partido.
+  weightForDay(daysSinceCycleStart) {
+    if (daysSinceCycleStart < 0) return 0;
+    const idx = Math.min(daysSinceCycleStart, WEEK_WEIGHTS.length - 1);
+    return WEEK_WEIGHTS[idx];
+  },
+
+  // Los empujones pequeños que se recalculan todos los días.
+  computeDailySmallFactors({ bidsForHer, totalTeams, opponentsAvgWinPct, lowMinutes, favoritesForHer }) {
+    const demandConfidence = Math.min(1, bidsForHer / Math.max(1, 3 * totalTeams));
+    const demanda = demandConfidence * 0.006;
+    let rivales = 0;
+    if (opponentsAvgWinPct != null) {
+      const diff = 0.5 - opponentsAvgWinPct;
+      rivales = diff >= 0 ? diff * 0.0075 : diff * 0.003;
+    }
+    const inactividad = lowMinutes ? -0.001 : 0;
+    const hypeConfidence = Math.min(1, favoritesForHer / Math.max(1, 0.5 * totalTeams));
+    const hype = hypeConfidence * 0.003;
+    return demanda + rivales + inactividad + hype;
+  },
+
+  // Punto de entrada: calcula el precio de HOY para una jugadora, o null si
+  // no hay que tocarla (es entrenadora/or, o ya se actualizó hoy).
+  computeDailyUpdate(player, ctx) {
+    if (player.position === "DT") return null;
+    const cycle = player.marketCycle || {};
+    if (cycle.lastPricedDate === ctx.todayStr) return null;
+
+    let { cycleStartDate = null, cycleBase = 0, streakCount = 0, pointsHistory = [], minutesHistory = [] } = cycle;
+
+    const played = marketPricingService.findMatchOnDate(player, ctx.jornadas, ctx.todayStr);
+    if (played) {
+      const { jornada, partido, stats, winner } = played;
+      const isLocal = partido.local === player.team;
+      const won = (winner === "local") === isLocal;
+      const opponent = isLocal ? partido.visitante : partido.local;
+      const standing = ctx.standings[player.team] || { rank: ctx.totalTeams, winPct: 0.5 };
+      const oppStanding = ctx.standings[opponent] || { winPct: 0.5 };
+      const leagueAvg = marketPricingService.leagueAveragePoints(jornada, ctx.players);
+      const avgMin = minutesHistory.length ? minutesHistory.reduce((a, b) => a + b, 0) / minutesHistory.length : (stats.minutos || 0);
+      const minutesJump = (stats.minutos || 0) - avgMin >= 8;
+      const recentPts = [...pointsHistory, stats.puntos || 0].slice(-4);
+      const avgRecent = recentPts.reduce((a, b) => a + b, 0) / recentPts.length;
+      const variance = recentPts.reduce((a, b) => a + Math.pow(b - avgRecent, 2), 0) / recentPts.length;
+      const isConsistentGood = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent > leagueAvg;
+
+      let base = marketPricingService.computeBigPush({
+        stats, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
+        opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, isConsistentGood,
+      });
+
+      const sameSignAsBefore = (base >= 0 && cycleBase >= 0) || (base < 0 && cycleBase < 0);
+      streakCount = sameSignAsBefore ? streakCount + 1 : 1;
+      base *= marketPricingService.streakMultiplier(streakCount);
+
+      cycleStartDate = ctx.todayStr;
+      cycleBase = base;
+      pointsHistory = [...pointsHistory, stats.puntos || 0].slice(-5);
+      minutesHistory = [...minutesHistory, stats.minutos || 0].slice(-4);
+    }
+
+    const daysSince = cycleStartDate ? daysBetweenDates(cycleStartDate, ctx.todayStr) : -1;
+    const weeklyPush = cycleStartDate ? cycleBase * marketPricingService.weightForDay(daysSince) : 0;
+
+    const opponentsAvg = marketPricingService.nextTwoOpponentsAvgWinPct(player.team, ctx.jornadas, ctx.todayStr, ctx.standings);
+    const lowMinutes = minutesHistory.length >= 2 && minutesHistory.slice(-2).every((m) => m < 10);
+    const smallPush = marketPricingService.computeDailySmallFactors({
+      bidsForHer: ctx.bidsMap[player.id] || 0, totalTeams: ctx.totalTeams, opponentsAvgWinPct: opponentsAvg,
+      lowMinutes, favoritesForHer: ctx.favoritesMap[player.id] || 0,
+    });
+
+    let totalPush = weeklyPush + smallPush;
+    totalPush *= marketBrakeFactor(player.basePrice || 1);
+
+    const newPrice = Math.max(0.1, (player.basePrice || 1) * (1 + totalPush));
+    return {
+      basePrice: newPrice,
+      prevBasePrice: player.basePrice,
+      priceHistory: [...(player.priceHistory || []), { date: ctx.todayStr, value: newPrice }].slice(-60),
+      marketCycle: { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastPricedDate: ctx.todayStr },
+    };
+  },
+};
+
 // --- marketService -----------------------------------------------------------
 const marketService = {
   parseHM(str) {
@@ -749,29 +924,13 @@ async function readPlayers() {
       prevBasePrice: p.prev_base_price != null ? Number(p.prev_base_price) : Number(p.base_price) || 0,
       photo: p.photo || "",
       priceHistory: p.price_history || [],
+      marketCycle: p.market_cycle || {},
     }));
   } catch {
     return [];
   }
 }
 
-// Tras resolver una jornada, actualiza en la tabla real SOLO las jugadoras
-// cuyo valor cambió (las que tenían estadísticas en esa jornada).
-async function writePlayersAfterJornada(updatedPlayers, jornada) {
-  const changed = updatedPlayers.filter((p) => jornada.stats && jornada.stats[p.id]);
-  try {
-    await Promise.all(changed.map((p) =>
-      supabase.from("players").update({
-        base_price: p.basePrice,
-        prev_base_price: p.prevBasePrice,
-        price_history: p.priceHistory,
-      }).eq("id", p.id)
-    ));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function readShared(key, fallback) {
   try {
@@ -924,6 +1083,46 @@ async function readAllTeamsGlobal() {
   } catch {
     return null;
   }
+}
+
+// Cuántas pujas ACTIVAS tiene cada jugadora ahora mismo, sumando TODAS las
+// ligas a la vez. Se usa para el factor de "demanda de mercado" del nuevo
+// sistema de precios.
+async function readAllBidsGlobal() {
+  try {
+    const { data, error } = await supabase.from("kv_store").select("value").like("key", "bids_%");
+    if (error) throw error;
+    const counts = {};
+    (data || []).forEach((row) => {
+      (row.value || []).forEach((b) => {
+        if (b.status !== "active") return;
+        counts[b.assetId] = (counts[b.assetId] || 0) + 1;
+      });
+    });
+    return counts;
+  } catch {
+    return {};
+  }
+}
+
+// Cuánta gente (en TODAS las ligas, no solo la tuya) tiene marcada como
+// favorita a cada jugadora. Se usa para el factor de "hype".
+async function readFavoritesGlobalCounts() {
+  try {
+    const { data, error } = await supabase.from("favorites").select("player_id");
+    if (error) throw error;
+    const counts = {};
+    (data || []).forEach((row) => { counts[row.player_id] = (counts[row.player_id] || 0) + 1; });
+    return counts;
+  } catch {
+    return {};
+  }
+}
+async function addFavoriteGlobal(playerId, userName) {
+  try { await supabase.from("favorites").upsert({ player_id: playerId, user_name: userName }); } catch {}
+}
+async function removeFavoriteGlobal(playerId, userName) {
+  try { await supabase.from("favorites").delete().eq("player_id", playerId).eq("user_name", userName); } catch {}
 }
 
 /* -----------------------------------------------------------------------
@@ -1846,40 +2045,43 @@ export default function App() {
   // Favoritos: se guardan por persona (no compartidos), como una simple lista de ids.
   const toggleFavorito = useCallback((playerId) => {
     setFavoritos(prev => {
-      const next = prev.includes(playerId) ? prev.filter(id => id !== playerId) : [...prev, playerId];
+      const isFav = prev.includes(playerId);
+      const next = isFav ? prev.filter(id => id !== playerId) : [...prev, playerId];
       writePersonal("favoritos", next);
+      if (profile) { if (isFav) removeFavoriteGlobal(playerId, profile.name); else addFavoriteGlobal(playerId, profile.name); }
       return next;
     });
-  }, []);
+  }, [profile]);
 
   // Aplica el movimiento de valor de mercado y sube las cláusulas afectadas
   // para cualquier jornada que ya tenga estadísticas cargadas en Supabase y
   // todavía no se haya "procesado" (idempotente: cada jornada se procesa una
   // sola vez, controlado por la lista global "pricedJornadas"). Sustituye al
   // antiguo botón "Guardar jornada" del panel de administración, que ya no existe.
+  // NOTA: esto YA NO toca precios (eso lo hace ahora checkDailyMarketPricing,
+  // todos los días). Se queda solo con lo que sigue haciendo falta: rellenar
+  // alineaciones que falten y subir cláusulas que se hayan quedado por
+  // debajo del valor de mercado actual.
   const settlePlayerPricing = useCallback(async (currentPlayers) => {
     const freshJ = await readJornadas();
     const pricedIds = await readShared("pricedJornadas", []);
     const toPrice = freshJ.filter(j => j.stats && Object.keys(j.stats).length > 0 && !pricedIds.includes(j.id));
     if (toPrice.length === 0) return currentPlayers;
     const freshTGlobal = (await readAllTeamsGlobal()) || {};
-    let workingPlayers = currentPlayers;
     for (const jornada of toPrice) {
       const lineups = { ...(jornada.lineups || {}) };
       Object.entries(freshTGlobal).forEach(([key, t]) => { if (!lineups[key] && t.lineup) lineups[key] = t.lineup; });
       const jornadaToSave = { ...jornada, lineups };
       await writeJornada(jornadaToSave);
-      workingPlayers = applyMarketMovement(workingPlayers, jornadaToSave, freshTGlobal);
-      await writePlayersAfterJornada(workingPlayers, jornadaToSave);
       const bumpWrites = [];
       Object.entries(freshTGlobal).forEach(([key, t]) => {
-        const bumped = teamService.bumpClausesToMarket(t, workingPlayers);
+        const bumped = teamService.bumpClausesToMarket(t, currentPlayers);
         if (bumped !== t) { freshTGlobal[key] = bumped; bumpWrites.push(writeTeam(t.leagueId, t.name, bumped)); }
       });
       if (bumpWrites.length > 0) await Promise.all(bumpWrites);
     }
     await writeShared("pricedJornadas", [...pricedIds, ...toPrice.map(j => j.id)]);
-    return workingPlayers;
+    return currentPlayers;
   }, []);
 
   // Aviso de "quedan 10 minutos" para el inicio de la jornada (el partido más
@@ -1970,14 +2172,87 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Motor de precios diario (ver conversación de diseño): se dispara una vez
+  // por día natural (controlado por la marca global "marketPricingLastRun"),
+  // recalcula TODAS las jugadoras (nunca entrenadoras/es) con el sistema
+  // completo de empujes grandes + reparto semanal + empujes pequeños +
+  // freno para las caras, y además reparte, una sola vez por jornada
+  // completa, el bono de "MVP de toda la jornada".
+  const checkDailyMarketPricing = useCallback(async () => {
+    try {
+      const todayStr = toDateStr(new Date());
+      const lastRun = await readShared("marketPricingLastRun", "");
+      if (lastRun === todayStr) return;
+
+      const freshPlayers = await readPlayers();
+      const freshJornadas = await readJornadas();
+      const allTeams = (await readAllTeamsGlobal()) || {};
+      const totalTeams = Math.max(Object.keys(allTeams).length, 1);
+      const { standings } = marketPricingService.computeStandings(freshJornadas);
+      const bidsMap = await readAllBidsGlobal();
+      const favoritesMap = await readFavoritesGlobalCounts();
+      const ctx = { todayStr, jornadas: freshJornadas, players: freshPlayers, standings, totalTeams, bidsMap, favoritesMap };
+
+      const updates = [];
+      freshPlayers.forEach((p) => {
+        const upd = marketPricingService.computeDailyUpdate(p, ctx);
+        if (upd) updates.push({ id: p.id, ...upd });
+      });
+
+      // Bono de MVP de la jornada entera (se suma al mismo movimiento del día si ya tenía uno).
+      const mvpApplied = await readShared("jornadaMvpPriced", []);
+      const mvpAppliedNext = [...mvpApplied];
+      for (const jornada of freshJornadas) {
+        if (mvpApplied.includes(jornada.id)) continue;
+        if (!tripleFantasyService.isJornadaReady(jornada)) continue;
+        const mvpId = tripleFantasyService.computeActualMvp(jornada, freshPlayers, freshJornadas);
+        if (mvpId) {
+          const basePlayer = freshPlayers.find((p) => p.id === mvpId);
+          if (basePlayer && basePlayer.position !== "DT") {
+            const existing = updates.find((u) => u.id === mvpId);
+            const currentPrice = existing ? existing.basePrice : basePlayer.basePrice;
+            const bump = currentPrice * 0.007 * marketBrakeFactor(currentPrice);
+            const newPrice = currentPrice + bump;
+            if (existing) {
+              existing.basePrice = newPrice;
+              const hist = existing.priceHistory.slice();
+              hist[hist.length - 1] = { ...hist[hist.length - 1], value: newPrice };
+              existing.priceHistory = hist;
+            } else {
+              updates.push({
+                id: mvpId, basePrice: newPrice, prevBasePrice: basePlayer.basePrice,
+                priceHistory: [...(basePlayer.priceHistory || []), { date: todayStr, value: newPrice }].slice(-60),
+                marketCycle: basePlayer.marketCycle || {},
+              });
+            }
+          }
+        }
+        mvpAppliedNext.push(jornada.id);
+      }
+      if (mvpAppliedNext.length !== mvpApplied.length) await writeShared("jornadaMvpPriced", mvpAppliedNext);
+
+      if (updates.length > 0) {
+        await Promise.all(updates.map((u) => supabase.from("players").update({
+          base_price: u.basePrice, prev_base_price: u.prevBasePrice, price_history: u.priceHistory, market_cycle: u.marketCycle,
+        }).eq("id", u.id)));
+        setPlayers((prev) => prev.map((p) => {
+          const u = updates.find((x) => x.id === p.id);
+          return u ? { ...p, basePrice: u.basePrice, prevBasePrice: u.prevBasePrice, priceHistory: u.priceHistory, marketCycle: u.marketCycle } : p;
+        }));
+      }
+      await writeShared("marketPricingLastRun", todayStr);
+    } catch {}
+  }, []);
+
   useEffect(() => {
     if (profile === undefined) return;
     checkJornadaStartWarning();
     checkIdealFive();
     checkLineupLock();
-    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); checkLineupLock(); }, 60000);
+    checkDailyMarketPricing();
+    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); checkLineupLock(); checkDailyMarketPricing(); }, 60000);
     return () => clearInterval(t);
-  }, [profile, checkJornadaStartWarning, checkIdealFive, checkLineupLock]);
+  }, [profile, checkJornadaStartWarning, checkIdealFive, checkLineupLock, checkDailyMarketPricing]);
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
@@ -2478,42 +2753,6 @@ export default function App() {
     await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
     await syncMarket(activeLeagueId, marketResetHour);
   }, [market, syncMarket, activeLeagueId, marketResetHour]);
-
-  // Las jornadas son GLOBALES (compartidas por todas las ligas), así que el snapshot de
-  // alineaciones que se guarda con cada jornada recoge los equipos de TODAS las ligas a
-  // la vez (con clave compuesta "liga::equipo"), y el movimiento de precios de las
-  // jugadoras también se calcula con la demanda agregada de todas las ligas juntas.
-  const saveJornada = useCallback(async (jornada) => {
-    const freshJ = await readJornadas();
-    const freshTGlobal = (await readAllTeamsGlobal()) || {};
-    const existing = freshJ.find(j => j.id === jornada.id);
-    const lineups = { ...(existing?.lineups || {}) };
-    Object.entries(freshTGlobal).forEach(([key, t]) => { if (!lineups[key] && t.lineup) lineups[key] = t.lineup; });
-    const jornadaToSave = { ...jornada, lineups };
-    await writeJornada(jornadaToSave);
-    const nextJ = await readJornadas();
-    setJornadas(nextJ);
-
-    const freshP = await readPlayers();
-    const updatedPlayers = applyMarketMovement(freshP, jornadaToSave, freshTGlobal);
-    await writePlayersAfterJornada(updatedPlayers, jornadaToSave);
-    setPlayers(updatedPlayers);
-
-    // Si alguna jugadora ha subido de valor, su cláusula sube para igualarlo
-    // (nunca baja sola), en TODOS los equipos de TODAS las ligas que la tengan.
-    const clauseBumps = [];
-    Object.entries(freshTGlobal).forEach(([key, t]) => {
-      const bumped = teamService.bumpClausesToMarket(t, updatedPlayers);
-      if (bumped !== t) clauseBumps.push(writeTeam(t.leagueId, t.name, bumped));
-    });
-    if (clauseBumps.length > 0) await Promise.all(clauseBumps);
-  }, []);
-
-  const deleteJornada = useCallback(async (id) => {
-    await deleteJornadaRow(id);
-    const next = await readJornadas();
-    setJornadas(next);
-  }, []);
 
   // Escudo de un equipo real: fila en la tabla "team_crests" (equipo -> URL),
   // compartida para toda la liga (lo sube quien administra desde Equipos reales).
@@ -3769,8 +4008,8 @@ function ValorHistoricoModal({ player, onClose }) {
             </svg>
           )}
           <div className="flex justify-between mt-1 mb-3">
-            <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[0]?.label}</span>
-            {points.length > 1 && <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[points.length - 1]?.label}</span>}
+            <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[0]?.label || points[0]?.date}</span>
+            {points.length > 1 && <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[points.length - 1]?.label || points[points.length - 1]?.date}</span>}
           </div>
         </div>
 
