@@ -2397,31 +2397,6 @@ export default function App() {
     } catch {}
   }, []);
 
-  // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
-  // esperar a la medianoche real. Ojo: como el precio de las jugadoras es
-  // global (lo comparten todas las ligas), esto mueve precios de verdad,
-  // visibles para cualquier liga — no solo una de pruebas.
-  const advanceSimDay = useCallback(async () => {
-    const current = await readShared("marketSimDate", null);
-    const realToday = new Date();
-    realToday.setHours(0, 0, 0, 0);
-    const base = current ? new Date(current + "T00:00:00") : realToday;
-    if (base < realToday) base.setTime(realToday.getTime()); // por si la simulada se quedó atrás
-    base.setDate(base.getDate() + 1);
-    const nextDateStr = toDateStr(base);
-    await writeShared("marketSimDate", nextDateStr);
-    await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
-    await checkDailyMarketPricing();
-    const freshPlayers = await readPlayers();
-    setPlayers(freshPlayers);
-    return nextDateStr;
-  }, [checkDailyMarketPricing]);
-
-  const exitSimMode = useCallback(async () => {
-    await deleteShared("marketSimDate");
-    return { ok: true };
-  }, []);
-
   useEffect(() => {
     if (profile === undefined) return;
     checkJornadaStartWarning();
@@ -2748,6 +2723,82 @@ export default function App() {
     ? new Date(activeLeague.created_at).toTimeString().slice(0, 5)
     : "08:00";
 
+  // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
+  // esperar a la medianoche real, y de paso fuerza a que el mercado de la
+  // liga actual se resuelva ya (como si hubiera pasado tiempo de verdad):
+  // se entregan las jugadoras a quien más pujó, se abre mercado nuevo, y se
+  // regeneran las ofertas de la liga por las que estén puestas en venta.
+  // Ojo: como el precio de las jugadoras es global (lo comparten todas las
+  // ligas), esto mueve precios de verdad, visibles para cualquier liga.
+  const advanceSimDay = useCallback(async () => {
+    // Guarda una foto de los precios ANTES del primer avance, para que "Reiniciar prueba" pueda volver aquí.
+    const baseline = await readShared("testBaselinePrices", null);
+    if (!baseline) {
+      const currentPlayers = await readPlayers();
+      const snapshot = {};
+      currentPlayers.forEach((p) => { snapshot[p.id] = p.basePrice; });
+      await writeShared("testBaselinePrices", snapshot);
+    }
+
+    const current = await readShared("marketSimDate", null);
+    const realToday = new Date();
+    realToday.setHours(0, 0, 0, 0);
+    const base = current ? new Date(current + "T00:00:00") : realToday;
+    if (base < realToday) base.setTime(realToday.getTime()); // por si la simulada se quedó atrás
+    base.setDate(base.getDate() + 1);
+    const nextDateStr = toDateStr(base);
+    await writeShared("marketSimDate", nextDateStr);
+    await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
+    await checkDailyMarketPricing();
+
+    // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
+    if (activeLeagueId) {
+      const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
+      if (freshMarket && !freshMarket.resolved && Date.now() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+      }
+      await syncMarket(activeLeagueId, marketResetHour);
+    }
+
+    const freshPlayers = await readPlayers();
+    setPlayers(freshPlayers);
+    return nextDateStr;
+  }, [checkDailyMarketPricing, activeLeagueId, marketResetHour, syncMarket]);
+
+  const exitSimMode = useCallback(async () => {
+    await deleteShared("marketSimDate");
+    return { ok: true };
+  }, []);
+
+  // Reinicia toda la prueba: vuelve los precios a como estaban antes del
+  // primer "Avanzar día" de esta ronda, borra estadísticas y resultados de
+  // partidos, y limpia todas las marcas de "ya procesado" para que el
+  // motor entero arranque de cero. Para poder probar muchas veces seguidas.
+  const resetTestMode = useCallback(async () => {
+    const baseline = await readShared("testBaselinePrices", null);
+    if (baseline) {
+      const currentPlayers = await readPlayers();
+      await Promise.all(currentPlayers.map((p) => {
+        if (!(p.id in baseline)) return null;
+        return supabase.from("players").update({ base_price: baseline[p.id], prev_base_price: baseline[p.id], price_history: [], market_cycle: {} }).eq("id", p.id);
+      }));
+    }
+    await supabase.from("jornada_stats").delete().neq("player_id", "__none__");
+    await supabase.from("partidos").update({
+      marcador_local: null, marcador_visitante: null,
+      marcador_local_p1: null, marcador_local_p2: null, marcador_local_p3: null, marcador_local_p4: null,
+      marcador_visitante_p1: null, marcador_visitante_p2: null, marcador_visitante_p3: null, marcador_visitante_p4: null,
+    }).neq("id", "__none__");
+    await Promise.all([
+      deleteShared("marketSimDate"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
+      deleteShared("jornadaMvpPriced"), deleteShared("lineupLocked"), deleteShared("testBaselinePrices"),
+    ]);
+    const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
+    setPlayers(freshPlayers);
+    setJornadas(freshJornadas);
+    return { ok: true };
+  }, []);
+
   useEffect(() => {
     if (!activeLeagueId) return;
     setMarket(null); // evita mostrar por un instante el mercado de la liga anterior
@@ -3037,7 +3088,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} />
+            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} />
           )}
         </div>
       </main>
@@ -6127,9 +6178,10 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode }) {
+function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest }) {
   const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
   const [busy, setBusy] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
     (async () => { setSimDate(await readShared("marketSimDate", null)); })();
@@ -6147,6 +6199,13 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode }) {
     setSimDate(null);
     setBusy(false);
   };
+  const doReset = async () => {
+    setBusy(true);
+    await onResetTest();
+    setSimDate(null);
+    setBusy(false);
+    setConfirmReset(false);
+  };
 
   return (
     <div>
@@ -6156,12 +6215,12 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode }) {
           <span className="fl-mono text-[10px] font-bold tracking-wide" style={{ color: C.gold }}>MODO PRUEBAS — MERCADO</span>
         </div>
         <p className="fl-body text-xs mb-2.5" style={{ color: C.muted }}>
-          Adelanta un día "de mentira" para ver cómo se mueve el mercado sin esperar a la medianoche real. Como el precio de las jugadoras es global, esto mueve precios de verdad, visibles en cualquier liga.
+          Adelanta un día "de mentira" para ver cómo se mueve el mercado sin esperar a la medianoche real: mueve precios y también resuelve el mercado de tu liga actual (entrega jugadoras a quien más pujó). Como el precio es global, esto se ve en cualquier liga.
         </p>
         <div className="fl-mono text-[11px] mb-2.5" style={{ color: C.white }}>
           {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span></> : "Sin simular (fecha real)"}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 mb-2">
           <button disabled={busy} onClick={advance} className="fl-tap flex-1 rounded-md py-2 text-xs font-semibold disabled:opacity-50" style={{ background: C.gold, color: C.ink }}>
             {busy ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Avanzar 1 día"}
           </button>
@@ -6171,6 +6230,26 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode }) {
             </button>
           )}
         </div>
+
+        {confirmReset ? (
+          <div className="rounded-md p-2.5" style={{ background: `${C.negative}15`, border: `1px solid ${C.negative}` }}>
+            <p className="fl-body text-[11px] mb-2" style={{ color: C.white }}>
+              Esto borra estadísticas y resultados de partidos, y devuelve los precios a como estaban antes de empezar esta ronda de pruebas. No se puede deshacer. ¿Seguro?
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button disabled={busy} onClick={() => setConfirmReset(false)} className="fl-tap rounded-md py-1.5 text-[11px] font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
+                Cancelar
+              </button>
+              <button disabled={busy} onClick={doReset} className="fl-tap rounded-md py-1.5 text-[11px] font-semibold flex items-center justify-center gap-1.5" style={{ background: C.negative, color: C.white }}>
+                {busy ? <Loader2 size={12} className="animate-spin" /> : "Sí, reiniciar"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button disabled={busy} onClick={() => setConfirmReset(true)} className="fl-tap w-full rounded-md py-2 text-xs font-semibold" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
+            Reiniciar prueba
+          </button>
+        )}
       </div>
       <ActividadFeed activity={activity} players={players} />
     </div>
