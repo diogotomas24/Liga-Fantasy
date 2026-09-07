@@ -50,6 +50,39 @@ const POSITIONS = [
   { key: "PIVOT", label: "Pívot", short: "P", fill: C.white, textOn: C.ink },
 ];
 const COACH_POS = { key: "DT", label: "Entrenadora/or", short: "DT", fill: C.gold, textOn: C.ink };
+
+// Color de neón representativo de cada equipo real, para el borde de las
+// tarjetas de partido. Si un equipo no está aquí, se le asigna uno fijo
+// (siempre el mismo para ese nombre) de una paleta de respaldo, para que
+// nunca se quede sin color aunque no esté en esta lista.
+const TEAM_NEON_COLORS = {
+  "Alfasa Mamba Team": "#FFC83D",
+  "Polid. San Agustin": "#E63946",
+  "Polideportivo San Agustín": "#E63946",
+  "Basket Aragon": "#FF7A1A",
+  "Basket Aragón": "#FF7A1A",
+  "Muerde la Pasta Alierta": "#1B6B4A",
+  "Em El Olivar": "#3CB371",
+  "El Olivar": "#3CB371",
+  "Mercado Central OSB": "#B22222",
+  "Boscos": "#7A1F3D",
+  "IES-Lycee Français Moliere": "#1B3A6B",
+  "Basket Lupus SFA": "#D7263D",
+  "Marianistas": "#2B6CB0",
+  "Compañía de Maria": "#C9A227",
+  "Compañía de María": "#C9A227",
+  "Beral CBF Huesca La Magia": "#2E8B57",
+  "Cristo Rey A": "#1E5AA8",
+};
+const NEON_FALLBACK_PALETTE = ["#7B2FF7", "#00C2A8", "#FF6B9D", "#4D96FF", "#FFB454", "#63E6BE", "#E0507A", "#8DD858"];
+function teamNeonColor(name) {
+  if (!name) return C.line;
+  if (TEAM_NEON_COLORS[name]) return TEAM_NEON_COLORS[name];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return NEON_FALLBACK_PALETTE[hash % NEON_FALLBACK_PALETTE.length];
+}
+
 const ALL_POSITIONS = [...POSITIONS, COACH_POS];
 const POS_BY_KEY = Object.fromEntries(ALL_POSITIONS.map(p => [p.key, p]));
 
@@ -3080,7 +3113,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
             {partidosPreview.length === 0 ? (
               <EmptyState compact title="Sin partidos" text="Todavía no hay partidos añadidos para esta jornada." />
             ) : (
-              <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
+              <div>
                 {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={currentJornada} players={players} />)}
               </div>
             )}
@@ -3367,25 +3400,46 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
   const [showDetail, setShowDetail] = useState(false);
   const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
     m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
+  const colorLocal = teamNeonColor(m.local);
+  const colorVisit = teamNeonColor(m.visitante);
   return (
     <>
-      <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
-        <div className="flex-1 flex items-center gap-2 justify-end text-right min-w-0">
-          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.local}</span>
-          <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={28} />
-        </div>
-        <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 52 }}>
-          {played ? (
-            <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
-          ) : m.hora
-            ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
-            : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
-        </div>
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={28} />
-          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.visitante}</span>
-        </div>
-      </button>
+      <div className="relative overflow-hidden rounded-2xl mb-2.5" style={{
+        padding: 1.5,
+        background: `linear-gradient(90deg, ${colorLocal}, ${colorVisit})`,
+        boxShadow: `0 0 10px ${colorLocal}55, 0 0 10px ${colorVisit}55`,
+      }}>
+        <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left rounded-2xl px-3 py-3 flex items-center gap-2" style={{ background: C.navy800 }}>
+          <div className="flex-1 flex items-center gap-2.5 min-w-0">
+            <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={38} />
+            <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.local}</span>
+          </div>
+          <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 64 }}>
+            {played ? (
+              <>
+                <span className="fl-mono text-base font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+                <span className="fl-mono text-[9px] font-semibold flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-full" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                  <CircleCheck size={10} /> FINALIZADO
+                </span>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-1 w-full">
+                  <span className="flex-1 h-px" style={{ background: colorLocal }} />
+                  <span className="flex-1 h-px" style={{ background: colorVisit }} />
+                </div>
+                {m.fecha && <span className="fl-mono text-[9px] mt-1" style={{ color: C.muted }}>{m.fecha}</span>}
+                {m.hora && <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>}
+                {!m.fecha && !m.hora && <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
+              </>
+            )}
+          </div>
+          <div className="flex-1 flex items-center gap-2.5 justify-end text-right min-w-0">
+            <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.visitante}</span>
+            <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={38} />
+          </div>
+        </button>
+      </div>
       {showDetail && jornada && (
         <PartidoDetailScreen partido={m} jornada={jornada} players={players || []} teamCrests={teamCrests} onClose={() => setShowDetail(false)} />
       )}
@@ -3596,7 +3650,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
             {grouped.map((g, gi) => (
               <div key={gi}>
                 {g.fecha && <div className="fl-mono text-[10px] mb-1.5 uppercase" style={{ color: C.muted }}>{g.fecha}</div>}
-                <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
+                <div>
                   {g.partidos.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={jornada} players={players} />)}
                 </div>
               </div>
@@ -3858,7 +3912,6 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
 function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
-  const [detailPartido, setDetailPartido] = useState(null);
   const [showValorChart, setShowValorChart] = useState(false);
   const [showAllMovers, setShowAllMovers] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
@@ -4063,35 +4116,12 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       {partidos.length > 0 && (
         <div>
           <SectionTitle>Partidos de la jornada</SectionTitle>
-          <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
+          <div>
             {partidos.map(m => (
-              <button key={m.id} onClick={() => setDetailPartido(m)} className="fl-tap w-full text-left px-3.5 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
-                <div className="flex-1 flex flex-col items-center gap-1 text-center">
-                  <TeamCrest name={m.local} photo={teamCrests?.[m.local]} />
-                  <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.local}</span>
-                </div>
-                <div className="flex flex-col items-center px-1">
-                  {(m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "") ? (
-                    <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
-                  ) : (m.fecha || m.hora) ? (
-                    <>
-                      {m.fecha && <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{m.fecha}</span>}
-                      {m.hora && <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>}
-                    </>
-                  ) : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
-                </div>
-                <div className="flex-1 flex flex-col items-center gap-1 text-center">
-                  <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} />
-                  <span className="fl-body text-[11px] font-medium leading-tight" style={{ color: C.white }}>{m.visitante}</span>
-                </div>
-              </button>
+              <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={lastJornada} players={players} />
             ))}
           </div>
         </div>
-      )}
-
-      {detailPartido && (
-        <PartidoDetailScreen partido={detailPartido} jornada={lastJornada} players={players} teamCrests={teamCrests} onClose={() => setDetailPartido(null)} />
       )}
 
       {jornadas.length > 0 && (
