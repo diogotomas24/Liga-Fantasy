@@ -2451,6 +2451,16 @@ export default function App() {
   // Se asegura de que la persona tiene un equipo creado dentro de esa liga
   // (reparto inicial de 8 jugadoras al azar, sin tocar el presupuesto de
   // mercado, con un quinteto "2-2-1" ya alineado). Idempotente: si ya existe, no hace nada.
+  // Igual que logActivity, pero recibiendo la liga explícita — hace falta para
+  // sitios como "unirse a una liga" o "expulsar", que pueden pasar sin que
+  // esa liga sea la "activa" en ese momento (p. ej. desde Mis Ligas).
+  const logActivityFor = useCallback(async (leagueId, entry) => {
+    const freshActivity = await readShared(leagueKey(leagueId, "activity"), []);
+    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    await writeShared(leagueKey(leagueId, "activity"), nextActivity);
+    if (leagueId === activeLeagueId) setActivity(nextActivity);
+  }, [activeLeagueId]);
+
   const ensureTeamInLeague = useCallback(async (leagueId, name) => {
     const existing = await readTeam(leagueId, name);
     if (existing) return existing;
@@ -2469,8 +2479,9 @@ export default function App() {
     const starters = [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)];
     if (starters.length === 5) team = { ...team, lineup: { ...team.lineup, formation: "2-2-1", starters } };
     await writeTeam(leagueId, name, team);
+    await logActivityFor(leagueId, { type: "union", userId: name });
     return team;
-  }, []);
+  }, [logActivityFor]);
 
   const selectLeague = useCallback(async (leagueId) => {
     if (profile) {
@@ -2494,8 +2505,9 @@ export default function App() {
     await deleteTeamRow(leagueId, userName);
     const kicked = await readShared(leagueKey(leagueId, "kicked"), []);
     if (!kicked.includes(userName)) await writeShared(leagueKey(leagueId, "kicked"), [...kicked, userName]);
+    await logActivityFor(leagueId, { type: "expulsion", userId: userName });
     return { ok: true };
-  }, []);
+  }, [logActivityFor]);
 
   // Borra la liga entera: todos los equipos de esa liga y la propia liga.
   // Solo debe poder llamarlo quien la creó (se comprueba en la UI).
@@ -2959,7 +2971,9 @@ export default function App() {
             <InicioTab profile={profile} teams={teams} players={players} jornadas={jornadas} leagueId={activeLeagueId}
               myTeam={myTeam} budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               market={market} isMarketOpen={isMarketOpen} onGoTo={setTab}
-              teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple} />
+              teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple}
+              favoritos={favoritos} onToggleFavorite={toggleFavorito}
+              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
@@ -3902,7 +3916,8 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple }) {
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
+  const [detailPlayer, setDetailPlayer] = useState(null);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
   const [showValorChart, setShowValorChart] = useState(false);
@@ -3958,7 +3973,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           background: `linear-gradient(120deg, #FFD24D 0%, #FF8A00 35%, #241200 65%, #FF8A00 100%)`,
           boxShadow: `0 0 14px #FF8A0099, 0 0 28px #FF8A0044`,
         }}>
-          <div className="relative overflow-hidden rounded-2xl px-3 py-2.5" style={{ background: `radial-gradient(130% 100% at 50% 135%, #FF8A0066 0%, #3D1F00 32%, #0A0A0C 68%)` }}>
+          <div className="relative overflow-hidden rounded-2xl px-3 py-2" style={{ background: `radial-gradient(130% 100% at 50% 135%, #FF8A0066 0%, #3D1F00 32%, #0A0A0C 68%)` }}>
             {/* Balón de baloncesto de verdad (costuras curvas con SVG), dorado y semitransparente, recortado en el borde */}
             <svg viewBox="0 0 100 100" style={{ position: "absolute", right: -32, top: -14, width: 100, height: 100 }}>
               <defs>
@@ -3982,36 +3997,44 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
               </g>
             </svg>
             <div className="relative z-10">
-              <ChevronRight size={15} color="#FF8A00" style={{ position: "absolute", top: -1, right: 0 }} />
+              <ChevronRight size={14} color="#FF8A00" style={{ position: "absolute", top: -1, right: 0 }} />
               <div className="flex items-center gap-2">
-                <div className="relative flex-shrink-0" style={{ width: 28, height: 22 }}>
-                  <div style={{ position: "absolute", left: 0, bottom: 0, width: 20, height: 12, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
-                  <div style={{ position: "absolute", left: 6, bottom: 4, width: 20, height: 12, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
+                <div className="relative flex-shrink-0" style={{ width: 24, height: 19 }}>
+                  <div style={{ position: "absolute", left: 0, bottom: 0, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
+                  <div style={{ position: "absolute", left: 5, bottom: 3, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
                 </div>
                 <div>
-                  <div className="fl-mono text-[8.5px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
-                  <div className="fl-mono text-lg font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
+                  <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
+                  <div className="fl-mono text-base font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
                 </div>
               </div>
             </div>
 
           </div>
         </div>
-        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2.5 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
-          <span style={{ position: "absolute", right: -14, bottom: -18, fontSize: 76, opacity: 0.14, lineHeight: 1 }}>🏀</span>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
+          {/* Diagrama de barras translúcido de fondo, en el mismo color que el borde */}
+          <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ position: "absolute", right: 0, bottom: 0, width: "70%", height: "80%", opacity: 0.16 }}>
+            <rect x="4" y="34" width="10" height="26" fill={C.principal} />
+            <rect x="20" y="24" width="10" height="36" fill={C.principal} />
+            <rect x="36" y="30" width="10" height="30" fill={C.principal} />
+            <rect x="52" y="14" width="10" height="46" fill={C.principal} />
+            <rect x="68" y="20" width="10" height="40" fill={C.principal} />
+            <rect x="84" y="4" width="10" height="56" fill={C.principal} />
+          </svg>
           <div className="relative z-10">
             <div className="flex items-center justify-between mb-0.5">
-              <div className="rounded-full flex items-center justify-center" style={{ width: 22, height: 22, background: `${C.principal}22` }}>
-                <TrendingUp size={12} color={C.principal} />
+              <div className="rounded-full flex items-center justify-center" style={{ width: 20, height: 20, background: `${C.principal}22` }}>
+                <TrendingUp size={11} color={C.principal} />
               </div>
               <ChevronRight size={14} color={C.muted} />
             </div>
-            <div className="fl-mono text-[8.5px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
-            <div className="fl-mono text-lg font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+            <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
+            <div className="fl-mono text-base font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
             {cambioValor !== 0 && (
               <div className="flex items-center gap-1 mt-0.5">
-                {cambioValor > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
-                <span className="fl-mono text-[10px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
+                {cambioValor > 0 ? <TrendingUp size={10} color={C.positive} /> : <TrendingDown size={10} color={C.negative} />}
+                <span className="fl-mono text-[9px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
                   {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
                 </span>
               </div>
@@ -4036,7 +4059,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
               <div className="flex items-center gap-1 mb-2"><TrendingUp size={12} color={C.positive} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.positive }}>MÁS HAN SUBIDO</span></div>
               <div>
                 {movers.gainers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }, i) => (
-                  <div key={player.id} className="flex items-center gap-2 py-2" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                  <button key={player.id} onClick={() => setDetailPlayer(player)} className="fl-tap w-full flex items-center gap-2 py-2 text-left" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
                     <div style={{ borderRadius: 999, border: `1.5px solid ${C.positive}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
                     <div className="flex-1 min-w-0">
                       <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
@@ -4046,7 +4069,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
                       <div className="fl-mono text-[10px] font-bold" style={{ color: C.positive }}>+{fmtCredits(delta)}</div>
                       <div className="fl-mono text-[9px]" style={{ color: C.positive }}>(+{pct.toFixed(1)}%)</div>
                     </div>
-                  </div>
+                  </button>
                 ))}
                 {movers.gainers.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin movimiento hoy</div>}
               </div>
@@ -4055,7 +4078,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
               <div className="flex items-center gap-1 mb-2"><TrendingDown size={12} color={C.negative} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.negative }}>MÁS HAN BAJADO</span></div>
               <div>
                 {movers.losers.slice(0, showAllMovers ? 10 : 3).map(({ player, delta, pct }, i) => (
-                  <div key={player.id} className="flex items-center gap-2 py-2" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                  <button key={player.id} onClick={() => setDetailPlayer(player)} className="fl-tap w-full flex items-center gap-2 py-2 text-left" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
                     <div style={{ borderRadius: 999, border: `1.5px solid ${C.negative}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
                     <div className="flex-1 min-w-0">
                       <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
@@ -4065,7 +4088,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
                       <div className="fl-mono text-[10px] font-bold" style={{ color: C.negative }}>{fmtCredits(delta)}</div>
                       <div className="fl-mono text-[9px]" style={{ color: C.negative }}>({pct.toFixed(1)}%)</div>
                     </div>
-                  </div>
+                  </button>
                 ))}
                 {movers.losers.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin movimiento hoy</div>}
               </div>
@@ -4137,6 +4160,14 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       {showValorChart && (
         <ValorPlantillaChartModal myTeam={myTeam} players={players} onClose={() => setShowValorChart(false)} />
+      )}
+
+      {detailPlayer && (
+        <PlayerDetailScreen player={detailPlayer} entry={(myTeam.squad || []).find(e => e.id === detailPlayer.id)}
+          jornadas={jornadas} isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={onToggleFavorite}
+          isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
+          onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
+          onClose={() => setDetailPlayer(null)} />
       )}
     </div>
   );
@@ -4612,31 +4643,6 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
             </button>
           )}
         </div>
-
-        {isOwned && entry && entry.forSale && (() => {
-          const offer = entry.saleOffer;
-          const offerExpired = offer && offer.expiresAt && Date.now() > offer.expiresAt;
-          if (!offer || offerExpired) return null;
-          return (
-            <div className="px-4 pt-3">
-              <div className="fl-row p-3">
-                <div className="p-2 rounded-md" style={{ background: C.principalSoft }}>
-                  <div className="fl-body text-xs" style={{ color: C.white }}>Oferta de la liga: <span className="font-semibold">{fmtCredits(offer.amount)}</span></div>
-                  <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Válida hasta que cierre este mercado</div>
-                  <button disabled={busyAction === "offer"} onClick={async () => {
-                    setBusyAction("offer"); setActionMsg("");
-                    const res = await onAcceptSaleOffer(player.id);
-                    setBusyAction(null);
-                    if (res.ok) onClose(); else setActionMsg(res.error);
-                  }} className="fl-tap w-full mt-2 rounded-md py-2 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
-                    {busyAction === "offer" ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar oferta"}
-                  </button>
-                </div>
-                {actionMsg && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{actionMsg}</div>}
-              </div>
-            </div>
-          );
-        })()}
 
         {showActions && entry && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
@@ -5462,7 +5468,8 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const assets = (market.assetIds || []).map(id => players.find(p => p.id === id)).filter(Boolean);
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
-  const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length;
+  const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length
+    + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || Date.now() <= e.saleOffer.expiresAt)).length;
   const sentOffersCount = (offers || []).filter(o => o.status === "pending" && o.fromUser === profile.name).length;
 
   if (clauseTarget) {
@@ -5568,7 +5575,40 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
           )}
 
           {opSub === "venta" && (
-            <OfertasRecibidasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+            <div className="space-y-4">
+              <div>
+                <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS DE LA LIGA</div>
+                {(() => {
+                  const misOfertasLiga = (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || Date.now() <= e.saleOffer.expiresAt));
+                  if (misOfertasLiga.length === 0) {
+                    return <EmptyState compact title="Sin ofertas de la liga" text="Cuando pongas una jugadora en venta, la oferta que te haga la liga aparecerá aquí." />;
+                  }
+                  return (
+                    <div className="space-y-1.5">
+                      {misOfertasLiga.map(entry => {
+                        const asset = players.find(p => p.id === entry.id);
+                        if (!asset) return null;
+                        return (
+                          <div key={entry.id} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+                            <button onClick={() => setDetailPlayer(asset)} className="fl-tap flex items-center gap-2.5 flex-1 min-w-0 text-left">
+                              <PlayerPhoto url={asset.photo} size={38} />
+                              <div className="flex-1 min-w-0">
+                                <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
+                                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Oferta: {fmtCredits(entry.saleOffer.amount)}</div>
+                              </div>
+                            </button>
+                            <button onClick={() => onAcceptSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5 flex-shrink-0" style={{ background: C.positive, color: C.ink }}>
+                              Aceptar
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+              <OfertasRecibidasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+            </div>
           )}
         </div>
       )}
@@ -6084,6 +6124,14 @@ function ActividadFeed({ activity, players }) {
         } else if (a.type === "triple") {
           text = <>
             <span style={{ color: C.baby }}>{a.userId}</span> ha ganado <span className="font-medium">{fmtCredits(a.amount)}</span> en el 🏀 Triple Fantasy
+          </>;
+        } else if (a.type === "union") {
+          text = <>
+            <span style={{ color: C.positive }}>{a.userId}</span> se ha unido a la liga 🎉
+          </>;
+        } else if (a.type === "expulsion") {
+          text = <>
+            <span style={{ color: C.negative }}>{a.userId}</span> ha sido expulsada/o de la liga
           </>;
         } else {
           text = <>
