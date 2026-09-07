@@ -2844,6 +2844,20 @@ export default function App() {
     return { ok: true };
   }, [profile, activeLeagueId, logActivity]);
 
+  // Rechaza la oferta que te ha hecho la liga por una jugadora puesta a la
+  // venta: simplemente desaparece esa oferta concreta (sigue puesta en
+  // venta, así que en el siguiente mercado puede llegarle una oferta nueva).
+  const rejectSaleOffer = useCallback(async (assetId) => {
+    const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
+    const entry = teamService.getSquadEntry(fresh, assetId);
+    if (!entry?.saleOffer) return { ok: false, error: "Esta jugadora ya no tiene una oferta activa." };
+    const squad = (fresh.squad || []).map(e => e.id === assetId ? { ...e, saleOffer: null } : e);
+    const nextTeam = { ...fresh, squad };
+    await writeTeam(activeLeagueId, profile.name, nextTeam);
+    setTeams(t => ({ ...t, [profile.name]: nextTeam }));
+    return { ok: true };
+  }, [profile, activeLeagueId]);
+
   // Sube la cláusula de tu propia jugadora pagando: el importe se descuenta de tu
   // presupuesto y la cláusula sube el DOBLE de lo pagado.
   const raiseClause = useCallback(async (assetId, payAmount) => {
@@ -2990,7 +3004,7 @@ export default function App() {
               offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
               jornadas={jornadas} teamCrests={teamCrests}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
+              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
             <MasTab activity={activity} players={players} />
@@ -3967,51 +3981,28 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
-        <div className="relative overflow-hidden rounded-2xl" style={{
-          padding: 2,
-          background: `linear-gradient(120deg, #FFD24D 0%, #FF8A00 35%, #241200 65%, #FF8A00 100%)`,
-          boxShadow: `0 0 14px #FF8A0099, 0 0 28px #FF8A0044`,
-        }}>
-          <div className="relative overflow-hidden rounded-2xl px-3 py-2" style={{ background: `radial-gradient(130% 100% at 50% 135%, #FF8A0066 0%, #3D1F00 32%, #0A0A0C 68%)` }}>
-            {/* Balón de baloncesto de verdad (costuras curvas con SVG), dorado y semitransparente, recortado en el borde */}
-            <svg viewBox="0 0 100 100" style={{ position: "absolute", right: -32, top: -14, width: 100, height: 100 }}>
-              <defs>
-                <radialGradient id="ballGradDinero" cx="35%" cy="30%">
-                  <stop offset="0%" stopColor="#FFE0A0" stopOpacity="0.55" />
-                  <stop offset="60%" stopColor="#FF8A00" stopOpacity="0.22" />
-                  <stop offset="100%" stopColor="#FF8A00" stopOpacity="0" />
-                </radialGradient>
-                <linearGradient id="fadeDinero" x1="100%" y1="0%" x2="0%" y2="0%">
-                  <stop offset="0%" stopColor="white" stopOpacity="1" />
-                  <stop offset="65%" stopColor="white" stopOpacity="0" />
-                </linearGradient>
-                <mask id="maskDinero"><rect x="0" y="0" width="100" height="100" fill="url(#fadeDinero)" /></mask>
-              </defs>
-              <g mask="url(#maskDinero)">
-                <circle cx="50" cy="50" r="46" fill="url(#ballGradDinero)" stroke="rgba(255,220,170,0.4)" strokeWidth="1.5" />
-                <line x1="50" y1="4" x2="50" y2="96" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
-                <line x1="4" y1="50" x2="96" y2="50" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
-                <path d="M 50 4 Q 18 50 50 96" fill="none" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
-                <path d="M 50 4 Q 82 50 50 96" fill="none" stroke="rgba(255,220,170,0.35)" strokeWidth="1.4" />
-              </g>
-            </svg>
-            <div className="relative z-10">
-              <ChevronRight size={14} color="#FF8A00" style={{ position: "absolute", top: -1, right: 0 }} />
-              <div className="flex items-center gap-2">
-                <div className="relative flex-shrink-0" style={{ width: 24, height: 19 }}>
-                  <div style={{ position: "absolute", left: 0, bottom: 0, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
-                  <div style={{ position: "absolute", left: 5, bottom: 3, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
-                </div>
-                <div>
-                  <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
-                  <div className="fl-mono text-base font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
-                </div>
+        <div className="relative overflow-hidden rounded-2xl px-3 py-2" style={{ background: C.navy800, border: `2px solid #FF8A00`, boxShadow: `0 0 8px #FF8A0033` }}>
+          {/* Billetes translúcidos de fondo */}
+          <svg viewBox="0 0 100 60" style={{ position: "absolute", right: -10, bottom: -8, width: 92, height: 56, opacity: 0.14 }}>
+            <rect x="10" y="18" width="52" height="30" rx="3" fill="none" stroke="#FF8A00" strokeWidth="2" transform="rotate(-8 36 33)" />
+            <circle cx="36" cy="33" r="9" fill="none" stroke="#FF8A00" strokeWidth="1.5" transform="rotate(-8 36 33)" />
+            <rect x="28" y="6" width="52" height="30" rx="3" fill="none" stroke="#FF8A00" strokeWidth="2" transform="rotate(6 54 21)" />
+            <circle cx="54" cy="21" r="9" fill="none" stroke="#FF8A00" strokeWidth="1.5" transform="rotate(6 54 21)" />
+          </svg>
+          <div className="relative z-10">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-shrink-0" style={{ width: 24, height: 19 }}>
+                <div style={{ position: "absolute", left: 0, bottom: 0, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
+                <div style={{ position: "absolute", left: 5, bottom: 3, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
+              </div>
+              <div>
+                <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
+                <div className="fl-mono text-base font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
               </div>
             </div>
-
           </div>
         </div>
-        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 16px ${C.principal}55` }}>
+        <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 8px ${C.principal}33` }}>
           {/* Diagrama de barras translúcido de fondo, en el mismo color que el borde */}
           <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ position: "absolute", right: 0, bottom: 0, width: "70%", height: "80%", opacity: 0.16 }}>
             <rect x="4" y="34" width="10" height="26" fill={C.principal} />
@@ -5457,7 +5448,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
+function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRejectSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("mercado");
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
@@ -5596,9 +5587,14 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
                                 <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Oferta: {fmtCredits(entry.saleOffer.amount)}</div>
                               </div>
                             </button>
-                            <button onClick={() => onAcceptSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5 flex-shrink-0" style={{ background: C.positive, color: C.ink }}>
-                              Aceptar
-                            </button>
+                            <div className="flex flex-col gap-1.5 flex-shrink-0">
+                              <button onClick={() => onAcceptSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ background: C.positive, color: C.ink }}>
+                                Aceptar
+                              </button>
+                              <button onClick={() => onRejectSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
+                                Rechazar
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
