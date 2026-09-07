@@ -51,36 +51,44 @@ const POSITIONS = [
 ];
 const COACH_POS = { key: "DT", label: "Entrenadora/or", short: "DT", fill: C.gold, textOn: C.ink };
 
-// Color de neón representativo de cada equipo real, para el borde de las
-// tarjetas de partido. Si un equipo no está aquí, se le asigna uno fijo
+// Color(es) de neón de cada equipo real, para las tarjetas de partido. Los
+// equipos con dos colores dados se representan como degradado entre los dos;
+// el resto, un único color. Si un equipo no está aquí, se le asigna uno fijo
 // (siempre el mismo para ese nombre) de una paleta de respaldo, para que
 // nunca se quede sin color aunque no esté en esta lista.
 const TEAM_NEON_COLORS = {
-  "Alfasa Mamba Team": "#FFC83D",
-  "Polid. San Agustin": "#E63946",
-  "Polideportivo San Agustín": "#E63946",
-  "Basket Aragon": "#FF7A1A",
-  "Basket Aragón": "#FF7A1A",
-  "Muerde la Pasta Alierta": "#1B6B4A",
-  "Em El Olivar": "#3CB371",
-  "El Olivar": "#3CB371",
-  "Mercado Central OSB": "#B22222",
-  "Boscos": "#7A1F3D",
-  "IES-Lycee Français Moliere": "#1B3A6B",
-  "Basket Lupus SFA": "#D7263D",
-  "Marianistas": "#2B6CB0",
-  "Compañía de Maria": "#C9A227",
-  "Compañía de María": "#C9A227",
-  "Beral CBF Huesca La Magia": "#2E8B57",
-  "Cristo Rey A": "#1E5AA8",
+  "Alfasa Mamba Team": ["#FFC83D"],
+  "Polid. San Agustin": ["#E63946", "#FFFFFF"],
+  "Polideportivo San Agustín": ["#E63946", "#FFFFFF"],
+  "Basket Aragon": ["#FF7A1A"],
+  "Basket Aragón": ["#FF7A1A"],
+  "Muerde la Pasta Alierta": ["#1B3A6B", "#2ECC71"],
+  "Em El Olivar": ["#3CB371"],
+  "El Olivar": ["#3CB371"],
+  "Mercado Central OSB": ["#D7263D", "#111111"],
+  "Boscos": ["#7A1F3D", "#1B3A6B"],
+  "IES-Lycee Français Moliere": ["#1B3A6B"],
+  "Basket Lupus SFA": ["#D7263D"],
+  "Marianistas": ["#FFFFFF", "#2B6CB0"],
+  "Compañía de Maria": ["#C9A227"],
+  "Compañía de María": ["#C9A227"],
+  "Beral CBF Huesca La Magia": ["#2E8B57"],
+  "Cristo Rey A": ["#1E5AA8", "#FF8A00"],
 };
 const NEON_FALLBACK_PALETTE = ["#7B2FF7", "#00C2A8", "#FF6B9D", "#4D96FF", "#FFB454", "#63E6BE", "#E0507A", "#8DD858"];
-function teamNeonColor(name) {
-  if (!name) return C.line;
+function teamNeonColors(name) {
+  if (!name) return [C.line];
   if (TEAM_NEON_COLORS[name]) return TEAM_NEON_COLORS[name];
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-  return NEON_FALLBACK_PALETTE[hash % NEON_FALLBACK_PALETTE.length];
+  return [NEON_FALLBACK_PALETTE[hash % NEON_FALLBACK_PALETTE.length]];
+}
+// Para donde solo hace falta un color plano (p. ej. el aro del escudo): el primero de la lista.
+function teamNeonColor(name) { return teamNeonColors(name)[0]; }
+// Para donde se quiera el degradado completo de ese equipo (el foco de luz).
+function teamNeonGradient(name, angle = 135) {
+  const colors = teamNeonColors(name);
+  return colors.length > 1 ? `linear-gradient(${angle}deg, ${colors[0]}, ${colors[1]})` : colors[0];
 }
 
 const ALL_POSITIONS = [...POSITIONS, COACH_POS];
@@ -3402,14 +3410,18 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
     m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
   const colorLocal = teamNeonColor(m.local);
   const colorVisit = teamNeonColor(m.visitante);
+  const gradLocal = teamNeonGradient(m.local, 180);
+  const gradVisit = teamNeonGradient(m.visitante, 180);
   return (
     <>
-      <div className="relative rounded-2xl mb-3" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
-        {/* Foco de luz en el lateral izquierdo, del color del equipo local */}
-        <div style={{ position: "absolute", left: -14, top: "50%", transform: "translateY(-50%)", width: 60, height: 60, borderRadius: "50%", background: colorLocal, filter: "blur(18px)", opacity: 0.85, pointerEvents: "none" }} />
-        {/* Foco de luz en el lateral derecho, del color del equipo visitante */}
-        <div style={{ position: "absolute", right: -14, top: "50%", transform: "translateY(-50%)", width: 60, height: 60, borderRadius: "50%", background: colorVisit, filter: "blur(18px)", opacity: 0.85, pointerEvents: "none" }} />
-        <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: `inset 3px 0 10px -4px ${colorLocal}, inset -3px 0 10px -4px ${colorVisit}` }} />
+      <div className="relative rounded-2xl mb-3" style={{ background: C.navy900, border: `1px solid ${C.line}` }}>
+        {/* Franja de neón fina y brillante pegada a cada borde lateral (poco difuminada: se nota concentrada ahí, no repartida) */}
+        <div style={{ position: "absolute", left: 0, top: 4, bottom: 4, width: 4, borderRadius: 4, background: gradLocal, boxShadow: `0 0 10px 2px ${colorLocal}, 0 0 3px 1px ${colorLocal}` }} />
+        <div style={{ position: "absolute", right: 0, top: 4, bottom: 4, width: 4, borderRadius: 4, background: gradVisit, boxShadow: `0 0 10px 2px ${colorVisit}, 0 0 3px 1px ${colorVisit}` }} />
+        {/* Un halo pequeño hacia fuera, solo justo en el lateral (no se extiende hacia el centro de la tarjeta) */}
+        <div style={{ position: "absolute", left: -8, top: "50%", transform: "translateY(-50%)", width: 24, height: 40, borderRadius: "50%", background: colorLocal, filter: "blur(10px)", opacity: 0.55, pointerEvents: "none" }} />
+        <div style={{ position: "absolute", right: -8, top: "50%", transform: "translateY(-50%)", width: 24, height: 40, borderRadius: "50%", background: colorVisit, filter: "blur(10px)", opacity: 0.55, pointerEvents: "none" }} />
+        <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: `inset 6px 0 12px -8px ${colorLocal}, inset -6px 0 12px -8px ${colorVisit}` }} />
         <button onClick={() => setShowDetail(true)} className="fl-tap relative w-full text-left rounded-2xl px-3 py-3 flex items-center gap-2" style={{ background: "transparent" }}>
           <div className="flex-1 flex items-center gap-2.5 min-w-0">
             <div className="rounded-full flex-shrink-0" style={{ boxShadow: `0 0 10px 2px ${colorLocal}aa`, border: `1.5px solid ${colorLocal}` }}>
