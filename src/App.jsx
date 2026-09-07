@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown,
+  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown, FlaskConical,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
@@ -2316,7 +2316,12 @@ export default function App() {
   // completa, el bono de "MVP de toda la jornada".
   const checkDailyMarketPricing = useCallback(async () => {
     try {
-      const todayStr = toDateStr(new Date());
+      const realTodayStr = toDateStr(new Date());
+      let simDate = await readShared("marketSimDate", null);
+      // Si la fecha simulada ya quedó atrás (la real la ha alcanzado o pasado), se
+      // desactiva sola el modo pruebas, para no quedarse encallado en el pasado.
+      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); }
+      const todayStr = simDate || realTodayStr;
       const lastRun = await readShared("marketPricingLastRun", "");
       if (lastRun === todayStr) return;
 
@@ -2390,6 +2395,31 @@ export default function App() {
       }
       await writeShared("marketPricingLastRun", todayStr);
     } catch {}
+  }, []);
+
+  // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
+  // esperar a la medianoche real. Ojo: como el precio de las jugadoras es
+  // global (lo comparten todas las ligas), esto mueve precios de verdad,
+  // visibles para cualquier liga — no solo una de pruebas.
+  const advanceSimDay = useCallback(async () => {
+    const current = await readShared("marketSimDate", null);
+    const realToday = new Date();
+    realToday.setHours(0, 0, 0, 0);
+    const base = current ? new Date(current + "T00:00:00") : realToday;
+    if (base < realToday) base.setTime(realToday.getTime()); // por si la simulada se quedó atrás
+    base.setDate(base.getDate() + 1);
+    const nextDateStr = toDateStr(base);
+    await writeShared("marketSimDate", nextDateStr);
+    await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
+    await checkDailyMarketPricing();
+    const freshPlayers = await readPlayers();
+    setPlayers(freshPlayers);
+    return nextDateStr;
+  }, [checkDailyMarketPricing]);
+
+  const exitSimMode = useCallback(async () => {
+    await deleteShared("marketSimDate");
+    return { ok: true };
   }, []);
 
   useEffect(() => {
@@ -3007,7 +3037,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} />
+            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} />
           )}
         </div>
       </main>
@@ -6097,9 +6127,51 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players }) {
+function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode }) {
+  const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => { setSimDate(await readShared("marketSimDate", null)); })();
+  }, []);
+
+  const advance = async () => {
+    setBusy(true);
+    const next = await onAdvanceSimDay();
+    setSimDate(next);
+    setBusy(false);
+  };
+  const exit = async () => {
+    setBusy(true);
+    await onExitSimMode();
+    setSimDate(null);
+    setBusy(false);
+  };
+
   return (
     <div>
+      <div className="fl-row p-3.5 mb-4" style={{ border: `1px solid ${C.gold}55` }}>
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <FlaskConical size={14} color={C.gold} />
+          <span className="fl-mono text-[10px] font-bold tracking-wide" style={{ color: C.gold }}>MODO PRUEBAS — MERCADO</span>
+        </div>
+        <p className="fl-body text-xs mb-2.5" style={{ color: C.muted }}>
+          Adelanta un día "de mentira" para ver cómo se mueve el mercado sin esperar a la medianoche real. Como el precio de las jugadoras es global, esto mueve precios de verdad, visibles en cualquier liga.
+        </p>
+        <div className="fl-mono text-[11px] mb-2.5" style={{ color: C.white }}>
+          {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span></> : "Sin simular (fecha real)"}
+        </div>
+        <div className="flex gap-2">
+          <button disabled={busy} onClick={advance} className="fl-tap flex-1 rounded-md py-2 text-xs font-semibold disabled:opacity-50" style={{ background: C.gold, color: C.ink }}>
+            {busy ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Avanzar 1 día"}
+          </button>
+          {simDate && (
+            <button disabled={busy} onClick={exit} className="fl-tap rounded-md py-2 px-3 text-xs font-semibold disabled:opacity-50" style={{ border: `1px solid ${C.line}`, color: C.muted }}>
+              Salir
+            </button>
+          )}
+        </div>
+      </div>
       <ActividadFeed activity={activity} players={players} />
     </div>
   );
