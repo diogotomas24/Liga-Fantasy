@@ -3404,14 +3404,17 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
   const colorVisit = teamNeonColor(m.visitante);
   return (
     <>
-      <div className="relative overflow-hidden rounded-2xl mb-2.5" style={{
-        padding: 1.5,
-        background: `linear-gradient(90deg, ${colorLocal}, ${colorVisit})`,
-        boxShadow: `0 0 10px ${colorLocal}55, 0 0 10px ${colorVisit}55`,
-      }}>
-        <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left rounded-2xl px-3 py-3 flex items-center gap-2" style={{ background: C.navy800 }}>
+      <div className="relative rounded-2xl mb-3" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+        {/* Foco de luz en el lateral izquierdo, del color del equipo local */}
+        <div style={{ position: "absolute", left: -14, top: "50%", transform: "translateY(-50%)", width: 60, height: 60, borderRadius: "50%", background: colorLocal, filter: "blur(18px)", opacity: 0.85, pointerEvents: "none" }} />
+        {/* Foco de luz en el lateral derecho, del color del equipo visitante */}
+        <div style={{ position: "absolute", right: -14, top: "50%", transform: "translateY(-50%)", width: 60, height: 60, borderRadius: "50%", background: colorVisit, filter: "blur(18px)", opacity: 0.85, pointerEvents: "none" }} />
+        <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: `inset 3px 0 10px -4px ${colorLocal}, inset -3px 0 10px -4px ${colorVisit}` }} />
+        <button onClick={() => setShowDetail(true)} className="fl-tap relative w-full text-left rounded-2xl px-3 py-3 flex items-center gap-2" style={{ background: "transparent" }}>
           <div className="flex-1 flex items-center gap-2.5 min-w-0">
-            <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={38} />
+            <div className="rounded-full flex-shrink-0" style={{ boxShadow: `0 0 10px 2px ${colorLocal}aa`, border: `1.5px solid ${colorLocal}` }}>
+              <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={38} />
+            </div>
             <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.local}</span>
           </div>
           <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 64 }}>
@@ -3436,7 +3439,9 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
           </div>
           <div className="flex-1 flex items-center gap-2.5 justify-end text-right min-w-0">
             <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.visitante}</span>
-            <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={38} />
+            <div className="rounded-full flex-shrink-0" style={{ boxShadow: `0 0 10px 2px ${colorVisit}aa`, border: `1.5px solid ${colorVisit}` }}>
+              <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={38} />
+            </div>
           </div>
         </button>
       </div>
