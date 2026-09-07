@@ -3446,7 +3446,6 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
           <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.visitante}</span>
         </div>
       </button>
-      </div>
       {showDetail && jornada && (
         <PartidoDetailScreen partido={m} jornada={jornada} players={players || []} teamCrests={teamCrests} onClose={() => setShowDetail(false)} />
       )}
@@ -4164,7 +4163,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       {detailPlayer && (
         <PlayerDetailScreen player={detailPlayer} entry={(myTeam.squad || []).find(e => e.id === detailPlayer.id)}
-          jornadas={jornadas} isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={onToggleFavorite}
+          jornadas={jornadas} isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
           isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setDetailPlayer(null)} />
