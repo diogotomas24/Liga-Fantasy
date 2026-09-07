@@ -3121,7 +3121,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
             {partidosPreview.length === 0 ? (
               <EmptyState compact title="Sin partidos" text="Todavía no hay partidos añadidos para esta jornada." />
             ) : (
-              <div>
+              <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
                 {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={currentJornada} players={players} />)}
               </div>
             )}
@@ -3408,54 +3408,30 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
   const [showDetail, setShowDetail] = useState(false);
   const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
     m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
-  const colorLocal = teamNeonColor(m.local);
-  const colorVisit = teamNeonColor(m.visitante);
-  const gradLocal = teamNeonGradient(m.local, 180);
-  const gradVisit = teamNeonGradient(m.visitante, 180);
   return (
     <>
-      <div className="relative rounded-2xl mb-3" style={{ background: C.navy900, border: `1px solid ${C.line}` }}>
-        {/* Franja de neón fina y brillante pegada a cada borde lateral (poco difuminada: se nota concentrada ahí, no repartida) */}
-        <div style={{ position: "absolute", left: 0, top: 4, bottom: 4, width: 4, borderRadius: 4, background: gradLocal, boxShadow: `0 0 10px 2px ${colorLocal}, 0 0 3px 1px ${colorLocal}` }} />
-        <div style={{ position: "absolute", right: 0, top: 4, bottom: 4, width: 4, borderRadius: 4, background: gradVisit, boxShadow: `0 0 10px 2px ${colorVisit}, 0 0 3px 1px ${colorVisit}` }} />
-        {/* Un halo pequeño hacia fuera, solo justo en el lateral (no se extiende hacia el centro de la tarjeta) */}
-        <div style={{ position: "absolute", left: -8, top: "50%", transform: "translateY(-50%)", width: 24, height: 40, borderRadius: "50%", background: colorLocal, filter: "blur(10px)", opacity: 0.55, pointerEvents: "none" }} />
-        <div style={{ position: "absolute", right: -8, top: "50%", transform: "translateY(-50%)", width: 24, height: 40, borderRadius: "50%", background: colorVisit, filter: "blur(10px)", opacity: 0.55, pointerEvents: "none" }} />
-        <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{ boxShadow: `inset 6px 0 12px -8px ${colorLocal}, inset -6px 0 12px -8px ${colorVisit}` }} />
-        <button onClick={() => setShowDetail(true)} className="fl-tap relative w-full text-left rounded-2xl px-3 py-3 flex items-center gap-2" style={{ background: "transparent" }}>
-          <div className="flex-1 flex items-center gap-2.5 min-w-0">
-            <div className="rounded-full flex-shrink-0" style={{ boxShadow: `0 0 10px 2px ${colorLocal}aa`, border: `1.5px solid ${colorLocal}` }}>
-              <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={38} />
-            </div>
-            <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.local}</span>
-          </div>
-          <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 64 }}>
-            {played ? (
-              <>
-                <span className="fl-mono text-base font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
-                <span className="fl-mono text-[9px] font-semibold flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-full" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
-                  <CircleCheck size={10} /> FINALIZADO
-                </span>
-              </>
-            ) : (
-              <>
-                <div className="flex items-center gap-1 w-full">
-                  <span className="flex-1 h-px" style={{ background: colorLocal }} />
-                  <span className="flex-1 h-px" style={{ background: colorVisit }} />
-                </div>
-                {m.fecha && <span className="fl-mono text-[9px] mt-1" style={{ color: C.muted }}>{m.fecha}</span>}
-                {m.hora && <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>}
-                {!m.fecha && !m.hora && <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
-              </>
-            )}
-          </div>
-          <div className="flex-1 flex items-center gap-2.5 justify-end text-right min-w-0">
-            <span className="fl-body text-xs font-semibold leading-tight" style={{ color: C.white }}>{m.visitante}</span>
-            <div className="rounded-full flex-shrink-0" style={{ boxShadow: `0 0 10px 2px ${colorVisit}aa`, border: `1.5px solid ${colorVisit}` }}>
-              <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={38} />
-            </div>
-          </div>
-        </button>
+      <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+        <div className="flex-1 flex items-center gap-2 justify-end text-right min-w-0">
+          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.local}</span>
+          <TeamCrest name={m.local} photo={teamCrests?.[m.local]} size={28} />
+        </div>
+        <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 64 }}>
+          {played ? (
+            <>
+              <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+              <span className="fl-mono text-[9px] font-semibold flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-full" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                <CircleCheck size={10} /> FINALIZADO
+              </span>
+            </>
+          ) : m.hora
+            ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
+            : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
+        </div>
+        <div className="flex-1 flex items-center gap-2 min-w-0">
+          <TeamCrest name={m.visitante} photo={teamCrests?.[m.visitante]} size={28} />
+          <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{m.visitante}</span>
+        </div>
+      </button>
       </div>
       {showDetail && jornada && (
         <PartidoDetailScreen partido={m} jornada={jornada} players={players || []} teamCrests={teamCrests} onClose={() => setShowDetail(false)} />
@@ -3667,7 +3643,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
             {grouped.map((g, gi) => (
               <div key={gi}>
                 {g.fecha && <div className="fl-mono text-[10px] mb-1.5 uppercase" style={{ color: C.muted }}>{g.fecha}</div>}
-                <div>
+                <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
                   {g.partidos.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={jornada} players={players} />)}
                 </div>
               </div>
@@ -4133,7 +4109,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       {partidos.length > 0 && (
         <div>
           <SectionTitle>Partidos de la jornada</SectionTitle>
-          <div>
+          <div className="fl-row divide-y" style={{ borderColor: C.lineSoft }}>
             {partidos.map(m => (
               <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={lastJornada} players={players} />
             ))}
