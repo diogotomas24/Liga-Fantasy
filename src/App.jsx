@@ -1818,15 +1818,39 @@ function startedJornadas(jornadas) {
   return filtered;
 }
 
+// Última fecha de una jornada: la de su partido MÁS TARDÍO (al revés que
+// jornadaDate, que coge el más temprano). Sirve para saber cuándo "acaba".
+function jornadaEndDate(jornada) {
+  let latest = null;
+  (jornada?.partidos || []).forEach((p) => {
+    const d = parseFechaDDMMYYYY(p.fecha);
+    if (d && (!latest || d > latest)) latest = d;
+  });
+  return latest;
+}
+
 // Jornada "vigente" para la portada: la última de las que ya han "empezado"
-// (mismo criterio que startedJornadas: por fecha O porque ya se ha
-// introducido el resultado de algún partido suyo). Así, en cuanto metes el
-// marcador de la Jornada 2 aunque su fecha "oficial" no haya llegado, la
-// portada pasa sola a mostrar la Jornada 2.
+// (por fecha o porque ya se ha introducido algún resultado suyo) — PERO en
+// cuanto pasa el día siguiente a su ÚLTIMO partido, se considera "acabada" y
+// la portada pasa sola a la siguiente jornada de la lista, aunque esa
+// siguiente todavía no tenga ni fecha ni resultados propios.
 function findCurrentJornada(jornadas) {
   if (!jornadas || jornadas.length === 0) return null;
   const started = startedJornadas(jornadas);
-  return started.length > 0 ? started[started.length - 1] : jornadas[0];
+  if (started.length === 0) return jornadas[0];
+  const lastStarted = started[started.length - 1];
+  const lastStartedIdx = jornadas.findIndex((j) => j.id === lastStarted.id);
+
+  const endDate = jornadaEndDate(lastStarted);
+  if (endDate && lastStartedIdx + 1 < jornadas.length) {
+    const dayAfterEnd = new Date(endDate);
+    dayAfterEnd.setDate(dayAfterEnd.getDate() + 1);
+    dayAfterEnd.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (today >= dayAfterEnd) return jornadas[lastStartedIdx + 1];
+  }
+  return lastStarted;
 }
 
 // Estado de la cláusula de una jugadora, visible para toda la liga: en ROJO
@@ -2758,6 +2782,7 @@ export default function App() {
     await writeShared("marketSimDate", nextDateStr);
     await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
     await checkDailyMarketPricing();
+    await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que acabe de "empezar", sin esperar al intervalo de 60s
 
     // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
     if (activeLeagueId) {
@@ -2768,10 +2793,11 @@ export default function App() {
       await syncMarket(activeLeagueId, marketResetHour);
     }
 
-    const freshPlayers = await readPlayers();
+    const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
     setPlayers(freshPlayers);
+    setJornadas(freshJornadas);
     return nextDateStr;
-  }, [checkDailyMarketPricing, activeLeagueId, marketResetHour, syncMarket]);
+  }, [checkDailyMarketPricing, checkLineupLock, activeLeagueId, marketResetHour, syncMarket]);
 
   const exitSimMode = useCallback(async () => {
     await deleteShared("marketSimDate");
