@@ -759,6 +759,19 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 
+// "Reloj" del modo pruebas: si hay una fecha simulada activa, TODO el
+// sistema de fechas de la app (qué jornada toca, si ya ha empezado, si los
+// chips ya se ven...) la usa como si fuera "hoy" de verdad, en vez de la
+// fecha real del dispositivo. Sin modo pruebas, funciona exactamente igual
+// que siempre (usa la fecha real). Se actualiza desde App() cuando se pulsa
+// "Avanzar día" o "Salir" del modo pruebas.
+let __simulatedTodayStr = null;
+function setSimulatedToday(dateStr) { __simulatedTodayStr = dateStr || null; }
+function getEffectiveToday() {
+  if (__simulatedTodayStr) return new Date(__simulatedTodayStr + "T12:00:00");
+  return new Date();
+}
+
 const marketPricingService = {
   // Clasificación real de los equipos (no de fantasy), calculada sola a
   // partir de todos los marcadores ya introducidos en "partidos".
@@ -1786,7 +1799,7 @@ function computeJornadaStartTime(jornada) {
 // Triple Fantasy de esa jornada.
 function hasJornadaEffectivelyStarted(jornada) {
   const start = computeJornadaStartTime(jornada);
-  if (start && Date.now() >= start.getTime()) return true;
+  if (start && getEffectiveToday().getTime() >= start.getTime()) return true;
   const hasScores = (jornada.partidos || []).some((p) => p.marcadorLocal != null && p.marcadorLocal !== "" && p.marcadorVisitante != null && p.marcadorVisitante !== "");
   if (hasScores) return true;
   const hasStats = jornada.stats && Object.keys(jornada.stats).length > 0;
@@ -1798,7 +1811,7 @@ function hasJornadaEffectivelyStarted(jornada) {
 // vez de mostrar de golpe toda la temporada desde el principio.
 function startedJornadas(jornadas) {
   const list = jornadas || [];
-  const today = new Date();
+  const today = getEffectiveToday();
   today.setHours(23, 59, 59, 999); // el día de la jornada cuenta como "ya empezada" desde su fecha
   const filtered = list.filter((j, i) => {
     if (i === 0) return true; // la primera jornada se ve SIEMPRE, pase lo que pase con sus fechas/datos
@@ -1846,7 +1859,7 @@ function findCurrentJornada(jornadas) {
     const dayAfterEnd = new Date(endDate);
     dayAfterEnd.setDate(dayAfterEnd.getDate() + 1);
     dayAfterEnd.setHours(0, 0, 0, 0);
-    const today = new Date();
+    const today = getEffectiveToday();
     today.setHours(0, 0, 0, 0);
     if (today >= dayAfterEnd) return jornadas[lastStartedIdx + 1];
   }
@@ -2317,9 +2330,7 @@ export default function App() {
   const checkLineupLock = useCallback(async () => {
     try {
       const freshJ = await readJornadas();
-      const locked = await readShared("lineupLocked", []);
       for (const jornada of freshJ) {
-        if (locked.includes(jornada.id)) continue;
         if (!hasJornadaEffectivelyStarted(jornada)) continue;
         const allTeams = (await readAllTeamsGlobal()) || {};
         const lineups = { ...(jornada.lineups || {}) };
@@ -2334,7 +2345,6 @@ export default function App() {
           }
         });
         if (changed) await writeJornada({ ...jornada, lineups });
-        await writeShared("lineupLocked", [...locked, jornada.id]);
       }
     } catch {}
   }, []);
@@ -2351,7 +2361,7 @@ export default function App() {
       let simDate = await readShared("marketSimDate", null);
       // Si la fecha simulada ya quedó atrás (la real la ha alcanzado o pasado), se
       // desactiva sola el modo pruebas, para no quedarse encallado en el pasado.
-      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); }
+      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); setSimulatedToday(null); }
       const todayStr = simDate || realTodayStr;
       const lastRun = await readShared("marketPricingLastRun", "");
       if (lastRun === todayStr) return;
@@ -2448,12 +2458,13 @@ export default function App() {
     (async () => {
       const sess = await getSessionProfile();
       const fav = await readPersonal("favoritos", []);
-      const [pl, jo, crests] = await Promise.all([
-        readPlayers(), readJornadas(), readTeamCrests(),
+      const [pl, jo, crests, simDate] = await Promise.all([
+        readPlayers(), readJornadas(), readTeamCrests(), readShared("marketSimDate", null),
       ]);
       setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
+      setSimulatedToday(simDate);
       if (sess.hasSession && sess.name) {
         const prof = { name: sess.name };
         await writePersonal("profile", prof);
@@ -2780,9 +2791,10 @@ export default function App() {
     base.setDate(base.getDate() + 1);
     const nextDateStr = toDateStr(base);
     await writeShared("marketSimDate", nextDateStr);
+    setSimulatedToday(nextDateStr); // pone en hora el "reloj" que usa el resto de la app (qué jornada toca, si ya empezó...)
     await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
-    await checkDailyMarketPricing();
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que acabe de "empezar", sin esperar al intervalo de 60s
+    await checkDailyMarketPricing();
 
     // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
     if (activeLeagueId) {
@@ -2801,6 +2813,7 @@ export default function App() {
 
   const exitSimMode = useCallback(async () => {
     await deleteShared("marketSimDate");
+    setSimulatedToday(null); // vuelve a la fecha real para todo el sistema de fechas
     return { ok: true };
   }, []);
 
