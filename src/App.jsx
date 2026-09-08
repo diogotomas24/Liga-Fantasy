@@ -2836,10 +2836,14 @@ export default function App() {
       marcador_local_p1: null, marcador_local_p2: null, marcador_local_p3: null, marcador_local_p4: null,
       marcador_visitante_p1: null, marcador_visitante_p2: null, marcador_visitante_p3: null, marcador_visitante_p4: null,
     }).neq("id", "__none__");
+    // Borra también las alineaciones ya "congeladas" de rondas de prueba anteriores —
+    // si no, se quedan pegadas para siempre y nunca se vuelven a capturar bien.
+    await supabase.from("jornadas").update({ lineups: {} }).neq("id", "__none__");
     await Promise.all([
       deleteShared("marketSimDate"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
       deleteShared("jornadaMvpPriced"), deleteShared("lineupLocked"), deleteShared("testBaselinePrices"),
     ]);
+    setSimulatedToday(null);
     const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
     setPlayers(freshPlayers);
     setJornadas(freshJornadas);
