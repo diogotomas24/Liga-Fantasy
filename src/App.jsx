@@ -923,12 +923,20 @@ const marketPricingService = {
     let totalPush = weeklyPush + smallPush;
     totalPush *= marketBrakeFactor(player.basePrice || 1);
 
+    const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastPricedDate: ctx.todayStr };
+    // Si hoy no ha pasado nada de verdad (sin jornada, sin demanda, sin nada
+    // que empuje el precio), no tocamos basePrice/prevBasePrice/historial —
+    // así se conserva el último movimiento real (para el Top subidas/bajadas
+    // y el gráfico) en vez de "aplanarlo" a diario con un cambio de 0.
+    if (totalPush === 0) {
+      return { marketCycle: nextCycle };
+    }
     const newPrice = Math.max(0.1, (player.basePrice || 1) * (1 + totalPush));
     return {
       basePrice: newPrice,
       prevBasePrice: player.basePrice,
       priceHistory: [...(player.priceHistory || []), { date: ctx.todayStr, value: newPrice }].slice(-60),
-      marketCycle: { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastPricedDate: ctx.todayStr },
+      marketCycle: nextCycle,
     };
   },
 };
@@ -1754,21 +1762,20 @@ function jornadaDate(jornada) {
   return earliest;
 }
 
-// Momento exacto en que arranca una jornada: el partido con fecha+hora más
-// temprano de todos los suyos. Si ningún partido tiene fecha Y hora
-// rellenadas, devuelve null (no se puede avisar de esa jornada).
+// Momento en que se considera que "arranca" una jornada, para bloquear
+// alineaciones, cerrar el Triple Fantasy, etc.: las 12:00 del mediodía del
+// día de su primer partido — no hace falta saber la hora exacta de cada
+// partido (a veces no se sabe), basta con la fecha más temprana de todos.
+// Si ningún partido tiene fecha reconocible, devuelve null.
 function computeJornadaStartTime(jornada) {
-  let earliest = null;
+  let earliestDate = null;
   (jornada?.partidos || []).forEach((p) => {
-    if (!p.fecha || !p.hora) return;
+    if (!p.fecha) return;
     const d = parseFechaDDMMYYYY(p.fecha);
-    if (!d) return;
-    const [hh, mm] = p.hora.split(":").map(Number);
-    if (Number.isNaN(hh)) return;
-    const dt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm || 0, 0, 0);
-    if (!earliest || dt < earliest) earliest = dt;
+    if (d && (!earliestDate || d < earliestDate)) earliestDate = d;
   });
-  return earliest;
+  if (!earliestDate) return null;
+  return new Date(earliestDate.getFullYear(), earliestDate.getMonth(), earliestDate.getDate(), 12, 0, 0, 0);
 }
 
 // ¿Ha "empezado de verdad" una jornada? Sí en cuanto se cumpla CUALQUIERA de
@@ -2376,14 +2383,15 @@ export default function App() {
         await Promise.all(updates.map((u) => supabase.from("players").update({
           base_price: u.basePrice, prev_base_price: u.prevBasePrice, price_history: u.priceHistory, market_cycle: u.marketCycle,
         }).eq("id", u.id)));
-        const finalPlayers = freshPlayers.map((p) => {
-          const u = updates.find((x) => x.id === p.id);
-          return u ? { ...p, basePrice: u.basePrice, prevBasePrice: u.prevBasePrice, priceHistory: u.priceHistory, marketCycle: u.marketCycle } : p;
-        });
-        setPlayers((prev) => prev.map((p) => {
-          const u = updates.find((x) => x.id === p.id);
-          return u ? { ...p, basePrice: u.basePrice, prevBasePrice: u.prevBasePrice, priceHistory: u.priceHistory, marketCycle: u.marketCycle } : p;
-        }));
+        const mergePlayer = (p, u) => !u ? p : {
+          ...p,
+          basePrice: u.basePrice !== undefined ? u.basePrice : p.basePrice,
+          prevBasePrice: u.prevBasePrice !== undefined ? u.prevBasePrice : p.prevBasePrice,
+          priceHistory: u.priceHistory !== undefined ? u.priceHistory : p.priceHistory,
+          marketCycle: u.marketCycle,
+        };
+        const finalPlayers = freshPlayers.map((p) => mergePlayer(p, updates.find((x) => x.id === p.id)));
+        setPlayers((prev) => prev.map((p) => mergePlayer(p, updates.find((x) => x.id === p.id))));
         // La cláusula nunca puede quedar por debajo del valor de mercado actual:
         // se sube sola en TODOS los equipos de TODAS las ligas que la tengan.
         const bumpWrites = [];
