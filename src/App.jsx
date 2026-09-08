@@ -2501,6 +2501,9 @@ export default function App() {
         if (!tripleFantasyService.isJornadaReady(jornada)) continue;
         const mvpId = tripleFantasyService.computeActualMvp(jornada, freshPlayers, freshJornadas);
         if (mvpId) {
+          // Deja constancia de quién fue, directamente en la columna de la
+          // jornada (antes se calculaba solo "al vuelo" y no quedaba guardado en ningún sitio visible).
+          await supabase.from("jornadas").update({ mvp_player_id: mvpId }).eq("id", jornada.id);
           const basePlayer = freshPlayers.find((p) => p.id === mvpId);
           if (basePlayer && basePlayer.position !== "DT") {
             const existing = updates.find((u) => u.id === mvpId);
