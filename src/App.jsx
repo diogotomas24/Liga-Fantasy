@@ -2438,6 +2438,14 @@ export default function App() {
     }
   }, []);
 
+  // Cada vez que entras en Equipo o Inicio (donde se ve la Jornada/Puntos),
+  // se comprueba al momento si hay que congelar alguna alineación — no se
+  // depende solo del intervalo de 60s, que puede no llegar a dispararse si
+  // la app no ha estado abierta el rato justo.
+  useEffect(() => {
+    if (tab === "equipo" || tab === "inicio") checkLineupLock();
+  }, [tab, checkLineupLock]);
+
   // Motor de precios diario (ver conversación de diseño): se dispara una vez
   // por día natural (controlado por la marca global "marketPricingLastRun"),
   // recalcula TODAS las jugadoras (nunca entrenadoras/es) con el sistema
