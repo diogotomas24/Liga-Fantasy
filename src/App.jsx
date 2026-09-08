@@ -772,6 +772,62 @@ function getEffectiveToday() {
   return new Date();
 }
 
+// --- realStandingsService ------------------------------------------------
+// Clasificación de los equipos REALES (no de fantasy), con el criterio de
+// desempate: 1º más victorias, 2º si hay empate a victorias se mira el
+// enfrentamiento directo entre esos equipos (quien ganó ese partido concreto
+// va por delante), 3º si el enfrentamiento directo también quedó en empate
+// (o no se jugó) se usa la diferencia de puntos SOLO de ese duelo directo,
+// y si tampoco eso decide, la diferencia de puntos GLOBAL de toda la
+// temporada.
+const realStandingsService = {
+  compute(jornadas) {
+    const table = {}; // team -> { wins, losses, pf, pc, played }
+    const headToHead = {}; // "TeamA|TeamB" -> { aWins, bWins, aPts, bPts }
+    const ensure = (name) => { if (!table[name]) table[name] = { team: name, wins: 0, losses: 0, pf: 0, pc: 0, played: 0 }; };
+
+    (jornadas || []).forEach((j) => {
+      (j.partidos || []).forEach((p) => {
+        const winner = tripleFantasyService.matchWinner(p);
+        if (!winner) return;
+        const lf = Number(p.marcadorLocal), vf = Number(p.marcadorVisitante);
+        if (Number.isNaN(lf) || Number.isNaN(vf)) return;
+        ensure(p.local); ensure(p.visitante);
+        table[p.local].played++; table[p.visitante].played++;
+        table[p.local].pf += lf; table[p.local].pc += vf;
+        table[p.visitante].pf += vf; table[p.visitante].pc += lf;
+        if (winner === "local") { table[p.local].wins++; table[p.visitante].losses++; }
+        else { table[p.visitante].wins++; table[p.local].losses++; }
+
+        const key = [p.local, p.visitante].sort().join("|");
+        if (!headToHead[key]) headToHead[key] = { [p.local]: { wins: 0, pts: 0 }, [p.visitante]: { wins: 0, pts: 0 } };
+        const h = headToHead[key];
+        if (!h[p.local]) h[p.local] = { wins: 0, pts: 0 };
+        if (!h[p.visitante]) h[p.visitante] = { wins: 0, pts: 0 };
+        h[p.local].pts += lf - vf;
+        h[p.visitante].pts += vf - lf;
+        if (winner === "local") h[p.local].wins += 1; else h[p.visitante].wins += 1;
+      });
+    });
+
+    const rows = Object.values(table);
+    rows.sort((a, b) => {
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      // Empate a victorias: duelo directo entre ESTOS DOS equipos.
+      const key = [a.team, b.team].sort().join("|");
+      const h = headToHead[key];
+      if (h && h[a.team] && h[b.team]) {
+        if (h[a.team].wins !== h[b.team].wins) return h[b.team].wins - h[a.team].wins;
+        if (h[a.team].pts !== h[b.team].pts) return h[b.team].pts - h[a.team].pts;
+      }
+      // Sin enfrentamiento directo (o también empatado ahí): diferencia global.
+      return (b.pf - b.pc) - (a.pf - a.pc);
+    });
+    return rows.map((r, i) => ({ ...r, rank: i + 1, diff: r.pf - r.pc }));
+  },
+};
+
+// --- marketPricingService ----------------------------------------------------
 const marketPricingService = {
   // Clasificación real de los equipos (no de fantasy), calculada sola a
   // partir de todos los marcadores ya introducidos en "partidos".
@@ -3238,7 +3294,8 @@ export default function App() {
               market={market} isMarketOpen={isMarketOpen} onGoTo={setTab}
               teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
+              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
+              onBuyClause={buyClause} onSendOffer={sendOffer} />
           )}
           {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
           {tab === "equipo" && (
@@ -4246,12 +4303,13 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause }) {
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onBuyClause, onSendOffer }) {
   const [detailPlayer, setDetailPlayer] = useState(null);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
   const [showValorChart, setShowValorChart] = useState(false);
   const [showAllMovers, setShowAllMovers] = useState(false);
+  const [showClasificacion, setShowClasificacion] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const lastJornada = findCurrentJornada(jornadas);
@@ -4448,10 +4506,16 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       )}
 
       {jornadas.length > 0 && (
-        <button onClick={() => setShowCalendar(true)}
-          className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
-          Todos los partidos
-        </button>
+        <div className="grid grid-cols-2 gap-2.5">
+          <button onClick={() => setShowCalendar(true)}
+            className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
+            Todos los partidos
+          </button>
+          <button onClick={() => setShowClasificacion(true)}
+            className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold" style={{ border: `1px solid ${C.baby}`, color: C.baby }}>
+            Clasificación
+          </button>
+        </div>
       )}
 
       {showCalendar && (
@@ -4474,8 +4538,59 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           jornadas={jornadas} isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
           isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
+          teams={teams} me={profile.name} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
+
+      {showClasificacion && (
+        <ClasificacionRealScreen jornadas={jornadas} teamCrests={teamCrests} onClose={() => setShowClasificacion(false)} />
+      )}
+    </div>
+  );
+}
+
+// Clasificación de los equipos REALES de la competición (no de fantasy):
+// victorias, derrotas, y +/- (diferencia total de puntos anotados/recibidos).
+// Desempate: 1º más victorias, 2º enfrentamiento directo, 3º diferencia global.
+function ClasificacionRealScreen({ jornadas, teamCrests, onClose }) {
+  const rows = useMemo(() => realStandingsService.compute(jornadas), [jornadas]);
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Clasificación</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar">
+        {rows.length === 0 ? (
+          <div className="p-4"><EmptyState title="Sin resultados todavía" text="En cuanto se carguen marcadores de partidos, aquí verás la clasificación real de la competición." /></div>
+        ) : (
+          <div>
+            <div className="flex items-center px-3 py-2 fl-mono text-[10px]" style={{ color: C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>
+              <span style={{ width: 24 }}>#</span>
+              <span className="flex-1">Equipo</span>
+              <span style={{ width: 30 }} className="text-center">PJ</span>
+              <span style={{ width: 30 }} className="text-center">V</span>
+              <span style={{ width: 30 }} className="text-center">D</span>
+              <span style={{ width: 44 }} className="text-right">+/-</span>
+            </div>
+            {rows.map((r) => (
+              <div key={r.team} className="flex items-center px-3 py-2.5" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                <span className="fl-mono text-[11px] font-semibold" style={{ width: 24, color: C.muted }}>{r.rank}</span>
+                <div className="flex-1 flex items-center gap-2 min-w-0">
+                  <TeamCrest name={r.team} photo={teamCrests?.[r.team]} size={24} />
+                  <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{r.team}</span>
+                </div>
+                <span className="fl-mono text-[11px]" style={{ width: 30, color: C.muted }}>{r.played}</span>
+                <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 30, color: C.positive }}>{r.wins}</span>
+                <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 30, color: C.negative }}>{r.losses}</span>
+                <span className="fl-mono text-[11px] font-bold text-right" style={{ width: 44, color: r.diff > 0 ? C.positive : r.diff < 0 ? C.negative : C.muted }}>
+                  {r.diff > 0 ? "+" : ""}{r.diff}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4865,13 +4980,26 @@ function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
   );
 }
 
-function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose }) {
+function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose, teams, me, budgetAvailable, onBuyClause, onSendOffer }) {
   const [showHistorico, setShowHistorico] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showRaiseClause, setShowRaiseClause] = useState(false);
   const [busyAction, setBusyAction] = useState(null); // "sell" | "forsale" | "offer" | null
   const [actionMsg, setActionMsg] = useState("");
   const [confirmSell, setConfirmSell] = useState(false);
+  const [showThirdPartyClause, setShowThirdPartyClause] = useState(false);
+  const [showThirdPartyOffer, setShowThirdPartyOffer] = useState(false);
+
+  // Si no es mía, ¿es de otra persona de la liga? (para poder ofertar o pagar cláusula)
+  const ownerInfo = useMemo(() => {
+    if (isOwned || !teams) return null;
+    for (const [name, t] of Object.entries(teams)) {
+      if (me && name === me) continue;
+      const e = (t.squad || []).find(x => x.id === player.id);
+      if (e) return { ownerName: name, ownerEntry: e };
+    }
+    return null;
+  }, [isOwned, teams, player.id, me]);
 
   const seasonRows = useMemo(() => startedJornadas(jornadas).map((j, i) => {
     const stats = j.stats?.[player.id];
@@ -4911,6 +5039,29 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
     );
   }
 
+  if (showThirdPartyClause && ownerInfo) {
+    return (
+      <ClauseOfferScreen target={{ sellerName: ownerInfo.ownerName, asset: player, entry: ownerInfo.ownerEntry }} budgetAvailable={budgetAvailable}
+        onBack={() => setShowThirdPartyClause(false)}
+        onConfirm={async (amount) => {
+          const res = await onBuyClause(ownerInfo.ownerName, player, amount);
+          if (res.ok) onClose(); else return res;
+        }} />
+    );
+  }
+
+  if (showThirdPartyOffer && ownerInfo) {
+    return (
+      <OfferScreen target={{ sellerName: ownerInfo.ownerName, asset: player }} budgetAvailable={budgetAvailable}
+        onBack={() => setShowThirdPartyOffer(false)}
+        onConfirm={async (amount) => {
+          const res = await onSendOffer(ownerInfo.ownerName, player, amount);
+          if (res.ok) setShowThirdPartyOffer(false);
+          return res;
+        }} />
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
@@ -4946,10 +5097,18 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
                 <span className="fl-mono text-[10px] font-semibold" style={{ color: C.gold }}>{fmtCredits(entry.clause || player.basePrice || 0)}</span>
               </div>
             )}
+            {ownerInfo && (
+              <div className="mt-1">
+                <div className="fl-mono text-[9px]" style={{ color: C.muted }}>De {ownerInfo.ownerName}</div>
+                <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                  <ClauseBadge entry={ownerInfo.ownerEntry} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: isOwned && entry ? "1fr 1fr" : "1fr" }}>
+        <div className="grid gap-2 px-4 pt-3" style={{ gridTemplateColumns: (isOwned && entry) || ownerInfo ? "1fr 1fr" : "1fr" }}>
           <button onClick={() => setShowHistorico(true)} className="fl-tap rounded-md py-2.5 text-xs font-semibold"
             style={{ border: `1px solid ${C.line}`, color: C.white }}>
             Valor histórico
@@ -4959,7 +5118,23 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
               Acciones
             </button>
           )}
+          {ownerInfo && (
+            <button onClick={() => setShowActions(true)} className="fl-tap rounded-md py-2.5 text-xs font-semibold" style={{ background: C.principal, color: C.white }}>
+              Fichar
+            </button>
+          )}
         </div>
+
+        {showActions && ownerInfo && (
+          <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
+            <ActionSheetItem label="Hacer oferta" onClick={() => { setShowActions(false); setShowThirdPartyOffer(true); }} />
+            <ActionSheetItem
+              label={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Pagar cláusula (bloqueada)" : "Pagar cláusula"}
+              disabled={teamService.isClauseLocked(ownerInfo.ownerEntry)}
+              subtitle={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Todavía no se puede pagar" : fmtCredits(ownerInfo.ownerEntry.clause || player.basePrice || 0)}
+              onClick={() => { setShowActions(false); setShowThirdPartyClause(true); }} />
+          </ActionSheet>
+        )}
 
         {showActions && entry && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
@@ -5131,7 +5306,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
       {sub === "puntos" && (
         <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={teamName}
-          players={players} lineup={lineup} teamCrests={teamCrests} />
+          players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
       )}
 
       {detailPlayerId && (() => {
@@ -5152,7 +5327,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 // Vista de "Puntos" por jornada: chips J1, J2... para elegir la jornada, y
 // debajo la alineación GUARDADA en esa jornada concreta (titulares, banquillo
 // y entrenadora/or), cada una con los puntos que hizo ese día.
-function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests }) {
+function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests, onOpenPlayer }) {
   const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
   const [showIdealFive, setShowIdealFive] = useState(false);
   if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
@@ -5232,7 +5407,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       const isOut = id && swappedOutIds.has(id);
                       return (
                         <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
-                          <div className="relative" style={{ opacity: isOut ? 0.45 : 1 }}>
+                          <button onClick={() => p && onOpenPlayer(p)} disabled={!p} className="relative fl-tap" style={{ opacity: isOut ? 0.45 : 1 }}>
                             <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
@@ -5244,7 +5419,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                               <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
                                 style={{ width: 18, height: 18, background: C.negative, color: C.white }}>↓</span>
                             )}
-                          </div>
+                          </button>
                         </div>
                       );
                     })}
@@ -5262,7 +5437,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                 const p = id ? findPlayer(id) : null;
                 const isIn = id && swappedInIds.has(id);
                 return (
-                  <div key={pos.key} className="relative">
+                  <button key={pos.key} onClick={() => p && onOpenPlayer(p)} disabled={!p} className="relative fl-tap">
                     <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} />
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
@@ -5274,7 +5449,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
                         style={{ width: 18, height: 18, background: C.positive, color: C.white }}>↑</span>
                     )}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -5283,7 +5458,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
           <div>
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
             <div className="fl-row flex items-center justify-center py-4 px-2">
-              <div className="relative">
+              <button onClick={() => coachId && findPlayer(coachId) && onOpenPlayer(findPlayer(coachId))} disabled={!coachId} className="relative fl-tap">
                 <CourtSlot player={coachId ? findPlayer(coachId) : null} size={58} label={coachId ? undefined : "DT"} teamCrests={teamCrests} />
                 {coachId && findPlayer(coachId) && (
                   <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
@@ -5291,7 +5466,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                     {pointsFor(coachId)}
                   </span>
                 )}
-              </div>
+              </button>
             </div>
           </div>
         </>
@@ -5657,7 +5832,7 @@ function DropdownItem({ active, onClick, children }) {
 
 // Buscador global de jugadoras y entrenadoras/es: nombre, favoritos, equipo
 // real, posición y orden — igual estructura que el buscador de referencia.
-function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose }) {
+function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvailable, onBuyClause, onSendOffer, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose }) {
   const [query, setQuery] = useState("");
   const [onlyFav, setOnlyFav] = useState(false);
   const [teamFilter, setTeamFilter] = useState("");
@@ -5769,6 +5944,7 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, favoritos, onTog
           entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={favSet.has(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
+          teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
     </div>
@@ -5944,13 +6120,14 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
           entry={teamService.getSquadEntry(myTeam, detailPlayer.id)} isOwned={teamService.squadIds(myTeam).includes(detailPlayer.id)}
           isFavorite={(favoritos || []).includes(detailPlayer.id)} onToggleFavorite={() => onToggleFavorite(detailPlayer.id)}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
+          teams={teams} me={profile.name} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
 
       </div>
 
       {showSearch && (
-        <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam}
+        <PlayerSearchScreen players={players} jornadas={jornadas} teams={teams} myTeam={myTeam} me={profile.name} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
           favoritos={favoritos} onToggleFavorite={onToggleFavorite}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setShowSearch(false)} />
