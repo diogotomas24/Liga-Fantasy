@@ -2349,6 +2349,63 @@ export default function App() {
     } catch {}
   }, []);
 
+  // MODO PRUEBAS: versión de diagnóstico del bloqueo de alineación, que
+  // cuenta paso a paso qué ha pasado (en vez de tragarse los errores en
+  // silencio como la versión normal de arriba), para poder ver en pantalla
+  // exactamente dónde se para el proceso.
+  const debugLineupLock = useCallback(async (jornadaId) => {
+    const steps = [];
+    try {
+      const freshJ = await readJornadas();
+      steps.push(`Jornadas leídas: ${freshJ.length}`);
+      const jornada = freshJ.find((j) => j.id === jornadaId) || freshJ[0];
+      if (!jornada) { steps.push("❌ No hay ninguna jornada con ese id."); return steps; }
+      steps.push(`Jornada: ${jornada.id} — "${jornada.name}"`);
+      steps.push(`Partidos con marcador: ${(jornada.partidos || []).filter(p => p.marcadorLocal !== "" && p.marcadorLocal != null).length} de ${(jornada.partidos || []).length}`);
+
+      const started = hasJornadaEffectivelyStarted(jornada);
+      steps.push(`¿Se considera empezada? ${started ? "SÍ" : "NO"}`);
+      if (!started) { steps.push("⛔ Se para aquí: la jornada no cuenta como empezada todavía."); return steps; }
+
+      let allTeams;
+      try {
+        allTeams = await readAllTeamsGlobal();
+      } catch (e) {
+        steps.push(`❌ ERROR leyendo los equipos: ${e?.message || e}`);
+        return steps;
+      }
+      if (!allTeams) { steps.push("❌ readAllTeamsGlobal() devolvió null (fallo de lectura)."); return steps; }
+      const teamKeys = Object.keys(allTeams);
+      steps.push(`Equipos encontrados en total: ${teamKeys.length}`);
+      if (teamKeys.length === 0) { steps.push("⛔ Se para aquí: no se ha encontrado ningún equipo."); return steps; }
+      teamKeys.forEach((k) => {
+        const t = allTeams[k];
+        steps.push(`  · "${k}" → titulares guardados: ${t.lineup?.starters?.length || 0}`);
+      });
+
+      const lineups = { ...(jornada.lineups || {}) };
+      let changed = false;
+      Object.values(allTeams).forEach((t) => {
+        const key = `${t.leagueId}::${t.name}`;
+        if (!lineups[key] && t.lineup) {
+          const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
+          lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
+          changed = true;
+        }
+      });
+      steps.push(`¿Hay algo nuevo que guardar? ${changed ? "SÍ" : "NO (ya estaba todo guardado)"}`);
+      if (changed) {
+        const ok = await writeJornada({ ...jornada, lineups });
+        steps.push(ok ? "✅ Guardado correctamente en Supabase." : "❌ writeJornada() ha fallado al guardar.");
+      }
+      steps.push("Terminado.");
+      return steps;
+    } catch (e) {
+      steps.push(`❌ ERROR GENERAL: ${e?.message || e}`);
+      return steps;
+    }
+  }, []);
+
   // Motor de precios diario (ver conversación de diseño): se dispara una vez
   // por día natural (controlado por la marca global "marketPricingLastRun"),
   // recalcula TODAS las jugadoras (nunca entrenadoras/es) con el sistema
@@ -3139,7 +3196,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} />
+            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} />
           )}
         </div>
       </main>
@@ -6229,10 +6286,13 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest }) {
+function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock }) {
   const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [debugJornadaId, setDebugJornadaId] = useState("j1");
+  const [debugSteps, setDebugSteps] = useState(null);
+  const [debugBusy, setDebugBusy] = useState(false);
 
   useEffect(() => {
     (async () => { setSimDate(await readShared("marketSimDate", null)); })();
@@ -6256,6 +6316,13 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
     setSimDate(null);
     setBusy(false);
     setConfirmReset(false);
+  };
+  const runDebug = async () => {
+    setDebugBusy(true);
+    setDebugSteps(null);
+    const steps = await onDebugLineupLock(debugJornadaId.trim() || "j1");
+    setDebugSteps(steps);
+    setDebugBusy(false);
   };
 
   return (
@@ -6283,7 +6350,7 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
         </div>
 
         {confirmReset ? (
-          <div className="rounded-md p-2.5" style={{ background: `${C.negative}15`, border: `1px solid ${C.negative}` }}>
+          <div className="rounded-md p-2.5 mb-2.5" style={{ background: `${C.negative}15`, border: `1px solid ${C.negative}` }}>
             <p className="fl-body text-[11px] mb-2" style={{ color: C.white }}>
               Esto borra estadísticas y resultados de partidos, y devuelve los precios a como estaban antes de empezar esta ronda de pruebas. No se puede deshacer. ¿Seguro?
             </p>
@@ -6297,10 +6364,30 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
             </div>
           </div>
         ) : (
-          <button disabled={busy} onClick={() => setConfirmReset(true)} className="fl-tap w-full rounded-md py-2 text-xs font-semibold" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
+          <button disabled={busy} onClick={() => setConfirmReset(true)} className="fl-tap w-full rounded-md py-2 text-xs font-semibold mb-2.5" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
             Reiniciar prueba
           </button>
         )}
+
+        <div className="pt-2.5" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div className="fl-mono text-[10px] font-bold tracking-wide mb-1.5" style={{ color: C.gold }}>DIAGNÓSTICO: BLOQUEO DE ALINEACIÓN</div>
+          <div className="flex gap-2 mb-2">
+            <input value={debugJornadaId} onChange={(e) => setDebugJornadaId(e.target.value)} placeholder="id de jornada (ej. j1)"
+              className="flex-1 rounded-md px-2.5 py-1.5 fl-mono text-xs" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
+            <button disabled={debugBusy} onClick={runDebug} className="fl-tap rounded-md px-3 py-1.5 text-xs font-semibold disabled:opacity-50" style={{ border: `1px solid ${C.gold}`, color: C.gold }}>
+              {debugBusy ? <Loader2 size={13} className="animate-spin" /> : "Probar"}
+            </button>
+          </div>
+          {debugSteps && (
+            <div className="rounded-md p-2.5 space-y-1" style={{ background: C.navy900 }}>
+              {debugSteps.map((s, i) => (
+                <div key={i} className="fl-mono text-[10px]" style={{ color: s.startsWith("❌") ? C.negative : s.startsWith("⛔") ? C.gold : s.startsWith("✅") ? C.positive : C.muted }}>
+                  {s}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <ActividadFeed activity={activity} players={players} />
     </div>
