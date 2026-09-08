@@ -336,7 +336,7 @@ const teamService = {
   // dueña sí puede subirla pagando). Pasado ese plazo, cualquiera puede pagar la
   // cláusula (un importe guardado, no recalculado) y llevársela.
   isClauseLocked(entry) {
-    return Date.now() < (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
+    return getEffectiveToday().getTime() < (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
   },
   clauseUnlockAt(entry) {
     return (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
@@ -1889,11 +1889,11 @@ function findCurrentJornada(jornadas) {
 // mientras está bloqueada (con los días que faltan, o la cuenta atrás
 // HH:MM:SS cuando queda menos de un día), y en VERDE en cuanto se abre.
 function ClauseBadge({ entry, size = "sm" }) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(getEffectiveToday().getTime());
   const locked = teamService.isClauseLocked(entry);
   useEffect(() => {
     if (!locked) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setNow(getEffectiveToday().getTime()), 1000);
     return () => clearInterval(t);
   }, [locked]);
   const textSize = size === "sm" ? "text-[10px]" : "text-[11px]";
@@ -3936,15 +3936,81 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
 /* =============================================================================
    TRIPLE FANTASY 🏀 — quiniela semanal con dinero ficticio del juego
    ========================================================================== */
-function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntry, budgetAvailable, teamCrests, onJoin, onClose }) {
+function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntry, budgetAvailable, teamCrests, profile, allEntries, onJoin, onClose }) {
   const [picks, setPicks] = useState({});
   const [mvpChoice, setMvpChoice] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
 
   const mvpCandidates = useMemo(() => tripleFantasyService.computeMvpCandidates(players, jornadas), [players, jornadas]);
   const partidos = jornada?.partidos || [];
   const allPicked = partidos.length > 0 && partidos.every(p => picks[p.id]) && !!mvpChoice;
+
+  // Historial: tus participaciones de OTRAS jornadas (no la que se ve ahora mismo).
+  const pastEntries = useMemo(() => {
+    if (!profile) return [];
+    return (allEntries || [])
+      .filter(e => e.userId === profile.name && e.jornadaId !== jornada?.id)
+      .map(e => ({ entry: e, jornada: jornadas.find(j => j.id === e.jornadaId) }))
+      .filter(x => x.jornada)
+      .sort((a, b) => jornadas.indexOf(b.jornada) - jornadas.indexOf(a.jornada));
+  }, [allEntries, profile, jornada, jornadas]);
+
+  if (showHistory) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
+          <button onClick={() => setShowHistory(false)} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
+          <span className="fl-display text-base uppercase" style={{ color: C.white }}>Historial Triple Fantasy</span>
+          <span style={{ width: 28 }} />
+        </div>
+        <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+          {pastEntries.length === 0 ? (
+            <EmptyState title="Sin jornadas anteriores" text="Aquí verás tus quinielas y aciertos de jornadas pasadas en las que hayas participado." />
+          ) : (
+            <div className="space-y-3">
+              {pastEntries.map(({ entry, jornada: j }) => {
+                const jNum = jornadas.findIndex(x => x.id === j.id) + 1;
+                const jPartidos = j.partidos || [];
+                return (
+                  <div key={entry.id} className="fl-row p-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Jornada {jNum}</span>
+                      {entry.settled ? (
+                        <span className="fl-mono text-sm font-bold" style={{ color: entry.prize > 0 ? C.positive : C.negative }}>{fmtCredits(entry.prize || 0)}</span>
+                      ) : (
+                        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Pendiente</span>
+                      )}
+                    </div>
+                    {entry.settled && (
+                      <div className="fl-mono text-[10px] mb-2" style={{ color: C.muted }}>ACIERTOS: {entry.correct}/{jPartidos.length} {entry.mvpCorrect ? "· MVP ✓" : ""}</div>
+                    )}
+                    <div className="space-y-1">
+                      {jPartidos.map(p => {
+                        const winner = tripleFantasyService.matchWinner(p);
+                        const pick = entry.picks?.[p.id];
+                        const hit = winner && pick && winner === pick;
+                        const pickName = pick === "local" ? p.local : pick === "visitante" ? p.visitante : "—";
+                        return (
+                          <div key={p.id} className="flex items-center justify-between">
+                            <span className="fl-body text-[11px] truncate" style={{ color: C.white, maxWidth: "60%" }}>{p.local} vs {p.visitante}</span>
+                            <span className="fl-mono text-[10px] flex items-center gap-1" style={{ color: winner ? (hit ? C.positive : C.negative) : C.muted }}>
+                              {winner && (hit ? <CircleCheck size={11} /> : <CircleX size={11} />)} {pickName}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // Ya has participado en esta jornada: muestra tu quiniela y, si ya hay resultado, el premio.
   if (myEntry) {
@@ -3953,7 +4019,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
         <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
           <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
           <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
-          <span style={{ width: 28 }} />
+          <button onClick={() => setShowHistory(true)} className="fl-tap p-1.5 -mr-1"><Clock size={20} color={C.muted} /></button>
         </div>
         <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
           <div className="fl-row p-4 mb-4 text-center" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
@@ -4026,7 +4092,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
       <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
         <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
-        <span style={{ width: 28 }} />
+        <button onClick={() => setShowHistory(true)} className="fl-tap p-1.5 -mr-1"><Clock size={20} color={C.muted} /></button>
       </div>
       <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
         <div className="fl-row p-4 mb-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, #5C0E30 100%)`, border: `1px solid ${C.principal}55`, boxShadow: `0 0 30px ${C.principal}33` }}>
@@ -4395,7 +4461,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       {showTriple && lastJornada && (
         <TripleFantasyScreen jornada={lastJornada} jornadaNumber={currentJornadaNumber} players={players} jornadas={jornadas}
-          myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests}
+          myEntry={myTripleEntry} budgetAvailable={budgetAvailable} teamCrests={teamCrests} profile={profile} allEntries={tripleEntries}
           onJoin={onJoinTriple} onClose={() => setShowTriple(false)} />
       )}
 
@@ -4421,9 +4487,19 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
   const squadPlayers = (myTeam.squad || []).map(e => players.find(p => p.id === e.id)).filter(Boolean);
   const points = useMemo(() => {
     const allDates = new Set();
-    squadPlayers.forEach(p => (p.priceHistory || []).forEach(h => h.date && allDates.add(h.date)));
-    const dates = [...allDates].sort();
-    if (dates.length === 0) return [];
+    squadPlayers.forEach(p => (p.priceHistory || []).forEach(h => h?.date && allDates.add(h.date)));
+    let dates = [...allDates].sort();
+    // Si hay poco (o ningún) histórico real todavía, se arma un mínimo de 2
+    // puntos con "ayer" (prevBasePrice) y "hoy" (basePrice), para que el
+    // gráfico pueda dibujar algo en vez de quedarse vacío sin necesidad.
+    if (dates.length < 2) {
+      const today = toDateStr(getEffectiveToday());
+      const totalPrev = squadPlayers.reduce((s, p) => s + (p.prevBasePrice ?? p.basePrice ?? 0), 0);
+      const totalNow = squadPlayers.reduce((s, p) => s + (p.basePrice || 0), 0);
+      if (totalPrev !== totalNow) return [{ date: "Antes", value: totalPrev }, { date: today, value: totalNow }];
+      if (totalNow > 0) return [{ date: today, value: totalNow }];
+      return [];
+    }
     return dates.map(date => {
       const total = squadPlayers.reduce((s, p) => {
         const hist = (p.priceHistory || []).filter(h => h.date <= date);
@@ -4438,11 +4514,11 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
   const max = Math.max(...values, 1), min = Math.min(...values, 0);
   const range = Math.max(max - min, 1);
   const w = 300, h = 120;
-  const pathD = points.map((p, i) => {
-    const x = points.length > 1 ? (i / (points.length - 1)) * w : 0;
+  const pathD = points.length > 0 ? points.map((p, i) => {
+    const x = points.length > 1 ? (i / (points.length - 1)) * w : w / 2;
     const y = h - ((p.value - min) / range) * h;
     return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(" ");
+  }).join(" ") : "";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -4451,7 +4527,7 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Valor de plantilla</div>
       </div>
       <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
-        {points.length < 2 ? (
+        {points.length === 0 ? (
           <EmptyState compact title="Todavía no hay histórico suficiente" text="En cuanto pasen unos días con el mercado en marcha, verás aquí la evolución de tu plantilla." />
         ) : (
           <>
@@ -4937,7 +5013,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
                       gracias al overflow-hidden del botón) para no tapar el número. */}
                   <div className="absolute left-1/2 bottom-0 w-4/5 rounded-sm" style={{ transform: "translateX(-50%)", height: BAR_BOX_HEIGHT, zIndex: 1 }}>
                     <div className="absolute inset-0 rounded-sm" style={{ background: "rgba(255,255,255,0.08)", border: `1px solid ${C.line}` }} />
-                    <div className="absolute left-0 right-0 bottom-0 rounded-sm" style={{ height: barFillHeight(r), background: r.played ? C.positive : C.gold }} />
+                    <div className="absolute left-0 right-0 bottom-0 rounded-sm" style={{ height: barFillHeight(r), background: !r.played ? C.gold : r.total < 0 ? C.negative : r.total === 0 ? C.gold : C.positive }} />
                   </div>
                   {/* Número y jornada: siempre por delante de la barra, con fondo propio
                       para que se lean incluso cuando la barra sobresale por detrás. */}
