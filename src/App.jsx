@@ -342,7 +342,7 @@ const teamService = {
     return (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
   },
   addAsset(team, asset, pricePaid) {
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, clause: pricePaid, acquiredAt: Date.now() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, clause: pricePaid, acquiredAt: getEffectiveToday().getTime() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
   },
   // Añade el reparto inicial a la plantilla SIN descontar presupuesto: el valor de equipo del
   // sorteo (90-100 M) es aparte de los 100 M que cada persona tiene disponibles para pujar.
@@ -350,7 +350,7 @@ const teamService = {
   // un multiplicador aleatorio entre 1,45 y 1,66 (independiente para cada una).
   addInitialSquad(team, entries) {
     const squadEntries = entries.map(e => ({
-      id: e.id, pricePaid: e.price, acquiredAt: Date.now(), initial: true,
+      id: e.id, pricePaid: e.price, acquiredAt: getEffectiveToday().getTime(), initial: true,
       clause: Math.round(e.price * randomClauseMultiplier()),
     }));
     return { ...team, squad: [...(team.squad || []), ...squadEntries] };
@@ -359,7 +359,7 @@ const teamService = {
   // jugadora entra en la plantilla compradora con la cláusula igual al importe pagado y un
   // nuevo periodo de protección de 14 días.
   receiveTransfer(team, asset, amountPaid) {
-    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, clause: amountPaid, acquiredAt: Date.now(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
+    return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid: amountPaid, clause: amountPaid, acquiredAt: getEffectiveToday().getTime(), transferred: true }], budgetSpent: (team.budgetSpent || 0) + amountPaid };
   },
   // Lado vendedor de una cláusula pagada, de una venta directa a la liga, o de una oferta de
   // compra aceptada: se libera la jugadora y se abona el importe recibido (baja su presupuesto
@@ -2409,17 +2409,21 @@ export default function App() {
       const nextJ = [];
       for (const jornada of freshJ) {
         if (!hasJornadaEffectivelyStarted(jornada)) { nextJ.push(jornada); continue; }
+        const jornadaStart = computeJornadaStartTime(jornada);
         const allTeams = (await readAllTeamsGlobal()) || {};
         const lineups = { ...(jornada.lineups || {}) };
         let changed = false;
         Object.values(allTeams).forEach((t) => {
           const key = `${t.leagueId}::${t.name}`;
-          if (!lineups[key] && t.lineup) {
-            // Si está endeudada justo cuando empieza la jornada, esa jornada no puntúa.
-            const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
-            lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
-            changed = true;
-          }
+          if (lineups[key] || !t.lineup) return;
+          // El equipo se creó DESPUÉS de que esta jornada ya hubiera empezado
+          // (p. ej. alguien que se une a mitad de temporada): no se le mete
+          // su alineación actual en una jornada en la que no participaba.
+          if (t.createdAt && jornadaStart && t.createdAt > jornadaStart.getTime()) return;
+          // Si está endeudada justo cuando empieza la jornada, esa jornada no puntúa.
+          const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
+          lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
+          changed = true;
         });
         if (changed) {
           const res = await writeJornada({ ...jornada, lineups });
@@ -2475,15 +2479,19 @@ export default function App() {
         steps.push(`  · "${k}" → titulares guardados: ${t.lineup?.starters?.length || 0}`);
       });
 
+      const jornadaStart = computeJornadaStartTime(jornada);
       const lineups = { ...(jornada.lineups || {}) };
       let changed = false;
       Object.values(allTeams).forEach((t) => {
         const key = `${t.leagueId}::${t.name}`;
-        if (!lineups[key] && t.lineup) {
-          const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
-          lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
-          changed = true;
+        if (lineups[key] || !t.lineup) return;
+        if (t.createdAt && jornadaStart && t.createdAt > jornadaStart.getTime()) {
+          steps.push(`  · "${key}" se creó DESPUÉS de que empezara esta jornada: se omite (no participaba).`);
+          return;
         }
+        const debtLocked = ((t.budgetTotal || 0) - (t.budgetSpent || 0)) < 0;
+        lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
+        changed = true;
       });
       steps.push(`¿Hay algo nuevo que guardar? ${changed ? "SÍ" : "NO (ya estaba todo guardado)"}`);
       if (changed) {
@@ -2692,6 +2700,7 @@ export default function App() {
     const freeJugadoras = freshPlayers.filter(p => p.position !== "DT" && !ownedIds.has(p.id));
     const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, INITIAL_SQUAD_COUNT);
     let team = teamService.addInitialSquad(teamService.emptyTeam(), draft);
+    team = { ...team, createdAt: getEffectiveToday().getTime() };
     // Alinea automáticamente un quinteto "2-2-1" con las jugadoras que el reparto garantiza por posición.
     const byPos = { BASE: [], ALERO: [], PIVOT: [] };
     draft.forEach(d => { if (byPos[d.position]) byPos[d.position].push(d.id); });
@@ -5310,11 +5319,12 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       )}
 
       {detailPlayerId && (() => {
-        const p = allSquad.find(x => x.id === detailPlayerId);
+        const p = players.find(x => x.id === detailPlayerId);
         if (!p) return null;
         const entry = myTeam.squad.find(e => e.id === p.id);
+        const isMine = !!entry;
         return (
-          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas} isOwned
+          <PlayerDetailScreen player={p} entry={entry} jornadas={jornadas} isOwned={isMine}
             isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => onToggleFavorite(p.id)}
             onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
             onClose={() => setDetailPlayerId(null)} />
