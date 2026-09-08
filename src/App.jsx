@@ -1443,9 +1443,11 @@ async function readJornadas() {
 async function writeJornada(jornada) {
   try {
     const { id, name, lineups, partidos, stats, mvpPlayerId } = jornada;
-    await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {}, mvp_player_id: mvpPlayerId || null });
+    const r1 = await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {}, mvp_player_id: mvpPlayerId || null });
+    if (r1.error) { console.error("writeJornada: error guardando jornadas", r1.error); return { ok: false, error: r1.error.message }; }
 
-    await supabase.from("partidos").delete().eq("jornada_id", id);
+    const r2 = await supabase.from("partidos").delete().eq("jornada_id", id);
+    if (r2.error) { console.error("writeJornada: error borrando partidos", r2.error); return { ok: false, error: r2.error.message }; }
     if (partidos && partidos.length > 0) {
       const rows = partidos.map((p) => ({
         id: p.id, jornada_id: id, local: p.local, visitante: p.visitante,
@@ -1453,7 +1455,8 @@ async function writeJornada(jornada) {
         marcador_local: (p.marcadorLocal === "" || p.marcadorLocal == null) ? null : Number(p.marcadorLocal),
         marcador_visitante: (p.marcadorVisitante === "" || p.marcadorVisitante == null) ? null : Number(p.marcadorVisitante),
       }));
-      await supabase.from("partidos").insert(rows);
+      const r3 = await supabase.from("partidos").insert(rows);
+      if (r3.error) { console.error("writeJornada: error insertando partidos", r3.error); return { ok: false, error: r3.error.message }; }
     }
 
     const statsEntries = Object.entries(stats || {});
@@ -1466,11 +1469,12 @@ async function writeJornada(jornada) {
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
       }));
-      await supabase.from("jornada_stats").upsert(rows, { onConflict: "jornada_id,player_id" });
+      const r4 = await supabase.from("jornada_stats").upsert(rows, { onConflict: "jornada_id,player_id" });
+      if (r4.error) { console.error("writeJornada: error guardando jornada_stats", r4.error); return { ok: false, error: r4.error.message }; }
     }
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
   }
 }
 
@@ -2362,9 +2366,14 @@ export default function App() {
           }
         });
         if (changed) {
-          await writeJornada({ ...jornada, lineups });
-          anyChanged = true;
-          nextJ.push({ ...jornada, lineups });
+          const res = await writeJornada({ ...jornada, lineups });
+          if (res.ok) {
+            anyChanged = true;
+            nextJ.push({ ...jornada, lineups });
+          } else {
+            console.error("checkLineupLock: no se pudo guardar la jornada", jornada.id, res.error);
+            nextJ.push(jornada); // no se guardó de verdad: no lo damos por bloqueado en pantalla
+          }
         } else {
           nextJ.push(jornada);
         }
@@ -2422,11 +2431,17 @@ export default function App() {
       });
       steps.push(`¿Hay algo nuevo que guardar? ${changed ? "SÍ" : "NO (ya estaba todo guardado)"}`);
       if (changed) {
-        const ok = await writeJornada({ ...jornada, lineups });
-        steps.push(ok ? "✅ Guardado correctamente en Supabase." : "❌ writeJornada() ha fallado al guardar.");
-        if (ok) {
-          const refreshedJ = await readJornadas();
-          setJornadas((prev) => mergeJornadasPreservingLineups(refreshedJ, prev)); // refresca el estado en memoria para que Equipo/Puntos vea ya el bloqueo guardado
+        const res = await writeJornada({ ...jornada, lineups });
+        steps.push(res.ok ? "✅ writeJornada() dice que ha ido bien." : `❌ writeJornada() ha fallado: ${res.error}`);
+        // No nos fiamos solo del mensaje: releemos de verdad desde Supabase para confirmarlo.
+        const reread = await readJornadas();
+        const rereadJornada = reread.find((j) => j.id === jornadaId);
+        const reallyThere = rereadJornada?.lineups && Object.keys(rereadJornada.lineups).length > 0;
+        steps.push(reallyThere
+          ? `✅ CONFIRMADO: al releer de Supabase, sí está guardado (${Object.keys(rereadJornada.lineups).length} equipo(s)).`
+          : "❌ CONFIRMADO: al releer de Supabase, sigue sin estar guardado de verdad.");
+        if (res.ok && reallyThere) {
+          setJornadas((prev) => mergeJornadasPreservingLineups(reread, prev)); // refresca el estado en memoria para que Equipo/Puntos vea ya el bloqueo guardado
           steps.push("🔄 Estado local (jornadas) refrescado.");
         }
       }
