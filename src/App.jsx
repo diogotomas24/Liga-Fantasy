@@ -1378,6 +1378,21 @@ function jornadaNumberFromName(name) {
   return m ? Number(m[1]) : 0;
 }
 
+// Combina una lectura fresca de "jornadas" (p. ej. de un poll independiente
+// como syncMarket) con el estado que ya había en memoria, SIN perder nunca
+// una alineación ya bloqueada localmente. Esto evita que un poll más lento
+// (que empezó a leer antes de que otro proceso guardara un bloqueo) pise ese
+// bloqueo al terminar más tarde y sobrescribir el estado con datos viejos.
+function mergeJornadasPreservingLineups(freshJornadas, prevJornadas) {
+  const prevById = new Map((prevJornadas || []).map((j) => [j.id, j]));
+  return (freshJornadas || []).map((j) => {
+    const prev = prevById.get(j.id);
+    if (!prev) return j;
+    const mergedLineups = { ...(j.lineups || {}), ...(prev.lineups || {}) };
+    return { ...j, lineups: mergedLineups };
+  });
+}
+
 async function readJornadas() {
   try {
     const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }] = await Promise.all([
@@ -2411,7 +2426,7 @@ export default function App() {
         steps.push(ok ? "✅ Guardado correctamente en Supabase." : "❌ writeJornada() ha fallado al guardar.");
         if (ok) {
           const refreshedJ = await readJornadas();
-          setJornadas(refreshedJ); // refresca el estado en memoria para que Equipo/Puntos vea ya el bloqueo guardado
+          setJornadas((prev) => mergeJornadasPreservingLineups(refreshedJ, prev)); // refresca el estado en memoria para que Equipo/Puntos vea ya el bloqueo guardado
           steps.push("🔄 Estado local (jornadas) refrescado.");
         }
       }
@@ -2827,7 +2842,11 @@ export default function App() {
 
       setPlayers(playersNext); setTeams(teamsNext); setBids(bidsNext); setMarketHistory(historyNext); setActivity(activityNext);
       setMarket(marketNext); setOffers(freshOffers); setTripleEntries(tripleNext);
-      setJornadas(freshJornadas);
+      // No pisar a lo bruto: si otro proceso (checkLineupLock, debugLineupLock)
+      // bloqueó una alineación mientras esta lectura estaba en marcha, hay que
+      // conservarla en vez de sobrescribirla con la foto (más antigua) que
+      // traía esta llamada.
+      setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
     } finally {
       resolvingRef.current = false;
     }
@@ -2881,7 +2900,7 @@ export default function App() {
 
     const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
     setPlayers(freshPlayers);
-    setJornadas(freshJornadas);
+    setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
     return nextDateStr;
   }, [checkDailyMarketPricing, checkLineupLock, activeLeagueId, marketResetHour, syncMarket]);
 
