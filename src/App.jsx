@@ -2330,8 +2330,10 @@ export default function App() {
   const checkLineupLock = useCallback(async () => {
     try {
       const freshJ = await readJornadas();
+      let anyChanged = false;
+      const nextJ = [];
       for (const jornada of freshJ) {
-        if (!hasJornadaEffectivelyStarted(jornada)) continue;
+        if (!hasJornadaEffectivelyStarted(jornada)) { nextJ.push(jornada); continue; }
         const allTeams = (await readAllTeamsGlobal()) || {};
         const lineups = { ...(jornada.lineups || {}) };
         let changed = false;
@@ -2344,8 +2346,18 @@ export default function App() {
             changed = true;
           }
         });
-        if (changed) await writeJornada({ ...jornada, lineups });
+        if (changed) {
+          await writeJornada({ ...jornada, lineups });
+          anyChanged = true;
+          nextJ.push({ ...jornada, lineups });
+        } else {
+          nextJ.push(jornada);
+        }
       }
+      // Refresca el estado local si se ha bloqueado algo nuevo, para que las
+      // pantallas ya abiertas (Equipo/Puntos, Ranking...) lo vean sin esperar
+      // a una recarga completa de la app.
+      if (anyChanged) setJornadas(nextJ);
     } catch {}
   }, []);
 
@@ -2397,6 +2409,11 @@ export default function App() {
       if (changed) {
         const ok = await writeJornada({ ...jornada, lineups });
         steps.push(ok ? "✅ Guardado correctamente en Supabase." : "❌ writeJornada() ha fallado al guardar.");
+        if (ok) {
+          const refreshedJ = await readJornadas();
+          setJornadas(refreshedJ); // refresca el estado en memoria para que Equipo/Puntos vea ya el bloqueo guardado
+          steps.push("🔄 Estado local (jornadas) refrescado.");
+        }
       }
       steps.push("Terminado.");
       return steps;
