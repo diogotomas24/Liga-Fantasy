@@ -5106,7 +5106,7 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         const p = players.find(x => x.id === detailPlayerId);
         if (!p) return null;
         return (
-          <PlayerDetailScreen player={p} entry={squadEntries.find(e => e.id === p.id)} jornadas={jornadas} isOwned={false}
+          <PlayerDetailScreen player={p} entry={null} jornadas={jornadas} isOwned={false}
             isFavorite={false} onToggleFavorite={() => {}}
             teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
             onClose={() => setDetailPlayerId(null)} />
@@ -5541,7 +5541,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           </ActionSheet>
         )}
 
-        {showActions && entry && (
+        {showActions && isOwned && entry && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
             <ActionSheetItem label="Blindar jugador" disabled subtitle="Próximamente" />
             <ActionSheetItem
