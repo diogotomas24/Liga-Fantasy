@@ -3424,7 +3424,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
               onBuyClause={buyClause} onSendOffer={sendOffer} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} onGoTo={setTab} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
@@ -4966,7 +4966,7 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
-function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer }) {
+function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
@@ -5001,7 +5001,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
       {rows.length === 0 ? <EmptyState title="Todavía no hay participantes" text="En cuanto alguien entre en la liga aparecerá aquí." /> : (
         <div className="space-y-1.5">
           {rows.map(r => (
-            <button key={r.name} onClick={() => setViewingTeam(r.name)} className="fl-tap w-full fl-row flex items-center justify-between px-3 py-2.5 text-left" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
+            <button key={r.name} onClick={() => r.name === me ? onGoTo("equipo") : setViewingTeam(r.name)} className="fl-tap w-full fl-row flex items-center justify-between px-3 py-2.5 text-left" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
@@ -5010,10 +5010,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
                   <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{r.jCount} jugadoras · {r.cCount} DT</div>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="fl-mono text-base font-semibold" style={{ color: C.baby }}>{r.total}</span>
-                <ChevronRight size={16} color={C.muted} />
-              </div>
+              <span className="fl-mono text-base font-semibold" style={{ color: C.baby }}>{r.total}</span>
             </button>
           ))}
         </div>
@@ -5040,6 +5037,9 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
   const squadPlayers = squadEntries.map(e => players.find(p => p.id === e.id)).filter(Boolean);
   const jugadoras = squadPlayers.filter(p => p.position !== "DT");
   const coaches = squadPlayers.filter(p => p.position === "DT");
+  const allSquad = [...jugadoras, ...coaches];
+  const startersSet = new Set(lineup.starters || []);
+  const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
   const jornadasIniciadas = startedJornadas(jornadas);
   const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${ownerName}`, lineup, players) }));
   const totalPts = history.reduce((s, h) => s + h.pts, 0);
@@ -5065,25 +5065,35 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         </div>
 
         {sub === "plantilla" && (
-          jugadoras.length === 0 && coaches.length === 0 ? (
-            <EmptyState compact title="Plantilla vacía" text="Este equipo todavía no tiene jugadoras." />
-          ) : (
-            <div className="space-y-2">
-              {[...jugadoras, ...coaches].map(p => (
-                <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap w-full fl-row flex items-center gap-3 px-3 py-2.5 text-left">
-                  <PlayerPhoto url={p.photo} size={40} />
+          <div className="space-y-3">
+            {allSquad.length === 0 ? (
+              <EmptyState title="Plantilla vacía" text="Este equipo todavía no tiene jugadoras." />
+            ) : allSquad.map(p => {
+              const entry = squadEntries.find(e => e.id === p.id);
+              const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
+              return (
+                <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-3.5 px-4 py-3.5 text-left">
+                  <div className="relative flex-shrink-0" style={{ width: 76 }}>
+                    <PlayerPhoto url={p.photo} width={76} height={96} rounded={14} focusTop />
+                    <div className="absolute" style={{ top: -6, right: -6 }}><TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={26} /></div>
+                    <div className="absolute bottom-0" style={{ left: -6, right: -6, height: 3, borderRadius: 2, background: C.baby, boxShadow: `0 0 8px 1.5px ${C.baby}` }} />
+                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <PositionBadge posKey={p.position} size="sm" />
-                      <span className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</span>
+                      <PositionBadge posKey={p.position} size="md" />
+                      <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{p.name}</span>
                     </div>
-                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team}</div>
+                    <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{p.team} · {role}</div>
+                    {entry?.forSale && <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded mt-1 inline-block" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
                   </div>
-                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{fmtCredits(p.basePrice || 0)}</span>
+                  <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
+                    <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
+                    <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
+                  </div>
                 </button>
-              ))}
-            </div>
-          )
+              );
+            })}
+          </div>
         )}
 
         {sub === "puntos" && (
