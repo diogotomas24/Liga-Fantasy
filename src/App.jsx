@@ -843,7 +843,104 @@ const realStandingsService = {
       // Sin enfrentamiento directo (o también empatado ahí): diferencia global.
       return (b.pf - b.pc) - (a.pf - a.pc);
     });
-    return rows.map((r, i) => ({ ...r, rank: i + 1, diff: r.pf - r.pc }));
+    return rows.map((r, i) => ({ ...r, rank: i + 1, diff: r.pf - r.pc, pts: r.wins + r.played }));
+  },
+};
+
+// --- playoffService -------------------------------------------------------
+// Los partidos de playoffs viven en jornadas normales (misma tabla de
+// siempre), reconocidas solo por su nombre — así no hace falta ninguna
+// pantalla ni columna nueva en Supabase. Convención de nombres (no importan
+// mayúsculas):
+//   "Playoff Cuartos Ida"    → jornada con los 4 partidos de ida de cuartos
+//   "Playoff Cuartos Vuelta" → jornada con los 4 partidos de vuelta
+//   "Playoff Semifinal"      → jornada con los 2 partidos de semifinales
+//   "Playoff Final"          → jornada con el partido de la final
+// El resto de jornadas (las que no empiezan por "Playoff") son liga regular.
+function jornadaFase(name) {
+  const n = (name || "").trim().toLowerCase();
+  if (!n.startsWith("playoff")) return "regular";
+  if (n.includes("cuartos")) return "cuartos";
+  if (n.includes("semifinal") || n.includes("semis")) return "semis";
+  if (n.includes("final")) return "final";
+  return "regular";
+}
+function jornadaLeg(name) {
+  return (name || "").toLowerCase().includes("vuelta") ? 2 : 1;
+}
+
+const playoffService = {
+  // Busca, dentro de los partidos de una jornada, el que enfrenta a estos dos
+  // equipos (sin importar quién fue local o visitante), y devuelve el
+  // marcador ya "orientado" a (teamA, teamB) para poder sumar ida+vuelta.
+  findPartido(jornada, teamA, teamB) {
+    const partidos = jornada?.partidos || [];
+    const p = partidos.find((x) => (x.local === teamA && x.visitante === teamB) || (x.local === teamB && x.visitante === teamA));
+    if (!p) return null;
+    const hasScore = p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null;
+    if (!hasScore) return { played: false };
+    const aScore = p.local === teamA ? Number(p.marcadorLocal) : Number(p.marcadorVisitante);
+    const bScore = p.local === teamB ? Number(p.marcadorLocal) : Number(p.marcadorVisitante);
+    return { played: true, aScore, bScore };
+  },
+
+  // Serie a doble partido (cuartos): gana quien más suma entre ida y vuelta.
+  seriesResult(idaJornada, vueltaJornada, teamA, teamB) {
+    const leg1 = idaJornada ? this.findPartido(idaJornada, teamA, teamB) : null;
+    const leg2 = vueltaJornada ? this.findPartido(vueltaJornada, teamA, teamB) : null;
+    let aggA = null, aggB = null, winner = null;
+    if (leg1?.played && leg2?.played) {
+      aggA = leg1.aScore + leg2.aScore;
+      aggB = leg1.bScore + leg2.bScore;
+      if (aggA !== aggB) winner = aggA > aggB ? teamA : teamB;
+    }
+    return { teamA, teamB, leg1, leg2, aggA, aggB, winner };
+  },
+
+  // Partido único (semis / final).
+  singleMatch(jornada, teamA, teamB) {
+    const r = jornada ? this.findPartido(jornada, teamA, teamB) : null;
+    if (!r || !r.played) return { teamA, teamB, played: false, winner: null };
+    const winner = r.aScore === r.bScore ? null : (r.aScore > r.bScore ? teamA : teamB);
+    return { teamA, teamB, played: true, aScore: r.aScore, bScore: r.bScore, winner };
+  },
+
+  // Cuadro completo: los 8 primeros de la liga regular (excluyendo cualquier
+  // jornada de playoff) emparejados 1-8, 2-7, 3-6, 4-5, y de ahí para arriba.
+  // Se recalcula solo con la clasificación actual, así que el emparejamiento
+  // "provisional" ya se ve desde antes de que acabe la liga regular y se va
+  // actualizando jornada a jornada.
+  buildBracket(jornadas) {
+    const regularJornadas = (jornadas || []).filter((j) => jornadaFase(j.name) === "regular");
+    const standings = realStandingsService.compute(regularJornadas);
+    const top8 = standings.slice(0, 8);
+    if (top8.length < 8) return { ready: false, top8 };
+
+    const cuartosIda = jornadas.find((j) => jornadaFase(j.name) === "cuartos" && jornadaLeg(j.name) === 1);
+    const cuartosVuelta = jornadas.find((j) => jornadaFase(j.name) === "cuartos" && jornadaLeg(j.name) === 2);
+    const semisJornada = jornadas.find((j) => jornadaFase(j.name) === "semis");
+    const finalJornada = jornadas.find((j) => jornadaFase(j.name) === "final");
+
+    const pairs = [[0, 7], [1, 6], [2, 5], [3, 4]];
+    const cuartos = pairs.map(([hi, lo]) => {
+      const teamA = top8[hi].team, teamB = top8[lo].team;
+      const res = this.seriesResult(cuartosIda, cuartosVuelta, teamA, teamB);
+      return { seedA: top8[hi].rank, seedB: top8[lo].rank, ...res };
+    });
+
+    const semiPairs = [[0, 3], [1, 2]]; // ganador QF1 vs ganador QF4, ganador QF2 vs ganador QF3
+    const semis = semiPairs.map(([i1, i2]) => {
+      const teamA = cuartos[i1].winner, teamB = cuartos[i2].winner;
+      if (!teamA || !teamB) return { teamA: teamA || null, teamB: teamB || null, played: false, winner: null, pending: true };
+      return this.singleMatch(semisJornada, teamA, teamB);
+    });
+
+    const finalTeamA = semis[0]?.winner, finalTeamB = semis[1]?.winner;
+    const final = (!finalTeamA || !finalTeamB)
+      ? { teamA: finalTeamA || null, teamB: finalTeamB || null, played: false, winner: null, pending: true }
+      : this.singleMatch(finalJornada, finalTeamA, finalTeamB);
+
+    return { ready: true, top8, cuartos, semis, final };
   },
 };
 
@@ -4581,45 +4678,218 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 // Clasificación de los equipos REALES de la competición (no de fantasy):
 // victorias, derrotas, y +/- (diferencia total de puntos anotados/recibidos).
 // Desempate: 1º más victorias, 2º enfrentamiento directo, 3º diferencia global.
+// Dos pestañas: GENERAL (liga regular, con los 8 primeros marcados como
+// puesto de playoffs) y PLAYOFFS (cuadro de cuartos a doble partido,
+// semifinales y final a partido único, que se arma solo a partir de la
+// clasificación y de las jornadas "Playoff …" que haya en Supabase).
 function ClasificacionRealScreen({ jornadas, teamCrests, onClose }) {
-  const rows = useMemo(() => realStandingsService.compute(jornadas), [jornadas]);
+  const [subtab, setSubtab] = useState("general"); // "general" | "playoffs"
+  const regularJornadas = useMemo(() => (jornadas || []).filter((j) => jornadaFase(j.name) === "regular"), [jornadas]);
+  const rows = useMemo(() => realStandingsService.compute(regularJornadas), [regularJornadas]);
+  const bracket = useMemo(() => playoffService.buildBracket(jornadas), [jornadas]);
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Clasificación</div>
       </div>
+
+      {/* Segmented control GENERAL / PLAYOFFS, mismo lenguaje visual que el resto de la app */}
+      <div className="px-3 pt-3 pb-1">
+        <div className="flex items-center rounded-2xl p-1" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+          <button onClick={() => setSubtab("general")} className="fl-tap flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl transition-all"
+            style={subtab === "general"
+              ? { background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, boxShadow: `0 4px 14px ${C.principalSoft}` }
+              : { background: "transparent" }}>
+            <Trophy size={14} color={subtab === "general" ? C.white : C.muted} />
+            <span className="fl-display text-[11px] uppercase tracking-wide" style={{ color: subtab === "general" ? C.white : C.muted }}>General</span>
+          </button>
+          <div style={{ width: 1, height: 18, background: C.line }} />
+          <button onClick={() => setSubtab("playoffs")} className="fl-tap flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl transition-all"
+            style={subtab === "playoffs"
+              ? { background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, boxShadow: `0 4px 14px ${C.principalSoft}` }
+              : { background: "transparent" }}>
+            <Crown size={14} color={subtab === "playoffs" ? C.white : C.muted} />
+            <span className="fl-display text-[11px] uppercase tracking-wide" style={{ color: subtab === "playoffs" ? C.white : C.muted }}>Playoffs</span>
+          </button>
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto fl-scrollbar">
-        {rows.length === 0 ? (
-          <div className="p-4"><EmptyState title="Sin resultados todavía" text="En cuanto se carguen marcadores de partidos, aquí verás la clasificación real de la competición." /></div>
+        {subtab === "general" ? (
+          <ClasificacionGeneralTable rows={rows} teamCrests={teamCrests} />
         ) : (
-          <div>
-            <div className="flex items-center px-3 py-2 fl-mono text-[10px]" style={{ color: C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>
-              <span style={{ width: 24 }}>#</span>
-              <span className="flex-1">Equipo</span>
-              <span style={{ width: 30 }} className="text-center">PJ</span>
-              <span style={{ width: 30 }} className="text-center">V</span>
-              <span style={{ width: 30 }} className="text-center">D</span>
-              <span style={{ width: 44 }} className="text-right">+/-</span>
-            </div>
-            {rows.map((r) => (
-              <div key={r.team} className="flex items-center px-3 py-2.5" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
-                <span className="fl-mono text-[11px] font-semibold" style={{ width: 24, color: C.muted }}>{r.rank}</span>
-                <div className="flex-1 flex items-center gap-2 min-w-0">
-                  <TeamCrest name={r.team} photo={teamCrests?.[r.team]} size={24} />
-                  <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{r.team}</span>
-                </div>
-                <span className="fl-mono text-[11px]" style={{ width: 30, color: C.muted }}>{r.played}</span>
-                <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 30, color: C.positive }}>{r.wins}</span>
-                <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 30, color: C.negative }}>{r.losses}</span>
-                <span className="fl-mono text-[11px] font-bold text-right" style={{ width: 44, color: r.diff > 0 ? C.positive : r.diff < 0 ? C.negative : C.muted }}>
-                  {r.diff > 0 ? "+" : ""}{r.diff}
-                </span>
-              </div>
-            ))}
-          </div>
+          <PlayoffsBracketView bracket={bracket} teamCrests={teamCrests} />
         )}
       </div>
+    </div>
+  );
+}
+
+// Tabla GENERAL: igual estructura de siempre (#, equipo, PJ, V, D, +/-, PTS)
+// más el raíl de playoffs a la izquierda de los 8 primeros puestos, con
+// insignias en degradado (principal→baby) para esos 8 y planas para el resto.
+// Los PTS van en texto normal (sin insignia), tal y como se pidió.
+function ClasificacionGeneralTable({ rows, teamCrests }) {
+  if (rows.length === 0) {
+    return <div className="p-4"><EmptyState title="Sin resultados todavía" text="En cuanto se carguen marcadores de partidos, aquí verás la clasificación real de la competición." /></div>;
+  }
+  const playoffRows = rows.filter((r) => r.rank <= 8);
+  const restRows = rows.filter((r) => r.rank > 8);
+  return (
+    <div>
+      <div className="flex items-center px-3 py-2 fl-mono text-[10px]" style={{ color: C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>
+        <span style={{ width: 24 }} />
+        <span style={{ width: 24 }}>#</span>
+        <span className="flex-1">Equipo</span>
+        <span style={{ width: 28 }} className="text-center">PJ</span>
+        <span style={{ width: 24 }} className="text-center">V</span>
+        <span style={{ width: 24 }} className="text-center">D</span>
+        <span style={{ width: 40 }} className="text-right">+/-</span>
+        <span style={{ width: 34 }} className="text-right">PTS</span>
+      </div>
+
+      {/* Bloque de los 8 puestos de playoffs, con el raíl decorativo a la izquierda */}
+      <div className="relative">
+        <div className="absolute top-0 bottom-0 flex flex-col items-center" style={{ left: 8, width: 24 }}>
+          <Crown size={12} color={C.principal} style={{ flexShrink: 0, marginTop: 6 }} />
+          <div className="flex-1 my-1" style={{ width: 2, borderRadius: 2, background: `linear-gradient(${C.principal}, ${C.baby})` }} />
+          <span className="fl-display text-[9px] tracking-widest" style={{
+            color: C.principal, writingMode: "vertical-rl", transform: "rotate(180deg)", flexShrink: 0, marginBottom: 6,
+          }}>PLAYOFFS</span>
+        </div>
+        {playoffRows.map((r) => <ClasificacionRow key={r.team} r={r} teamCrests={teamCrests} inPlayoffs />)}
+      </div>
+
+      {restRows.map((r) => <ClasificacionRow key={r.team} r={r} teamCrests={teamCrests} />)}
+    </div>
+  );
+}
+
+function ClasificacionRow({ r, teamCrests, inPlayoffs }) {
+  return (
+    <div className="flex items-center pr-3 py-2.5" style={{ paddingLeft: inPlayoffs ? 40 : 12, borderBottom: `1px solid ${C.lineSoft}` }}>
+      <span className="flex items-center justify-center fl-mono text-[11px] font-bold flex-shrink-0" style={{
+        width: 24, height: 24, borderRadius: 8, marginRight: 10,
+        background: inPlayoffs ? `linear-gradient(135deg, ${C.principal}, ${C.baby})` : C.navy700,
+        color: inPlayoffs ? C.white : C.muted,
+        boxShadow: inPlayoffs ? `0 2px 8px ${C.principalSoft}` : "none",
+      }}>{r.rank}</span>
+      <div className="flex-1 flex items-center gap-2 min-w-0">
+        <TeamCrest name={r.team} photo={teamCrests?.[r.team]} size={24} />
+        <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{r.team}</span>
+      </div>
+      <span className="fl-mono text-[11px]" style={{ width: 28, color: C.muted }}>{r.played}</span>
+      <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 24, color: C.positive }}>{r.wins}</span>
+      <span className="fl-mono text-[11px] font-semibold text-center" style={{ width: 24, color: C.negative }}>{r.losses}</span>
+      <span className="fl-mono text-[11px] font-bold text-right" style={{ width: 40, color: r.diff > 0 ? C.positive : r.diff < 0 ? C.negative : C.muted }}>
+        {r.diff > 0 ? "+" : ""}{r.diff}
+      </span>
+      <span className="fl-mono text-[12px] font-bold text-right" style={{ width: 34, color: C.white }}>{r.pts}</span>
+    </div>
+  );
+}
+
+// Cuadro de PLAYOFFS: cuartos a doble partido (ida + vuelta, agregado decide)
+// y semifinales/final a partido único. Se arma solo con la clasificación
+// (1-8, 2-7, 3-6, 4-5) y busca los resultados reales en las jornadas
+// "Playoff Cuartos Ida/Vuelta", "Playoff Semifinal" y "Playoff Final" si ya
+// existen; si no, deja el cruce "por jugar".
+function PlayoffsBracketView({ bracket, teamCrests }) {
+  if (!bracket.ready) {
+    return <div className="p-4"><EmptyState title="Cuadro todavía no disponible" text="En cuanto haya al menos 8 equipos con partidos jugados en liga regular, aquí se verá el cuadro de playoffs." /></div>;
+  }
+  return (
+    <div className="px-3 py-4 space-y-6">
+      <PlayoffSection title="Cuartos de final" subtitle="Ida y vuelta · gana el agregado">
+        {bracket.cuartos.map((m, i) => <SeriesCard key={i} m={m} teamCrests={teamCrests} />)}
+      </PlayoffSection>
+      <PlayoffSection title="Semifinales" subtitle="Partido único">
+        {bracket.semis.map((m, i) => <SingleMatchCard key={i} m={m} teamCrests={teamCrests} />)}
+      </PlayoffSection>
+      <PlayoffSection title="Final" subtitle="Partido único">
+        <SingleMatchCard m={bracket.final} teamCrests={teamCrests} isFinal />
+      </PlayoffSection>
+    </div>
+  );
+}
+
+function PlayoffSection({ title, subtitle, children }) {
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 mb-2 px-1">
+        <span className="fl-display text-xs uppercase tracking-wide" style={{ color: C.white }}>{title}</span>
+        <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{subtitle}</span>
+      </div>
+      <div className="space-y-2">{children}</div>
+    </div>
+  );
+}
+
+function SeriesCard({ m, teamCrests }) {
+  const decided = !!m.winner;
+  return (
+    <div className="rounded-2xl p-3" style={{ background: C.navy800, border: `1px solid ${decided ? C.principal + "55" : C.line}` }}>
+      <SeriesTeamRow team={m.teamA} seed={m.seedA} leg1={m.leg1?.played ? m.leg1.aScore : null} leg2={m.leg2?.played ? m.leg2.aScore : null}
+        agg={m.aggA} isWinner={m.winner === m.teamA} teamCrests={teamCrests} />
+      <div className="my-1" style={{ height: 1, background: C.lineSoft }} />
+      <SeriesTeamRow team={m.teamB} seed={m.seedB} leg1={m.leg1?.played ? m.leg1.bScore : null} leg2={m.leg2?.played ? m.leg2.bScore : null}
+        agg={m.aggB} isWinner={m.winner === m.teamB} teamCrests={teamCrests} />
+      <div className="flex justify-end gap-4 mt-2 pt-2 fl-mono text-[9px] uppercase tracking-wide" style={{ borderTop: `1px solid ${C.lineSoft}`, color: C.muted }}>
+        <span style={{ width: 34 }} className="text-center">Ida</span>
+        <span style={{ width: 34 }} className="text-center">Vta</span>
+        <span style={{ width: 34 }} className="text-center">Agg</span>
+      </div>
+    </div>
+  );
+}
+
+function SeriesTeamRow({ team, seed, leg1, leg2, agg, isWinner, teamCrests }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="fl-mono text-[10px] font-bold flex items-center justify-center flex-shrink-0" style={{ width: 18, height: 18, borderRadius: 6, background: C.navy700, color: C.muted }}>{seed}</span>
+      <TeamCrest name={team} photo={teamCrests?.[team]} size={22} />
+      <span className="fl-body text-xs truncate flex-1" style={{ color: isWinner ? C.white : "rgba(255,255,255,0.55)", fontWeight: isWinner ? 700 : 500 }}>{team}</span>
+      <span className="fl-mono text-xs text-center" style={{ width: 34, color: C.muted }}>{leg1 ?? "–"}</span>
+      <span className="fl-mono text-xs text-center" style={{ width: 34, color: C.muted }}>{leg2 ?? "–"}</span>
+      <span className="fl-mono text-sm font-bold text-center" style={{ width: 34, color: isWinner ? C.positive : C.muted }}>{agg ?? "–"}</span>
+      {isWinner && <CircleCheck size={13} color={C.positive} style={{ flexShrink: 0 }} />}
+    </div>
+  );
+}
+
+function SingleMatchCard({ m, teamCrests, isFinal }) {
+  const decided = !!m.winner;
+  return (
+    <div className="rounded-2xl p-3" style={{
+      background: isFinal ? `linear-gradient(160deg, ${C.principalSoft}, ${C.navy800})` : C.navy800,
+      border: `1px solid ${decided ? C.principal + "55" : C.line}`,
+    }}>
+      {isFinal && decided && (
+        <div className="flex items-center gap-1.5 mb-2">
+          <Trophy size={13} color={C.gold} />
+          <span className="fl-display text-[10px] uppercase tracking-wide" style={{ color: C.gold }}>Campeón</span>
+        </div>
+      )}
+      <SingleTeamRow team={m.teamA} score={m.played ? m.aScore : null} isWinner={m.winner === m.teamA} pending={!m.teamA} teamCrests={teamCrests} />
+      <div className="my-1" style={{ height: 1, background: C.lineSoft }} />
+      <SingleTeamRow team={m.teamB} score={m.played ? m.bScore : null} isWinner={m.winner === m.teamB} pending={!m.teamB} teamCrests={teamCrests} />
+    </div>
+  );
+}
+
+function SingleTeamRow({ team, score, isWinner, pending, teamCrests }) {
+  return (
+    <div className="flex items-center gap-2 py-0.5">
+      <TeamCrest name={team || "?"} photo={team ? teamCrests?.[team] : null} size={22} />
+      <span className="fl-body text-xs truncate flex-1" style={{
+        color: pending ? C.muted : (isWinner ? C.white : "rgba(255,255,255,0.55)"),
+        fontWeight: isWinner ? 700 : 500,
+        fontStyle: pending ? "italic" : "normal",
+      }}>{team || "Por determinar"}</span>
+      {score != null && <span className="fl-mono text-sm font-bold" style={{ color: isWinner ? C.positive : C.muted }}>{score}</span>}
+      {isWinner && <CircleCheck size={14} color={C.positive} style={{ flexShrink: 0 }} />}
     </div>
   );
 }
