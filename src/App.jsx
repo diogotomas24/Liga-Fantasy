@@ -185,11 +185,30 @@ function calcSwishPoints(stats, position) {
   return { breakdown, total: breakdown.reduce((sum, b) => sum + b.pts, 0) };
 }
 
+// Busca si el equipo REAL de la entrenadora ganó o perdió su partido en esa
+// jornada, mirando directamente el marcador ya cargado — sin depender de
+// ninguna estadística introducida a mano. null si esa jornada no tiene
+// partido de ese equipo, o si el partido todavía no tiene marcador.
+function resolveCoachWin(jornada, teamName) {
+  if (!jornada || !teamName) return null;
+  for (const p of jornada.partidos || []) {
+    if (p.local !== teamName && p.visitante !== teamName) continue;
+    const winner = tripleFantasyService.matchWinner(p);
+    if (!winner) return null;
+    return (winner === "local") === (p.local === teamName);
+  }
+  return null;
+}
+
 // Desglose de la puntuación de entrenadoras/es (regla sin cambios: no forma
-// parte del nuevo sistema Puntos SWISH, que solo afecta a jugadoras).
-function calcCoachPoints(stats) {
+// parte del nuevo sistema Puntos SWISH, que solo afecta a jugadoras). Directo
+// a partir del resultado real del equipo — nunca hace falta rellenar nada a
+// mano para la entrenadora. `resolvedWin` es true/false/null (calculado con
+// resolveCoachWin); si no se pudo resolver (sin partido o sin marcador
+// todavía), se cae a stats.victoria por si acaso viene de datos antiguos.
+function calcCoachPoints(stats, resolvedWin) {
   const s = stats || {};
-  const win = !!s.victoria;
+  const win = resolvedWin != null ? resolvedWin : !!s.victoria;
   const breakdown = [
     { key: "victoria", label: win ? "Partido ganado" : "Partido no ganado", cantidad: win ? 1 : 0, pts: win ? 5 : 0 },
   ];
@@ -198,11 +217,12 @@ function calcCoachPoints(stats) {
 
 // Punto de entrada único: desglose completo de una jugadora/entrenadora en
 // una jornada, eligiendo el sistema de puntuación según su posición.
-function calcPointsBreakdown(stats, position) {
-  return position === "DT" ? calcCoachPoints(stats) : calcSwishPoints(stats, position);
+function calcPointsBreakdown(stats, position, resolvedWin) {
+  return position === "DT" ? calcCoachPoints(stats, resolvedWin) : calcSwishPoints(stats, position);
 }
 
-function calcPlayerPoints(stats, position) {
+function calcPlayerPoints(stats, position, resolvedWin) {
+  if (position === "DT") return calcCoachPoints(stats, resolvedWin).total; // no hace falta stats: se resuelve con el marcador real
   if (!stats) return 0;
   return calcPointsBreakdown(stats, position).total;
 }
@@ -255,7 +275,7 @@ function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
 
   if (lineup.titularCoach) {
     const coach = players.find((p) => p.id === lineup.titularCoach);
-    if (coach) total += calcPlayerPoints(jornada.stats?.[lineup.titularCoach], coach.position);
+    if (coach) total += calcPlayerPoints(jornada.stats?.[lineup.titularCoach], coach.position, resolveCoachWin(jornada, coach.team));
   }
   return total;
 }
@@ -5011,6 +5031,12 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   }, [isOwned, teams, player.id, me]);
 
   const seasonRows = useMemo(() => startedJornadas(jornadas).map((j, i) => {
+    if (player.position === "DT") {
+      const win = resolveCoachWin(j, player.team);
+      const played = win != null;
+      const total = played ? calcCoachPoints(null, win).total : 0;
+      return { idx: i, jornada: j, played, total };
+    }
     const stats = j.stats?.[player.id];
     const played = !!stats;
     const total = played ? calcPointsBreakdown(stats, player.position).total : 0;
@@ -5038,7 +5064,9 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   };
 
   const selected = seasonRows[selectedIdx];
-  const { breakdown } = selected?.played ? calcPointsBreakdown(selected.jornada.stats[player.id], player.position) : { breakdown: [] };
+  const { breakdown } = selected?.played
+    ? (player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(selected.jornada, player.team)) : calcPointsBreakdown(selected.jornada.stats[player.id], player.position))
+    : { breakdown: [] };
 
   if (showRaiseClause) {
     return (
@@ -5354,6 +5382,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
   const pointsFor = (id) => {
     const p = findPlayer(id);
     if (!p) return 0;
+    if (p.position === "DT") return calcCoachPoints(null, resolveCoachWin(jornada, p.team)).total;
     const stats = jornada.stats?.[id];
     if (!stats) return 0;
     const pts = calcPointsBreakdown(stats, p.position).total;
@@ -5417,19 +5446,19 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       const isOut = id && swappedOutIds.has(id);
                       return (
                         <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
-                          <button onClick={() => p && onOpenPlayer(p)} disabled={!p} className="relative fl-tap" style={{ opacity: isOut ? 0.45 : 1 }}>
-                            <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} />
+                          <div className="relative" style={{ opacity: isOut ? 0.45 : 1 }}>
+                            <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
                             {p && (
-                              <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                              <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                                 style={{ background: C.navy900, color: isOut ? C.muted : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isOut ? C.negative : C.line}`, textDecoration: isOut ? "line-through" : "none" }}>
                                 {pointsFor(id)}
                               </span>
                             )}
                             {isOut && (
-                              <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
+                              <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold pointer-events-none"
                                 style={{ width: 18, height: 18, background: C.negative, color: C.white }}>↓</span>
                             )}
-                          </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -5447,19 +5476,19 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                 const p = id ? findPlayer(id) : null;
                 const isIn = id && swappedInIds.has(id);
                 return (
-                  <button key={pos.key} onClick={() => p && onOpenPlayer(p)} disabled={!p} className="relative fl-tap">
-                    <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} />
+                  <div key={pos.key} className="relative">
+                    <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
                     {p && (
-                      <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                      <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                         style={{ background: C.navy900, color: isIn ? C.gold : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isIn ? C.gold : C.line}` }}>
                         {pointsFor(id)}
                       </span>
                     )}
                     {isIn && (
-                      <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold"
+                      <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold pointer-events-none"
                         style={{ width: 18, height: 18, background: C.positive, color: C.white }}>↑</span>
                     )}
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -5468,15 +5497,15 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
           <div>
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>ENTRENADORA/OR</div>
             <div className="fl-row flex items-center justify-center py-4 px-2">
-              <button onClick={() => coachId && findPlayer(coachId) && onOpenPlayer(findPlayer(coachId))} disabled={!coachId} className="relative fl-tap">
-                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={58} label={coachId ? undefined : "DT"} teamCrests={teamCrests} />
+              <div className="relative">
+                <CourtSlot player={coachId ? findPlayer(coachId) : null} size={58} label={coachId ? undefined : "DT"} teamCrests={teamCrests} onClick={coachId && findPlayer(coachId) ? () => onOpenPlayer(findPlayer(coachId)) : undefined} />
                 {coachId && findPlayer(coachId) && (
-                  <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                  <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                     style={{ background: C.navy900, color: pointsFor(coachId) >= 0 ? C.positive : C.negative, border: `1px solid ${C.line}` }}>
                     {pointsFor(coachId)}
                   </span>
                 )}
-              </button>
+              </div>
             </div>
           </div>
         </>
@@ -5861,7 +5890,10 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvaila
     const m = {};
     players.forEach(p => {
       let total = 0;
-      jornadas.forEach(j => { const s = j.stats?.[p.id]; if (s) total += calcPointsBreakdown(s, p.position).total; });
+      jornadas.forEach(j => {
+        if (p.position === "DT") { const win = resolveCoachWin(j, p.team); if (win != null) total += calcCoachPoints(null, win).total; return; }
+        const s = j.stats?.[p.id]; if (s) total += calcPointsBreakdown(s, p.position).total;
+      });
       m[p.id] = total;
     });
     return m;
@@ -6853,12 +6885,12 @@ function JornadaDetail({ jornada, players }) {
             </tr></thead>
             <tbody>
               {entrenadoras.map(p => {
-                const s = stats[p.id] || {}; const pts = calcPlayerPoints(s, p.position);
+                const s = stats[p.id] || {}; const pts = calcPlayerPoints(s, p.position, resolveCoachWin(jornada, p.team));
                 return (
                   <tr key={p.id} style={{ borderTop: `1px solid ${C.lineSoft}` }}>
                     <td className="py-1.5 pr-2" style={{ color: C.white }}><div className="font-medium">{p.name}</div><PositionBadge posKey={p.position} /></td>
-                    <td className="text-center">{s.jugo ? "Sí" : "No"}</td>
-                    <td className="text-center">{s.victoria ? "Sí" : "No"}</td>
+                    <td className="text-center">{resolveCoachWin(jornada, p.team) != null ? "Sí" : "No"}</td>
+                    <td className="text-center">{resolveCoachWin(jornada, p.team) === true ? "Sí" : resolveCoachWin(jornada, p.team) === false ? "No" : "—"}</td>
                     <td className="text-center">{s.diferencia || 0}</td>
                     <td className="text-center">{s.mvp ? "Sí" : "No"}</td>
                     <td className="text-right fl-mono font-semibold" style={{ color: pts >= 0 ? C.positive : C.negative }}>{pts}</td>
