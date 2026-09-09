@@ -578,7 +578,7 @@ const clauseService = {
       return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras.` };
     }
     const available = auctionService.availableBudget(buyerTeam, bids || [], marketId, buyerName);
-    if (amount > available + teamService.maxDebt(buyerTeam, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(available)}.` };
+    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
     return { ok: true, clause };
   },
   execute(buyerTeam, sellerTeam, asset, amount) {
@@ -610,7 +610,7 @@ const offerService = {
       return { ok: false, error: `Tu plantilla ya tiene el máximo de ${MAX_SQUAD_JUGADORAS} jugadoras.` };
     }
     const available = auctionService.availableBudget(buyerTeam, bids || [], marketId, buyerName);
-    if (amount > available + teamService.maxDebt(buyerTeam, players)) return { ok: false, error: `Superarías tu límite de endeudamiento (20% del valor de tu plantilla). Disponible: ${fmtCredits(available)}.` };
+    if (amount > available) return { ok: false, error: `Presupuesto insuficiente. Disponible: ${fmtCredits(available)}.` };
     const already = offers.find(o => o.status === "pending" && o.fromUser === buyerName && o.assetId === asset.id && o.toUser === sellerName);
     if (already) return { ok: false, error: "Ya tienes una oferta pendiente por esta jugadora." };
     return { ok: true };
@@ -3214,6 +3214,17 @@ export default function App() {
     return { ok: true };
   }, [market, bids, profile, activeLeagueId]);
 
+  // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
+  // Añade una entrada al feed de "Actividad" de la liga (ventas a la liga,
+  // premios del Triple Fantasy...). Los fichajes del mercado ya se registran
+  // aparte, dentro de syncMarket.
+  const logActivity = useCallback(async (entry) => {
+    const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
+    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
+    setActivity(nextActivity);
+  }, [activeLeagueId, activity]);
+
   const buyClause = useCallback(async (sellerName, asset, amount) => {
     const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
     const check = clauseService.validateBuyout({
@@ -3228,19 +3239,9 @@ export default function App() {
     if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
       sendPushNotification(activeLeagueId, profile.name, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
     }
+    await logActivity({ type: "clausula", buyerName: profile.name, sellerName, assetId: asset.id, amount });
     return { ok: true };
-  }, [profile, players, bids, market, activeLeagueId]);
-
-  // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
-  // Añade una entrada al feed de "Actividad" de la liga (ventas a la liga,
-  // premios del Triple Fantasy...). Los fichajes del mercado ya se registran
-  // aparte, dentro de syncMarket.
-  const logActivity = useCallback(async (entry) => {
-    const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
-    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
-    await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
-    setActivity(nextActivity);
-  }, [activeLeagueId, activity]);
+  }, [profile, players, bids, market, activeLeagueId, logActivity]);
 
   const sellImmediate = useCallback(async (assetId) => {
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
@@ -6896,6 +6897,14 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
     const asset = players.find(p => p.id === a.assetId);
     rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: true });
   });
+  (activity || []).filter(a => a.type === "clausula" && (a.buyerName === profile.name || a.sellerName === profile.name)).forEach(a => {
+    const asset = players.find(p => p.id === a.assetId);
+    if (a.buyerName === profile.name) {
+      rows.push({ id: a.id, ts: a.ts, text: `Has pagado la cláusula de ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: true });
+    } else {
+      rows.push({ id: a.id, ts: a.ts, text: `Te han clausulado a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: false });
+    }
+  });
   rows.sort((a, b) => b.ts - a.ts);
   if (rows.length === 0) return <EmptyState title="Sin operaciones todavía" text="Cuando se resuelva un mercado o hagas una venta, aquí verás tus fichajes, ventas y pujas perdidas." />;
   return (
@@ -7043,6 +7052,10 @@ function ActividadFeed({ activity, players }) {
         } else if (a.type === "expulsion") {
           text = <>
             <span style={{ color: C.negative }}>{a.userId}</span> ha sido expulsada/o de la liga
+          </>;
+        } else if (a.type === "clausula") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.buyerName}</span> le ha pagado la cláusula a <span style={{ color: C.baby }}>{a.sellerName}</span> por <span className="font-medium">{asset?.name || "una jugadora"}</span>, {fmtCredits(a.amount)}
           </>;
         } else {
           text = <>
