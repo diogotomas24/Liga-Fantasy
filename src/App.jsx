@@ -4748,7 +4748,6 @@ function ClasificacionGeneralTable({ rows, teamCrests }) {
         <span style={{ width: 24 }} className="text-center">V</span>
         <span style={{ width: 24 }} className="text-center">D</span>
         <span style={{ width: 40 }} className="text-right">+/-</span>
-        <span style={{ width: 34 }} className="text-right">PTS</span>
       </div>
 
       {/* Bloque de los 8 puestos de playoffs, con el raíl decorativo a la izquierda */}
@@ -4787,7 +4786,6 @@ function ClasificacionRow({ r, teamCrests, inPlayoffs }) {
       <span className="fl-mono text-[11px] font-bold text-right" style={{ width: 40, color: r.diff > 0 ? C.positive : r.diff < 0 ? C.negative : C.muted }}>
         {r.diff > 0 ? "+" : ""}{r.diff}
       </span>
-      <span className="fl-mono text-[12px] font-bold text-right" style={{ width: 34, color: C.white }}>{r.pts}</span>
     </div>
   );
 }
@@ -5897,7 +5895,6 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 // Fila de jugadora candidata dentro de la pantalla "Cambiar jugador".
 function PickerPlayerRow({ p, selected, onSelect }) {
   const pos = POS_BY_KEY[p.position] || COACH_POS;
-  const trend = (p.basePrice || 0) - (p.prevBasePrice ?? p.basePrice ?? 0);
   return (
     <button onClick={() => onSelect(p.id)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 text-left"
       style={{ background: selected ? C.babySoft : C.navy800, border: `1.5px solid ${selected ? C.baby : C.line}`, borderRadius: 14, marginBottom: 8 }}>
@@ -5919,12 +5916,6 @@ function PickerPlayerRow({ p, selected, onSelect }) {
       </div>
       <div className="text-right flex-shrink-0">
         <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-        {trend !== 0 && (
-          <div className="flex items-center justify-end gap-0.5 mt-0.5">
-            {trend > 0 ? <TrendingUp size={11} color={C.positive} /> : <TrendingDown size={11} color={C.negative} />}
-            <span className="fl-mono text-[9px]" style={{ color: trend > 0 ? C.positive : C.negative }}>{trend > 0 ? "+" : ""}{trend}</span>
-          </div>
-        )}
       </div>
     </button>
   );
@@ -6193,20 +6184,16 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
    MERCADO (SUBASTAS)
    ========================================================================== */
 // Ordena una lista de jugadoras/entrenadores según el criterio elegido en el
-// desplegable "Nombre" del buscador (Nombre, Puntos, Equipo, Precio, Posición,
-// Estado, Propietario).
+// desplegable "Nombre" del buscador (Nombre, Puntos, Equipo, Precio). Se
+// quitaron "Posición", "Estado" y "Propietario" de aquí porque ya se pueden
+// filtrar directamente con sus propios filtros (Posición) o se ven en la
+// propia fila (Estado/Propietario), así que sobraban como criterio de orden.
 function sortPlayersBy(list, sortKey, ownerByPlayerId, pfsyByPlayerId) {
   const arr = [...list];
   switch (sortKey) {
     case "puntos": return arr.sort((a, b) => (pfsyByPlayerId[b.id] || 0) - (pfsyByPlayerId[a.id] || 0));
     case "equipo": return arr.sort((a, b) => (a.team || "").localeCompare(b.team || ""));
     case "precio": return arr.sort((a, b) => (b.basePrice || 0) - (a.basePrice || 0));
-    case "posicion": return arr.sort((a, b) => (a.position || "").localeCompare(b.position || ""));
-    case "estado": return arr.sort((a, b) => {
-      const ea = ownerByPlayerId[a.id] ? 1 : 0, eb = ownerByPlayerId[b.id] ? 1 : 0;
-      return ea - eb || a.name.localeCompare(b.name);
-    });
-    case "propietario": return arr.sort((a, b) => (ownerByPlayerId[a.id] || "").localeCompare(ownerByPlayerId[b.id] || ""));
     default: return arr.sort((a, b) => a.name.localeCompare(b.name));
   }
 }
@@ -6281,7 +6268,15 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvaila
   list = sortPlayersBy(list, sortKey, ownerByPlayerId, pfsyByPlayerId);
 
   const posOptions = [["", "Todos"], ["BASE", "Base"], ["ALERO", "Alero"], ["PIVOT", "Pívot"], ["DT", "ENT"]];
-  const sortOptions = [["nombre", "Nombre"], ["puntos", "Puntos"], ["equipo", "Equipo"], ["precio", "Precio"], ["posicion", "Posición"], ["estado", "Estado"], ["propietario", "Propietario"]];
+  const sortOptions = [["nombre", "Nombre"], ["puntos", "Puntos"], ["equipo", "Equipo"], ["precio", "Precio"]];
+
+  // Los botones de filtro muestran la opción elegida en vez del rótulo
+  // genérico (p. ej. "Boscos" en vez de "Equipo") una vez hay algo
+  // seleccionado; si no, se quedan con el rótulo de siempre.
+  const posSelectedLabel = posOptions.find(([k]) => k === posFilter)?.[1];
+  const teamLabel = teamFilter || "Equipo";
+  const posLabel = posFilter ? posSelectedLabel : "Posición";
+  const sortLabel = sortOptions.find(([k]) => k === sortKey)?.[1] || "Nombre";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -6303,14 +6298,14 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvaila
             style={{ background: onlyFav ? C.baby : C.navy800, color: onlyFav ? C.ink : C.white, border: `1px solid ${onlyFav ? C.baby : C.line}` }}>
             Favoritos
           </button>
-          <FilterDropdown label="Equipo" open={openDropdown === "equipo"} onToggle={() => setOpenDropdown(d => d === "equipo" ? null : "equipo")}>
+          <FilterDropdown label={teamLabel} open={openDropdown === "equipo"} onToggle={() => setOpenDropdown(d => d === "equipo" ? null : "equipo")}>
             <DropdownItem active={!teamFilter} onClick={() => { setTeamFilter(""); setOpenDropdown(null); }}>Todos</DropdownItem>
             {realTeams.map(t => <DropdownItem key={t} active={teamFilter === t} onClick={() => { setTeamFilter(t); setOpenDropdown(null); }}>{t}</DropdownItem>)}
           </FilterDropdown>
-          <FilterDropdown label="Posición" open={openDropdown === "posicion"} onToggle={() => setOpenDropdown(d => d === "posicion" ? null : "posicion")}>
+          <FilterDropdown label={posLabel} open={openDropdown === "posicion"} onToggle={() => setOpenDropdown(d => d === "posicion" ? null : "posicion")}>
             {posOptions.map(([k, l]) => <DropdownItem key={k || "todos"} active={posFilter === k} onClick={() => { setPosFilter(k); setOpenDropdown(null); }}>{l}</DropdownItem>)}
           </FilterDropdown>
-          <FilterDropdown label="Nombre" open={openDropdown === "orden"} onToggle={() => setOpenDropdown(d => d === "orden" ? null : "orden")}>
+          <FilterDropdown label={sortLabel} open={openDropdown === "orden"} onToggle={() => setOpenDropdown(d => d === "orden" ? null : "orden")}>
             {sortOptions.map(([k, l]) => <DropdownItem key={k} active={sortKey === k} onClick={() => { setSortKey(k); setOpenDropdown(null); }}>{l}</DropdownItem>)}
           </FilterDropdown>
         </div>
@@ -6945,7 +6940,7 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
             </div>
             <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{asset.team}</div>
             <div className="flex items-center gap-2 mt-1.5">
-              <span className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>Salida {fmtCredits(asset.basePrice || 1)}</span>
+              <span className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(asset.basePrice || 1)}</span>
               <span className="fl-mono text-[11px]" style={{ color: C.muted }}>· {bidCount} {bidCount === 1 ? "puja" : "pujas"}</span>
             </div>
             <div className="mt-1.5"><BidStatusPill status={status} /></div>
