@@ -604,6 +604,7 @@ const offerService = {
     const entry = teamService.getSquadEntry(sellerTeam, asset.id);
     if (!entry) return { ok: false, error: "Esta jugadora ya no pertenece a esa plantilla." };
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
+    if (amount < (asset.basePrice || 0)) return { ok: false, error: `La oferta no puede ser menor que su valor actual: ${fmtCredits(asset.basePrice || 0)}.` };
     if (asset.position === "DT") {
       if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
     } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
@@ -3368,6 +3369,7 @@ export default function App() {
       if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
         sendPushNotification(activeLeagueId, offer.fromUser, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
       }
+      await logActivity({ type: "oferta", buyerName: offer.fromUser, sellerName: offer.toUser, assetId: asset.id, amount: offer.amount });
     } else if (action === "reject") {
       const asset = players.find(p => p.id === offer.assetId);
       sendPushNotification(activeLeagueId, offer.fromUser, "❌ Te han rechazado la oferta", `${offer.toUser} ha rechazado tu oferta de ${fmtCredits(offer.amount)} por ${asset?.name || "esa jugadora"}.`);
@@ -3377,7 +3379,7 @@ export default function App() {
     await writeShared(leagueKey(activeLeagueId, "offers"), nextOffers);
     setOffers(nextOffers);
     return { ok: true };
-  }, [players, offers, activeLeagueId]);
+  }, [players, offers, activeLeagueId, logActivity]);
 
   const forceResolveMarket = useCallback(async () => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
@@ -5460,8 +5462,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
         onBack={() => setShowThirdPartyOffer(false)}
         onConfirm={async (amount) => {
           const res = await onSendOffer(ownerInfo.ownerName, player, amount);
-          if (res.ok) setShowThirdPartyOffer(false);
-          return res;
+          if (res.ok) onClose(); else return res;
         }} />
     );
   }
@@ -6664,8 +6665,8 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
 // jugadora todavía protegida por cláusula.
 function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   const { sellerName, asset } = target;
-  const defaultEuros = Math.round((asset.basePrice || 1) * 0.8 * 1000000);
-  const [amountEuros, setAmountEuros] = useState(String(defaultEuros));
+  const minEuros = Math.round((asset.basePrice || 1) * 1000000);
+  const [amountEuros, setAmountEuros] = useState(String(minEuros));
   const [showKeypad, setShowKeypad] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -6707,11 +6708,11 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           <span>{fmtCredits(Number(amountEuros) / 1000000)}</span>
           <Pencil size={14} color={C.muted} />
         </button>
-        <p className="fl-body text-[11px] mt-2" style={{ color: C.muted }}>{sellerName} decidirá si acepta o rechaza tu oferta. Puedes ofrecer cualquier importe, incluso si la jugadora todavía está protegida por cláusula.</p>
+        <p className="fl-body text-[11px] mt-2" style={{ color: C.muted }}>{sellerName} decidirá si acepta o rechaza tu oferta. Nunca puede ser menor que su valor actual ({fmtCredits(asset.basePrice || 0)}), aunque la jugadora esté protegida por cláusula.</p>
         {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
       </div>
       <div className="px-5 pb-3">
-        <button onClick={submit} disabled={busy || !Number(amountEuros) || Number(amountEuros) <= 0}
+        <button onClick={submit} disabled={busy || !Number(amountEuros) || Number(amountEuros) < minEuros}
           className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
           style={{ background: C.principal, color: C.white }}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar oferta"}
@@ -6998,6 +6999,14 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
       rows.push({ id: a.id, ts: a.ts, text: `Te han clausulado a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: false });
     }
   });
+  (activity || []).filter(a => a.type === "oferta" && (a.buyerName === profile.name || a.sellerName === profile.name)).forEach(a => {
+    const asset = players.find(p => p.id === a.assetId);
+    if (a.buyerName === profile.name) {
+      rows.push({ id: a.id, ts: a.ts, text: `Te han aceptado tu oferta por ${asset?.name || "una jugadora"}, ${fmtCredits(a.amount)}`, positive: true });
+    } else {
+      rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)} (oferta aceptada)`, positive: true });
+    }
+  });
   rows.sort((a, b) => b.ts - a.ts);
   if (rows.length === 0) return <EmptyState title="Sin operaciones todavía" text="Cuando se resuelva un mercado o hagas una venta, aquí verás tus fichajes, ventas y pujas perdidas." />;
   return (
@@ -7149,6 +7158,10 @@ function ActividadFeed({ activity, players }) {
         } else if (a.type === "clausula") {
           text = <>
             <span style={{ color: C.baby }}>{a.buyerName}</span> le ha pagado la cláusula a <span style={{ color: C.baby }}>{a.sellerName}</span> por <span className="font-medium">{asset?.name || "una jugadora"}</span>, {fmtCredits(a.amount)}
+          </>;
+        } else if (a.type === "oferta") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.sellerName}</span> le ha vendido a <span style={{ color: C.baby }}>{a.buyerName}</span> <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)} (oferta aceptada)
           </>;
         } else {
           text = <>
