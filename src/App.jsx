@@ -3424,7 +3424,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
               onBuyClause={buyClause} onSendOffer={sendOffer} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
@@ -4966,9 +4966,10 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
-function ClasificacionTab({ teams, players, jornadas, me, leagueId }) {
+function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
+  const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
   const jornadasIniciadas = startedJornadas(jornadas);
   const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadasIniciadas, leagueId, filterJornadaId), [teams, players, jornadasIniciadas, leagueId, filterJornadaId]);
   const options = [{ id: null, label: "Total" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name }))];
@@ -5000,7 +5001,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId }) {
       {rows.length === 0 ? <EmptyState title="Todavía no hay participantes" text="En cuanto alguien entre en la liga aparecerá aquí." /> : (
         <div className="space-y-1.5">
           {rows.map(r => (
-            <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
+            <button key={r.name} onClick={() => setViewingTeam(r.name)} className="fl-tap w-full fl-row flex items-center justify-between px-3 py-2.5 text-left" style={{ outline: r.name === me ? `2px solid ${C.principal}` : "none", boxShadow: r.name === me ? `0 0 18px ${C.principal}44` : "none" }}>
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
@@ -5009,11 +5010,98 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId }) {
                   <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{r.jCount} jugadoras · {r.cCount} DT</div>
                 </div>
               </div>
-              <div className="fl-mono text-base font-semibold" style={{ color: C.baby }}>{r.total}</div>
-            </div>
+              <div className="flex items-center gap-1.5">
+                <span className="fl-mono text-base font-semibold" style={{ color: C.baby }}>{r.total}</span>
+                <ChevronRight size={16} color={C.muted} />
+              </div>
+            </button>
           ))}
         </div>
       )}
+
+      {viewingTeam && (
+        <RivalTeamScreen ownerName={viewingTeam} team={teams[viewingTeam]} players={players} jornadas={jornadas}
+          leagueId={leagueId} teamCrests={teamCrests} teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+          onClose={() => setViewingTeam(null)} />
+      )}
+    </div>
+  );
+}
+
+// Ficha de solo lectura de la plantilla y los puntos de OTRO usuario de la
+// liga: se abre al tocar su fila en Clasificación. Reutiliza el mismo
+// PuntosJornadaView que usa cada uno para su propio equipo, pasándole el
+// nombre y la alineación de la persona que se está mirando.
+function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCrests, teams, me, budgetAvailable, onBuyClause, onSendOffer, onClose }) {
+  const [sub, setSub] = useState("plantilla");
+  const [detailPlayerId, setDetailPlayerId] = useState(null);
+  const lineup = team?.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
+  const squadEntries = team?.squad || [];
+  const squadPlayers = squadEntries.map(e => players.find(p => p.id === e.id)).filter(Boolean);
+  const jugadoras = squadPlayers.filter(p => p.position !== "DT");
+  const coaches = squadPlayers.filter(p => p.position === "DT");
+  const jornadasIniciadas = startedJornadas(jornadas);
+  const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${ownerName}`, lineup, players) }));
+  const totalPts = history.reduce((s, h) => s + h.pts, 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center">
+          <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{ownerName}</div>
+          <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{totalPts} puntos totales</div>
+        </div>
+        <span style={{ width: 22 }} />
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+        <div className="flex gap-2 mb-4">
+          {[["plantilla", "Plantilla"], ["puntos", "Puntos"]].map(([k, l]) => (
+            <button key={k} onClick={() => setSub(k)} className="fl-tap flex-1 rounded-md py-2 fl-mono text-xs font-semibold"
+              style={{ background: sub === k ? C.baby : "transparent", color: sub === k ? C.ink : C.muted, border: sub === k ? "none" : `1px solid ${C.line}` }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {sub === "plantilla" && (
+          jugadoras.length === 0 && coaches.length === 0 ? (
+            <EmptyState compact title="Plantilla vacía" text="Este equipo todavía no tiene jugadoras." />
+          ) : (
+            <div className="space-y-2">
+              {[...jugadoras, ...coaches].map(p => (
+                <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap w-full fl-row flex items-center gap-3 px-3 py-2.5 text-left">
+                  <PlayerPhoto url={p.photo} size={40} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <PositionBadge posKey={p.position} size="sm" />
+                      <span className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</span>
+                    </div>
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team}</div>
+                  </div>
+                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{fmtCredits(p.basePrice || 0)}</span>
+                </button>
+              ))}
+            </div>
+          )
+        )}
+
+        {sub === "puntos" && (
+          <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
+            players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
+        )}
+      </div>
+
+      {detailPlayerId && (() => {
+        const p = players.find(x => x.id === detailPlayerId);
+        if (!p) return null;
+        return (
+          <PlayerDetailScreen player={p} entry={squadEntries.find(e => e.id === p.id)} jornadas={jornadas} isOwned={false}
+            isFavorite={false} onToggleFavorite={() => {}}
+            teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+            onClose={() => setDetailPlayerId(null)} />
+        );
+      })()}
     </div>
   );
 }
