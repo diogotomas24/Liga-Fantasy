@@ -3694,24 +3694,30 @@ export default function App() {
               teamCrests={teamCrests} tripleEntries={tripleEntries} onJoinTriple={joinTriple}
               favoritos={favoritos} onToggleFavorite={toggleFavorito}
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
-              onBuyClause={buyClause} onSendOffer={sendOffer} />
+              onBuyClause={buyClause} onSendOffer={sendOffer} playoffState={playoffState} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} onGoTo={setTab} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} onGoTo={setTab} playoffState={playoffState} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
               jornadas={jornadas} players={players} teamName={profile.name} leagueId={activeLeagueId}
               favoritos={favoritos} onToggleFavorite={toggleFavorito} teamCrests={teamCrests}
-              onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause} />
+              onSaveLineup={saveLineup} onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
+              playoffState={playoffState} onSavePlayoffLineup={savePlayoffLineup} />
           )}
           {tab === "mercado" && (
-            <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory} activity={activity}
-              profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
-              budgetAvailable={budgetAvailable} onBid={placeBid} onWithdrawBid={withdrawBid} onBuyClause={buyClause}
-              offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
-              jornadas={jornadas} teamCrests={teamCrests}
-              favoritos={favoritos} onToggleFavorite={toggleFavorito}
-              onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
+            playoffState.phase !== "none" ? (
+              <PlayoffDraftTab playoffState={playoffState} players={players} teamCrests={teamCrests} profile={profile} jornadas={jornadas}
+                onSubmitDraftList={submitDraftList} />
+            ) : (
+              <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory} activity={activity}
+                profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
+                budgetAvailable={budgetAvailable} onBid={placeBid} onWithdrawBid={withdrawBid} onBuyClause={buyClause}
+                offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
+                jornadas={jornadas} teamCrests={teamCrests}
+                favoritos={favoritos} onToggleFavorite={toggleFavorito}
+                onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
+            )
           )}
           {tab === "mas" && (
             <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} />
@@ -4702,19 +4708,48 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
   );
 }
 
-function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onBuyClause, onSendOffer }) {
+function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budgetAvailable, budgetCommitted, market, isMarketOpen, onGoTo, teamCrests, tripleEntries, onJoinTriple, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onBuyClause, onSendOffer, playoffState }) {
   const [detailPlayer, setDetailPlayer] = useState(null);
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
   const [showValorChart, setShowValorChart] = useState(false);
   const [showAllMovers, setShowAllMovers] = useState(false);
   const [showClasificacion, setShowClasificacion] = useState(false);
+  const [showPlayoffIntro, setShowPlayoffIntro] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, playoffService.regularJornadas(jornadas), leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const lastJornada = findCurrentJornada(jornadas);
   const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
   const partidos = lastJornada?.partidos || [];
   const myTripleEntry = lastJornada ? (tripleEntries || []).find(e => e.jornadaId === lastJornada.id && e.userId === profile.name) : null;
+  const isPlayoffMode = playoffState && playoffState.phase !== "none";
+
+  // La primera vez que se detectan playoffs activos en este dispositivo, se
+  // enseña la animación + hoja explicativa, una única vez.
+  useEffect(() => {
+    if (!isPlayoffMode || !leagueId) return;
+    (async () => {
+      const seenKey = `playoffIntroSeen_${leagueId}`;
+      const seen = await readPersonal(seenKey, false);
+      if (!seen) { setShowPlayoffIntro(true); await writePersonal(seenKey, true); }
+    })();
+  }, [isPlayoffMode, leagueId]);
+
+  // Top 5 jugadoras/entrenadoras con más puntos en la ronda de playoffs
+  // actual, de los 8 equipos reales que siguen vivos (no de tu plantilla:
+  // esto es rendimiento real, sirve para decidir a quién fichar en el draft).
+  const playoffTops = useMemo(() => {
+    if (!isPlayoffMode || !playoffState.round) return { jugadoras: [], entrenadores: [] };
+    const aliveTeams = playoffService.aliveRealTeams(jornadas, playoffState.round);
+    const roundJornadas = playoffService.jornadasForRound(jornadas, playoffState.round);
+    const scoreFor = (p) => roundJornadas.reduce((s, j) => s + (p.position === "DT"
+      ? calcCoachPoints(null, resolveCoachWin(j, p.team)).total
+      : calcPlayerPoints(j.stats?.[p.id], p.position)), 0);
+    const pool = players.filter(p => aliveTeams.has(p.team));
+    const jugadoras = pool.filter(p => p.position !== "DT").map(p => ({ player: p, pts: scoreFor(p) })).sort((a, b) => b.pts - a.pts).slice(0, 5);
+    const entrenadores = pool.filter(p => p.position === "DT").map(p => ({ player: p, pts: scoreFor(p) })).sort((a, b) => b.pts - a.pts).slice(0, 5);
+    return { jugadoras, entrenadores };
+  }, [isPlayoffMode, playoffState?.round, jornadas, players]);
 
   // Valor de plantilla hoy, y cuánto ha cambiado hoy (basePrice de hoy vs
   // prevBasePrice, que el motor de precios diario deja siempre como "el
@@ -4737,7 +4772,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
   return (
     <div className="space-y-4">
-      <div className="relative overflow-hidden rounded-2xl p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, ${C.baby} 100%)`, boxShadow: `0 0 30px ${C.principal}44` }}>
+      <div className="relative overflow-hidden rounded-2xl p-4" style={{ background: `linear-gradient(135deg, ${C.principal} 0%, ${C.baby} 100%)`, boxShadow: isPlayoffMode ? `0 0 46px ${C.principal}88, 0 0 70px ${C.gold}44` : `0 0 30px ${C.principal}44` }}>
         <span style={{ position: "absolute", right: -22, bottom: -30, fontSize: 130, opacity: 0.14, lineHeight: 1 }}>🏀</span>
         <div className="flex items-center justify-between relative z-10">
           <div>
@@ -4754,6 +4789,24 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         </div>
       </div>
 
+      {isPlayoffMode ? (
+        <div className="relative overflow-hidden rounded-2xl px-3 py-2.5" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 14px ${C.principal}55` }}>
+          <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ position: "absolute", right: 0, bottom: 0, width: "40%", height: "80%", opacity: 0.16 }}>
+            <rect x="4" y="34" width="10" height="26" fill={C.principal} /><rect x="20" y="24" width="10" height="36" fill={C.principal} />
+            <rect x="36" y="30" width="10" height="30" fill={C.principal} /><rect x="52" y="14" width="10" height="46" fill={C.principal} />
+            <rect x="68" y="20" width="10" height="40" fill={C.principal} /><rect x="84" y="4" width="10" height="56" fill={C.principal} />
+          </svg>
+          <div className="relative z-10">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <div className="rounded-full flex items-center justify-center" style={{ width: 20, height: 20, background: `${C.principal}22` }}>
+                <TrendingUp size={11} color={C.principal} />
+              </div>
+              <span className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</span>
+            </div>
+            <div className="fl-mono text-lg font-bold" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+          </div>
+        </div>
+      ) : (
       <div className="grid grid-cols-2 gap-2.5">
         <div className="relative overflow-hidden rounded-2xl px-3 py-2" style={{ background: C.navy800, border: `2px solid #FF8A00`, boxShadow: `0 0 8px #FF8A0033` }}>
           {/* Billetes translúcidos de fondo */}
@@ -4806,8 +4859,57 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           </div>
         </button>
       </div>
+      )}
 
-      {(movers.gainers.length > 0 || movers.losers.length > 0) && (
+      {isPlayoffMode ? (
+        (playoffTops.jugadoras.length > 0 || playoffTops.entrenadores.length > 0) && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <Trophy size={14} color={C.gold} />
+              <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Top {showAllMovers ? 5 : 3} puntos — ronda actual</span>
+            </div>
+            <button onClick={() => setShowAllMovers(v => !v)} className="fl-tap fl-mono text-[10px] flex items-center gap-0.5" style={{ color: C.muted }}>
+              {showAllMovers ? "Ver menos" : "Ver top 5"} <ChevronRight size={11} />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="fl-row p-3">
+              <div className="flex items-center gap-1 mb-2"><Users size={12} color={C.baby} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.baby }}>JUGADORAS</span></div>
+              <div>
+                {playoffTops.jugadoras.slice(0, showAllMovers ? 5 : 3).map(({ player, pts }, i) => (
+                  <button key={player.id} onClick={() => setDetailPlayer(player)} className="fl-tap w-full flex items-center gap-2 py-2 text-left" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                    <div style={{ borderRadius: 999, border: `1.5px solid ${C.baby}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
+                    <div className="flex-1 min-w-0">
+                      <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                      <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{POSITIONS.find(p => p.key === player.position)?.label} · {player.team}</div>
+                    </div>
+                    <div className="fl-mono text-[11px] font-bold flex-shrink-0" style={{ color: C.gold }}>{pts}</div>
+                  </button>
+                ))}
+                {playoffTops.jugadoras.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin datos todavía</div>}
+              </div>
+            </div>
+            <div className="fl-row p-3">
+              <div className="flex items-center gap-1 mb-2"><ShieldCheck size={12} color={C.principal} /><span className="fl-mono text-[10px] font-semibold" style={{ color: C.principal }}>ENTRENADORAS/ES</span></div>
+              <div>
+                {playoffTops.entrenadores.slice(0, showAllMovers ? 5 : 3).map(({ player, pts }, i) => (
+                  <button key={player.id} onClick={() => setDetailPlayer(player)} className="fl-tap w-full flex items-center gap-2 py-2 text-left" style={{ borderTop: i > 0 ? `1px solid ${C.lineSoft}` : "none" }}>
+                    <div style={{ borderRadius: 999, border: `1.5px solid ${C.principal}` }}><PlayerPhoto url={player.photo} size={30} rounded={999} /></div>
+                    <div className="flex-1 min-w-0">
+                      <div className="fl-body text-[11px] font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                      <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{player.team}</div>
+                    </div>
+                    <div className="fl-mono text-[11px] font-bold flex-shrink-0" style={{ color: C.gold }}>{pts}</div>
+                  </button>
+                ))}
+                {playoffTops.entrenadores.length === 0 && <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin datos todavía</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+        )
+      ) : (movers.gainers.length > 0 || movers.losers.length > 0) && (
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
@@ -4868,7 +4970,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         )}
       </div>
 
-      {lastJornada && partidos.length > 0 && (
+      {!isPlayoffMode && lastJornada && partidos.length > 0 && (
         <button onClick={() => setShowTriple(true)} className="fl-tap w-full relative overflow-hidden rounded-2xl p-4 flex items-center gap-3"
           style={{
             background: `linear-gradient(120deg, #2A0E1E 0%, #4A1224 55%, #5C2A0E 100%)`,
@@ -4944,6 +5046,64 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       {showClasificacion && (
         <ClasificacionRealScreen jornadas={jornadas} teamCrests={teamCrests} onClose={() => setShowClasificacion(false)} />
       )}
+
+      {showPlayoffIntro && <PlayoffIntroScreen onClose={() => setShowPlayoffIntro(false)} />}
+    </div>
+  );
+}
+
+// Animación + hoja explicativa que se ve una única vez, el primer día que se
+// detectan playoffs activos en este dispositivo.
+function PlayoffIntroScreen({ onClose }) {
+  const [phase, setPhase] = useState("anim"); // "anim" -> "sheet"
+  useEffect(() => {
+    const t = setTimeout(() => setPhase("sheet"), 1800);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (phase === "anim") {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center" style={{ background: `radial-gradient(circle at 50% 40%, ${C.principal} 0%, #1a0510 70%)` }}>
+        <div style={{ fontSize: 90, animation: "fl-playoff-pop 0.9s ease-out" }}>🏆</div>
+        <div className="fl-display text-2xl uppercase mt-3 text-center px-6" style={{ color: C.white, animation: "fl-playoff-fadein 1.2s ease-out" }}>
+          ¡Empiezan los Playoffs!
+        </div>
+        <style>{`
+          @keyframes fl-playoff-pop { 0% { transform: scale(0.2); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); } }
+          @keyframes fl-playoff-fadein { 0% { opacity: 0; transform: translateY(10px); } 40% { opacity: 0; } 100% { opacity: 1; transform: translateY(0); } }
+        `}</style>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-5" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
+        <div className="text-center mb-5"><span style={{ fontSize: 56 }}>🏆</span></div>
+        <div className="fl-display text-xl uppercase text-center mb-1" style={{ color: C.white }}>Ha acabado la liga regular</div>
+        <div className="fl-body text-sm text-center mb-6" style={{ color: C.muted }}>Ahora empiezan los playoffs — así funcionan:</div>
+        <div className="space-y-4">
+          {[
+            ["🎯", "8 clasificados", "Los mejores de la liga regular compiten por el título. El resto pasa a ser espectador."],
+            ["🃏", "Draft nuevo, cero dinero", "Se olvida el mercado: cada ronda eliges una lista de preferencias, y cada día se reparten jugadoras de los equipos reales que sigan vivos — gratis, sin presupuesto."],
+            ["✂️", "Cuartos → Semis → Final", "Cuartos se juega a doble jornada y pasan los 4 mejores. Semis a una jornada, pasan 2. La final, a una jornada, decide a la campeona/ón."],
+            ["🚫", "Sin mercado ni ofertas", "Durante toda la fase, nada de subastas, cláusulas ni ofertas entre usuarios — el equipo que sale del draft es el que hay."],
+          ].map(([emoji, title, text], i) => (
+            <div key={i} className="fl-row p-3.5 flex items-start gap-3">
+              <span style={{ fontSize: 24 }}>{emoji}</span>
+              <div>
+                <div className="fl-body text-sm font-semibold mb-0.5" style={{ color: C.white }}>{title}</div>
+                <div className="fl-body text-xs" style={{ color: C.muted }}>{text}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="p-4">
+        <button onClick={onClose} className="fl-tap w-full rounded-md py-3 text-sm font-semibold" style={{ background: C.gold, color: C.ink }}>
+          ¡Vamos allá!
+        </button>
+      </div>
     </div>
   );
 }
@@ -5236,14 +5396,85 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
-function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo }) {
+function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo, playoffState }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
+  const isPlayoffMode = playoffState && playoffState.phase !== "none";
   const jornadasIniciadas = startedJornadas(playoffService.regularJornadas(jornadas));
   const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadasIniciadas, leagueId, filterJornadaId), [teams, players, jornadasIniciadas, leagueId, filterJornadaId]);
   const options = [{ id: null, label: "Total" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name }))];
   const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "Total";
+
+  // Filas de la clasificación de PLAYOFFS: activos en la ronda actual (con
+  // puntos en vivo) + eliminados de rondas anteriores (transparentes, con el
+  // puesto congelado en el momento en que quedaron fuera).
+  const playoffRows = useMemo(() => {
+    if (!isPlayoffMode) return [];
+    const pastRounds = ["CUARTOS", "SEMIS", "FINAL"].filter((r) => playoffState.pointsByRound[r]);
+    const activeSet = new Set(playoffState.qualifiers);
+    const seen = new Set();
+    const out = [];
+    // Activos: ordenados por puntos en vivo de la ronda actual.
+    playoffState.qualifiers.forEach((u) => {
+      const lineup = (playoffState.lineups[playoffState.round] || {})[u] || null;
+      const pts = lineup ? playoffService.computeRoundPoints(jornadas, playoffState.round, lineup, players) : 0;
+      out.push({ name: u, pts, active: true });
+      seen.add(u);
+    });
+    out.sort((a, b) => b.pts - a.pts);
+    out.forEach((r, i) => { r.rank = i + 1; });
+    // Eliminados: por cada ronda ya cerrada, quien jugó ahí y no siga activo.
+    pastRounds.forEach((round) => {
+      const pointsByUser = playoffState.pointsByRound[round];
+      const roundRows = Object.entries(pointsByUser).sort((a, b) => b[1] - a[1]);
+      roundRows.forEach(([u, pts], i) => {
+        if (seen.has(u) || activeSet.has(u)) return;
+        out.push({ name: u, pts, active: false, rank: i + 1, eliminatedIn: round });
+        seen.add(u);
+      });
+    });
+    return out;
+  }, [isPlayoffMode, playoffState, jornadas, players]);
+
+  if (isPlayoffMode) {
+    const roundLabel = { CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[playoffState.round] || "";
+    return (
+      <div>
+        <div className="flex items-center gap-1.5 mb-3">
+          <Trophy size={14} color={C.gold} />
+          <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Playoffs — {roundLabel}</span>
+        </div>
+        {playoffState.phase === "finished" && playoffState.champion && (
+          <div className="fl-row p-4 mb-3 text-center" style={{ border: `1.5px solid ${C.gold}`, boxShadow: `0 0 20px ${C.gold}44` }}>
+            <div style={{ fontSize: 32 }}>🏆</div>
+            <div className="fl-display text-base uppercase mt-1" style={{ color: C.gold }}>{playoffState.champion}</div>
+            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Campeona/ón de los Playoffs</div>
+          </div>
+        )}
+        {playoffRows.length === 0 ? <EmptyState title="Generando el cuadro..." text="En cuanto se confirme la clasificación de liga regular, aparecerán aquí los clasificados." /> : (
+          <div className="space-y-1.5">
+            {playoffRows.map((r) => (
+              <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{
+                opacity: r.active ? 1 : 0.35,
+                outline: r.name === me && r.active ? `2px solid ${C.principal}` : "none",
+                boxShadow: r.name === me && r.active ? `0 0 18px ${C.principal}44` : "none",
+              }}>
+                <div className="flex items-center gap-2.5">
+                  <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
+                  <div>
+                    <div className="text-sm font-medium" style={{ color: C.white }}>{r.name}{r.name === me ? " (tú)" : ""}</div>
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{r.active ? roundLabel : `Eliminada/o en ${{ CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[r.eliminatedIn]}`}</div>
+                  </div>
+                </div>
+                <span className="fl-mono text-base font-semibold" style={{ color: r.active ? C.gold : C.muted }}>{r.pts}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -5913,26 +6144,51 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   );
 }
 
-function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests }) {
+function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetCommitted, jornadas, players, teamName, leagueId, favoritos, onToggleFavorite, onSaveLineup, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, teamCrests, playoffState, onSavePlayoffLineup }) {
   const [sub, setSub] = useState("alineacion");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
-  const lineup = myTeam.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
-  const allSquad = [...myJugadoras, ...myCoaches];
+  const isPlayoffMode = playoffState && playoffState.phase !== "none";
+  const isPlayoffParticipant = isPlayoffMode && (playoffState.qualifiers || []).includes(teamName);
+
+  // En playoffs, toda la pestaña Equipo trabaja sobre la plantilla y la
+  // alineación DE PLAYOFFS de la ronda actual — no la de temporada.
+  const playoffSquadIds = isPlayoffMode ? ((playoffState.squads[playoffState.round] || {})[teamName] || []) : [];
+  const playoffSquadPlayers = playoffSquadIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
+  const emptyLineupShape = { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
+
+  const effJugadoras = isPlayoffMode ? playoffSquadPlayers.filter((p) => p.position !== "DT") : myJugadoras;
+  const effCoaches = isPlayoffMode ? playoffSquadPlayers.filter((p) => p.position === "DT") : myCoaches;
+  const lineup = isPlayoffMode ? ((playoffState.lineups[playoffState.round] || {})[teamName] || emptyLineupShape) : (myTeam.lineup || emptyLineupShape);
+  const allSquad = [...effJugadoras, ...effCoaches];
   const startersSet = new Set(lineup.starters || []);
   const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
   const reserva = allSquad.filter(p => !startersSet.has(p.id) && !benchIds.has(p.id) && p.id !== lineup.titularCoach);
-  const jornadasIniciadas = startedJornadas(jornadas);
-  const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
+  const jornadasIniciadas = isPlayoffMode ? playoffService.jornadasForRound(jornadas, playoffState.round) : startedJornadas(jornadas);
+  const history = isPlayoffMode
+    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeRoundPoints(jornadas, playoffState.round, lineup, players) }))
+    : jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
 
-  const valorPlantilla = (myTeam.squad || []).reduce((s, e) => s + (e.pricePaid || 0), 0);
+  const valorPlantilla = isPlayoffMode
+    ? playoffSquadPlayers.reduce((s, p) => s + (p.basePrice || 0), 0)
+    : (myTeam.squad || []).reduce((s, e) => s + (e.pricePaid || 0), 0);
+  const targetSquadSize = isPlayoffMode ? PLAYOFF_SQUAD_SIZE[playoffState.round] : (MAX_SQUAD_JUGADORAS + MAX_COACHES);
+  const fichasLabel = isPlayoffMode ? `${playoffSquadPlayers.length}/${targetSquadSize}` : `${myTeam.squad.length}/${MAX_SQUAD_JUGADORAS + MAX_COACHES}`;
+
+  const saveLineupHandler = isPlayoffMode ? (nextLineup) => onSavePlayoffLineup(playoffState.round, nextLineup) : onSaveLineup;
+
+  if (isPlayoffMode && !isPlayoffParticipant) {
+    return <EmptyState title="No estás en playoffs" text="Tu equipo no se clasificó para esta fase — puedes seguir el draft de tus compañeros desde Mercado, y ver la clasificación en vivo en Ranking." />;
+  }
 
   return (
     <div>
-      <div className="grid grid-cols-4 gap-1.5 mb-3">
-        <StatChip label="Fichas" value={`${myTeam.squad.length}/${MAX_SQUAD_JUGADORAS + MAX_COACHES}`} compact />
+      <div className="grid grid-cols-2 gap-1.5 mb-3">
+        <StatChip label="Fichas" value={fichasLabel} compact />
         <StatChip label="Valor plantilla" value={fmtCredits(valorPlantilla)} compact />
-        <StatChip label="Disponible" value={fmtCredits(budgetAvailable)} accent={C.baby} compact />
-        <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} compact />
+        {!isPlayoffMode && (<>
+          <StatChip label="Disponible" value={fmtCredits(budgetAvailable)} accent={C.baby} compact />
+          <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} compact />
+        </>)}
       </div>
       <div className="flex gap-1.5 mb-3">
         {[["alineacion", "Alineación"], ["plantilla", "Plantilla"], ["puntos", "Puntos"]].map(([k, l]) => (
@@ -5944,15 +6200,15 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
       </div>
 
       {sub === "alineacion" && (
-        <LineupEditor myJugadoras={myJugadoras} myCoaches={myCoaches} lineup={lineup} onSave={onSaveLineup} teamCrests={teamCrests} />
+        <LineupEditor myJugadoras={effJugadoras} myCoaches={effCoaches} lineup={lineup} onSave={saveLineupHandler} teamCrests={teamCrests} />
       )}
 
       {sub === "plantilla" && (
         <div className="space-y-3">
           {allSquad.length === 0 ? (
-            <EmptyState title="Aún no tienes plantilla" text="Consigue jugadoras y entrenadora/or pujando en el mercado." />
+            <EmptyState title={isPlayoffMode ? "Todavía sin plantilla de playoffs" : "Aún no tienes plantilla"} text={isPlayoffMode ? "Se irá completando según avance el draft de esta ronda." : "Consigue jugadoras y entrenadora/or pujando en el mercado."} />
           ) : allSquad.map(p => {
-            const entry = myTeam.squad.find(e => e.id === p.id);
+            const entry = isPlayoffMode ? null : myTeam.squad.find(e => e.id === p.id);
             const role = (startersSet.has(p.id) || lineup.titularCoach === p.id) ? "Titular" : benchIds.has(p.id) ? "Banquillo" : "Reserva";
             return (
               <button key={p.id} onClick={() => setDetailPlayerId(p.id)} className="fl-tap fl-row w-full flex items-center gap-3.5 px-4 py-3.5 text-left">
@@ -5971,7 +6227,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
                 </div>
                 <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
                   <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                  <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
+                  {!isPlayoffMode && <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>}
                 </div>
               </button>
             );
@@ -5981,7 +6237,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
       {sub === "puntos" && (
         <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={teamName}
-          players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
+          players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} forceLineup={isPlayoffMode} />
       )}
 
       {detailPlayerId && (() => {
@@ -6003,17 +6259,18 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 // Vista de "Puntos" por jornada: chips J1, J2... para elegir la jornada, y
 // debajo la alineación GUARDADA en esa jornada concreta (titulares, banquillo
 // y entrenadora/or), cada una con los puntos que hizo ese día.
-function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests, onOpenPlayer }) {
+function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests, onOpenPlayer, forceLineup }) {
   const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
   const [showIdealFive, setShowIdealFive] = useState(false);
   if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
 
   const jornada = jornadas[selectedIdx];
-  const savedLineup = jornada?.lineups?.[`${leagueId}::${teamName}`] || null;
-  // Igual que en el cálculo de puntos: una vez empezada la jornada, solo vale
-  // la alineación ya bloqueada (o ninguna, si no hay snapshot). Antes de que
-  // empiece, se usa la actual como previsión.
-  const usedLineup = savedLineup || (hasJornadaEffectivelyStarted(jornada) ? null : lineup);
+  // En playoffs no hay "congelado" por jornada (cada ronda es un draft
+  // aparte, no una temporada larga): se usa directamente la alineación de
+  // playoffs tal cual esté puesta ahora mismo.
+  const usedLineup = forceLineup
+    ? lineup
+    : (jornada?.lineups?.[`${leagueId}::${teamName}`] || null) || (hasJornadaEffectivelyStarted(jornada) ? null : lineup);
   const total = history[selectedIdx]?.pts ?? 0;
 
   const findPlayer = (id) => players.find(p => p.id === id) || null;
@@ -6624,6 +6881,214 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvaila
           teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
           onClose={() => setDetailPlayer(null)} />
       )}
+    </div>
+  );
+}
+
+// Sustituye al Mercado durante toda la fase de playoffs: pantalla de draft
+// para quien siga clasificada/o (construir tu lista, verla bloqueada tras
+// enviarla, ver tu plantilla de playoffs crecer día a día), y modo
+// espectador para el resto (el "diario" de quién se lleva a quién).
+function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas, onSubmitDraftList }) {
+  const [draft, setDraft] = useState([]); // lista que se está construyendo, antes de enviar
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const round = playoffState.round;
+  const isParticipant = (playoffState.qualifiers || []).includes(profile.name);
+  const myList = (playoffState.lists[round] || {})[profile.name] || null;
+  const mySquadIds = (playoffState.squads[round] || {})[profile.name] || [];
+  const mySquad = mySquadIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
+  const targetSize = PLAYOFF_SQUAD_SIZE[round] || 9;
+  const listSize = PLAYOFF_LIST_SIZE[round] || 16;
+
+  const draftedIds = new Set(Object.values(playoffState.squads[round] || {}).flat());
+  const pool = useMemo(() => playoffService.availablePool(jornadas, players, round, [...draftedIds]), [jornadas, players, round, playoffState.squads]);
+  const poolByTeam = useMemo(() => {
+    const m = {};
+    pool.forEach((p) => { (m[p.team] = m[p.team] || []).push(p); });
+    return m;
+  }, [pool]);
+
+  const roundLabel = { CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[round] || "";
+  const roundLog = (playoffState.log || []).filter((l) => l.round === round).slice().reverse();
+
+  const toggleDraftPick = (playerId) => {
+    setDraft((prev) => prev.includes(playerId) ? prev.filter((id) => id !== playerId) : (prev.length < listSize ? [...prev, playerId] : prev));
+  };
+  const moveUp = (idx) => {
+    if (idx === 0) return;
+    setDraft((prev) => { const next = [...prev]; [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]; return next; });
+  };
+  const submit = async () => {
+    if (draft.length === 0) { setError("Añade al menos una jugadora a tu lista."); return; }
+    setBusy(true); setError("");
+    const res = await onSubmitDraftList(round, draft);
+    setBusy(false);
+    if (!res.ok) setError(res.error);
+  };
+
+  if (playoffState.phase === "finished") {
+    return (
+      <div className="fl-row p-6 text-center">
+        <div style={{ fontSize: 40 }}>🏆</div>
+        <div className="fl-display text-lg uppercase mt-2" style={{ color: C.gold }}>{playoffState.champion}</div>
+        <div className="fl-mono text-xs mt-1" style={{ color: C.muted }}>Es la campeona/ón de los playoffs</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 mb-1">
+        <FlaskConical size={14} color={C.gold} />
+        <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Draft — {roundLabel}</span>
+      </div>
+      <p className="fl-body text-xs mb-3" style={{ color: C.muted }}>
+        {isParticipant
+          ? "Sin presupuesto: elige en orden de preferencia. Cada día (o de una vez en la final) se reparten jugadoras de los equipos reales que sigan vivos."
+          : "No sigues en esta ronda — puedes ver cómo avanza el draft de tus compañeros, sin poder participar."}
+      </p>
+
+      {/* Resumen de plantillas de todos los participantes */}
+      <div className="fl-row p-3 mb-3">
+        <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>PLANTILLAS ({targetSize} objetivo)</div>
+        <div className="space-y-1.5">
+          {playoffState.qualifiers.map((u) => {
+            const size = ((playoffState.squads[round] || {})[u] || []).length;
+            const submitted = !!(playoffState.lists[round] || {})[u];
+            return (
+              <div key={u} className="flex items-center justify-between">
+                <span className="fl-body text-xs" style={{ color: u === profile.name ? C.baby : C.white }}>{u}{u === profile.name ? " (tú)" : ""}</span>
+                <div className="flex items-center gap-2">
+                  {submitted && <CircleCheck size={12} color={C.positive} />}
+                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{size}/{targetSize}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {isParticipant && !myList && (
+        <div className="fl-row p-3.5 mb-3" style={{ border: `1.5px solid ${C.gold}` }}>
+          <div className="flex items-center justify-between mb-2.5">
+            <span className="fl-mono text-[10px] font-bold" style={{ color: C.gold }}>TU LISTA ({draft.length}/{listSize})</span>
+          </div>
+          {draft.length > 0 && (
+            <div className="space-y-1.5 mb-3">
+              {draft.map((id, i) => {
+                const p = players.find((x) => x.id === id);
+                if (!p) return null;
+                return (
+                  <div key={id} className="flex items-center gap-2 rounded-md px-2 py-1.5" style={{ background: C.navy800 }}>
+                    <span className="fl-mono text-[10px] font-bold w-4" style={{ color: C.gold }}>{i + 1}</span>
+                    <PlayerPhoto url={p.photo} size={26} rounded={999} />
+                    <span className="fl-body text-xs flex-1 truncate" style={{ color: C.white }}>{p.name}</span>
+                    <button onClick={() => moveUp(i)} disabled={i === 0} className="fl-tap p-1 disabled:opacity-20"><ChevronUp size={14} color={C.muted} /></button>
+                    <button onClick={() => toggleDraftPick(id)} className="fl-tap p-1"><X size={14} color={C.negative} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {error && <div className="fl-mono text-[10px] mb-2" style={{ color: C.negative }}>{error}</div>}
+          <button onClick={submit} disabled={busy || draft.length === 0} className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2" style={{ background: C.gold, color: C.ink }}>
+            {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar lista (no se podrá cambiar)"}
+          </button>
+
+          <div className="fl-mono text-[10px] font-bold mt-4 mb-2" style={{ color: C.muted }}>JUGADORAS DISPONIBLES</div>
+          <div className="space-y-3 max-h-96 overflow-y-auto fl-scrollbar">
+            {Object.entries(poolByTeam).map(([team, teamPlayers]) => (
+              <div key={team}>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <TeamCrest name={team} photo={teamCrests?.[team]} size={18} />
+                  <span className="fl-mono text-[10px] font-semibold" style={{ color: C.muted }}>{team}</span>
+                </div>
+                <div className="space-y-1">
+                  {teamPlayers.map((p) => {
+                    const picked = draft.includes(p.id);
+                    return (
+                      <button key={p.id} onClick={() => toggleDraftPick(p.id)} className="fl-tap w-full flex items-center gap-2 rounded-md px-2 py-1.5"
+                        style={{ background: picked ? `${C.gold}22` : C.navy800, border: picked ? `1px solid ${C.gold}` : "1px solid transparent" }}>
+                        <PlayerPhoto url={p.photo} size={26} rounded={999} />
+                        <div className="flex-1 min-w-0 text-left">
+                          <div className="fl-body text-xs truncate" style={{ color: C.white }}>{p.name}</div>
+                        </div>
+                        <PositionBadge posKey={p.position} size="sm" />
+                        {picked && <span className="fl-mono text-[10px] font-bold" style={{ color: C.gold }}>#{draft.indexOf(p.id) + 1}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {pool.length === 0 && <div className="fl-mono text-[11px]" style={{ color: C.muted }}>Ya no quedan jugadoras libres para esta ronda.</div>}
+          </div>
+        </div>
+      )}
+
+      {isParticipant && myList && (
+        <div className="fl-row p-3.5 mb-3">
+          <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.positive }}>✓ TU LISTA ENVIADA (bloqueada)</div>
+          <div className="space-y-1">
+            {myList.map((id, i) => {
+              const p = players.find((x) => x.id === id);
+              if (!p) return null;
+              const gotIt = mySquadIds.includes(id);
+              return (
+                <div key={id} className="flex items-center gap-2 text-xs" style={{ color: gotIt ? C.positive : C.muted }}>
+                  <span className="fl-mono w-4">{i + 1}</span> {p.name} {gotIt && <CircleCheck size={11} />}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Listas de los demás — solo visibles si tú ya has enviado la tuya (o si no participas, siempre visibles como espectador) */}
+      {(myList || !isParticipant) && (
+        <div className="fl-row p-3.5 mb-3">
+          <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>LISTAS DE TODOS</div>
+          <div className="space-y-3">
+            {playoffState.qualifiers.filter((u) => u !== profile.name).map((u) => {
+              const list = (playoffState.lists[round] || {})[u];
+              return (
+                <div key={u}>
+                  <div className="fl-body text-xs font-semibold mb-1" style={{ color: C.white }}>{u}</div>
+                  {!list ? (
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Todavía no ha enviado su lista.</div>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {list.map((id, i) => {
+                        const p = players.find((x) => x.id === id);
+                        return p ? <span key={id} className="fl-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: C.navy800, color: C.muted }}>{i + 1}. {p.name}</span> : null;
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="fl-row p-3.5">
+        <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>DIARIO DEL DRAFT</div>
+        {roundLog.length === 0 ? (
+          <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Todavía no se ha repartido nada.</div>
+        ) : (
+          <div className="space-y-1.5 max-h-64 overflow-y-auto fl-scrollbar">
+            {roundLog.map((l, i) => {
+              const p = players.find((x) => x.id === l.playerId);
+              return (
+                <div key={i} className="fl-body text-[11px]" style={{ color: C.white }}>
+                  <span style={{ color: C.baby }}>{l.userName}</span> se llevó a <span style={{ color: C.gold }}>{p?.name || "—"}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
