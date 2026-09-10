@@ -1114,29 +1114,27 @@ const realBracketService = {
     return { ready: true, top8, cuartos, semis, final };
   },
 
-  // Partidos "a mostrar" de una jornada de playoffs: los que ya haya
-  // cargados de verdad (con o sin marcador todavía) más, para los cruces del
-  // cuadro que no tengan partido cargado, uno "previsto" sin marcador con los
-  // equipos que le tocan según la clasificación — así el Calendario nunca se
-  // queda vacío en cuanto se abre la ronda, y siempre coincide con lo que se
-  // ve en Clasificación → Playoffs (es el mismo cálculo).
+  // Partidos "a mostrar" de una jornada de playoffs. En cuanto el admin haya
+  // cargado partidos de verdad para esa jornada concreta (los que sean, no
+  // hace falta que cuadren con el emparejamiento "de libro"), se muestran
+  // esos tal cual y no se añade nada más encima — así no salen duplicados
+  // ("por determinar" repitiendo un cruce que ya está puesto). Solo cuando la
+  // jornada está TOTALMENTE vacía se rellena con la previsión calculada a
+  // partir de la clasificación, para que el Calendario no se quede en blanco
+  // mientras nadie ha tocado nada todavía.
   projectedPartidos(jornadas, jornada) {
     const real = jornada?.partidos || [];
     const fase = jornadaFase(jornada);
-    if (fase === "regular") return real;
+    if (fase === "regular" || real.length > 0) return real;
     const bracket = this.buildBracket(jornadas);
     if (!bracket.ready) return real;
     let pairs = [];
     if (fase === "cuartos") pairs = bracket.cuartos.map((m) => [m.teamA, m.teamB]);
     else if (fase === "semis") pairs = bracket.semis.map((m) => [m.teamA, m.teamB]);
     else if (fase === "final") pairs = [[bracket.final.teamA, bracket.final.teamB]];
-    const merged = [...real];
-    pairs.forEach(([teamA, teamB], i) => {
-      if (!teamA || !teamB) return;
-      const yaExiste = real.some((p) => (p.local === teamA && p.visitante === teamB) || (p.local === teamB && p.visitante === teamA));
-      if (!yaExiste) merged.push({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true });
-    });
-    return merged;
+    return pairs
+      .filter(([teamA, teamB]) => teamA && teamB)
+      .map(([teamA, teamB], i) => ({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true }));
   },
 };
 
@@ -4223,7 +4221,7 @@ function BottomNav({ tab, setTab, isPlayoffMode }) {
   ];
   const accentFor = (key) => (key === "mercado" ? C.baby : C.principal);
   return (
-    <nav className="fixed bottom-0 left-0 right-0 px-2 py-1.5 flex items-stretch justify-between"
+    <nav className="fixed bottom-0 left-0 right-0 z-40 px-2 py-1.5 flex items-stretch justify-between"
       style={{ background: C.navy800, borderTop: `1px solid ${C.line}`, paddingBottom: "calc(6px + env(safe-area-inset-bottom, 0px))" }}>
       {items.map(it => {
         const Icon = it.icon;
@@ -5627,7 +5625,8 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
         {playoffRows.length === 0 ? <EmptyState title="Generando el cuadro..." text="En cuanto se confirme la clasificación de liga regular, aparecerán aquí los clasificados." /> : (
           <div className="space-y-1.5">
             {playoffRows.map((r) => (
-              <div key={r.name} className="fl-row flex items-center justify-between px-3 py-2.5" style={{
+              <button key={r.name} onClick={() => r.name === me ? onGoTo("equipo") : setViewingTeam(r.name)}
+                className="fl-tap w-full fl-row flex items-center justify-between px-3 py-2.5 text-left" style={{
                 opacity: r.active ? 1 : 0.35,
                 outline: r.name === me && r.active ? `2px solid ${C.principal}` : "none",
                 boxShadow: r.name === me && r.active ? `0 0 18px ${C.principal}44` : "none",
@@ -5640,9 +5639,20 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
                   </div>
                 </div>
                 <span className="fl-mono text-base font-semibold" style={{ color: r.active ? C.gold : C.muted }}>{r.pts}</span>
-              </div>
+              </button>
             ))}
           </div>
+        )}
+
+        {viewingTeam && (
+          <RivalTeamScreen ownerName={viewingTeam} team={teams[viewingTeam]} players={players} jornadas={jornadas}
+            leagueId={leagueId} teamCrests={teamCrests} teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+            playoffView={{
+              squadIds: (playoffState.squads[playoffState.round] || {})[viewingTeam] || [],
+              lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
+              points: (playoffRows.find((r) => r.name === viewingTeam) || {}).pts || 0,
+            }}
+            onClose={() => setViewingTeam(null)} />
         )}
       </div>
     );
@@ -5692,6 +5702,11 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
       {viewingTeam && (
         <RivalTeamScreen ownerName={viewingTeam} team={teams[viewingTeam]} players={players} jornadas={jornadas}
           leagueId={leagueId} teamCrests={teamCrests} teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+          playoffView={isPlayoffMode ? {
+            squadIds: (playoffState.squads[playoffState.round] || {})[viewingTeam] || [],
+            lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
+            points: (playoffRows.find((r) => r.name === viewingTeam) || {}).pts || 0,
+          } : null}
           onClose={() => setViewingTeam(null)} />
       )}
     </div>
@@ -5702,11 +5717,12 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
 // liga: se abre al tocar su fila en Clasificación. Reutiliza el mismo
 // PuntosJornadaView que usa cada uno para su propio equipo, pasándole el
 // nombre y la alineación de la persona que se está mirando.
-function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCrests, teams, me, budgetAvailable, onBuyClause, onSendOffer, onClose }) {
+function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCrests, teams, me, budgetAvailable, onBuyClause, onSendOffer, onClose, playoffView }) {
   const [sub, setSub] = useState("plantilla");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
-  const lineup = team?.lineup || { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
-  const squadEntries = team?.squad || [];
+  const defaultLineup = { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
+  const lineup = playoffView ? (playoffView.lineup || defaultLineup) : (team?.lineup || defaultLineup);
+  const squadEntries = playoffView ? (playoffView.squadIds || []).map((id) => ({ id })) : (team?.squad || []);
   const squadPlayers = squadEntries.map(e => players.find(p => p.id === e.id)).filter(Boolean);
   const jugadoras = squadPlayers.filter(p => p.position !== "DT");
   const coaches = squadPlayers.filter(p => p.position === "DT");
@@ -5715,7 +5731,7 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
   const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
   const jornadasIniciadas = startedJornadas(jornadas);
   const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${ownerName}`, lineup, players) }));
-  const totalPts = history.reduce((s, h) => s + h.pts, 0);
+  const totalPts = playoffView ? (playoffView.points || 0) : history.reduce((s, h) => s + h.pts, 0);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -5757,12 +5773,14 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
                       <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{p.name}</span>
                     </div>
                     <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{p.team} · {role}</div>
-                    {entry?.forSale && <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded mt-1 inline-block" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
+                    {!playoffView && entry?.forSale && <span className="fl-mono text-[9px] px-1.5 py-0.5 rounded mt-1 inline-block" style={{ background: C.principalSoft, color: C.principal }}>EN VENTA</span>}
                   </div>
-                  <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
-                    <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                    <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
-                  </div>
+                  {!playoffView && (
+                    <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
+                      <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
+                      <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -5770,8 +5788,16 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         )}
 
         {sub === "puntos" && (
-          <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
-            players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
+          playoffView ? (
+            <div className="fl-row p-5 text-center">
+              <Trophy size={26} color={C.gold} style={{ margin: "0 auto 8px" }} />
+              <div className="fl-mono text-3xl font-bold" style={{ color: C.gold }}>{totalPts}</div>
+              <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>puntos en esta ronda de playoffs</div>
+            </div>
+          ) : (
+            <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
+              players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
+          )
         )}
       </div>
 
@@ -6354,10 +6380,10 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
   return (
     <div>
-      <div className="grid grid-cols-2 gap-1.5 mb-3">
+      <div className={isPlayoffMode ? "mb-3" : "grid grid-cols-2 gap-1.5 mb-3"}>
         <StatChip label="Fichas" value={fichasLabel} compact />
-        <StatChip label="Valor plantilla" value={fmtCredits(valorPlantilla)} compact />
         {!isPlayoffMode && (<>
+          <StatChip label="Valor plantilla" value={fmtCredits(valorPlantilla)} compact />
           <StatChip label="Disponible" value={fmtCredits(budgetAvailable)} accent={C.baby} compact />
           <StatChip label="Comprometido" value={fmtCredits(budgetCommitted)} compact />
         </>)}
@@ -7075,9 +7101,10 @@ function DraftTabPill({ active, onClick, icon: Icon, label }) {
   );
 }
 
-// Tarjeta de jugadora del draft: la foto ocupa casi toda la tarjeta (posición
-// y escudo van superpuestos arriba, el nombre en una franja con degradado
-// sobre la propia foto abajo) — nada de foto pequeña con huecos alrededor.
+// Tarjeta de jugadora del draft: la foto ocupa casi toda la tarjeta (escudo
+// arriba a la derecha, nombre en una franja con degradado sobre la propia
+// foto abajo). El número de pick es una cintita colgando del borde superior
+// (como una etiqueta), mucho más legible que una insignia circular pequeña.
 function DraftPlayerCard({ p, teamCrests, pickNumber, selected, gotIt, onClick, disabled }) {
   const Wrapper = onClick ? "button" : "div";
   const wrapperProps = onClick ? { onClick, disabled } : {};
@@ -7091,21 +7118,29 @@ function DraftPlayerCard({ p, teamCrests, pickNumber, selected, gotIt, onClick, 
         opacity: disabled && !selected ? 0.4 : 1,
       }}>
       <PlayerPhoto url={p.photo} width="100%" height="100%" rounded={0} noBorder focusTop />
-      <div className="absolute top-1.5 left-1.5 z-10"><PositionBadge posKey={p.position} size="sm" /></div>
       <div className="absolute top-1.5 right-1.5 z-10" style={{ borderRadius: 999, boxShadow: "0 0 0 2px rgba(0,0,0,0.55)" }}>
         <TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={18} />
       </div>
-      <div className="absolute inset-x-0 bottom-0 px-1.5 pt-4 pb-1.5" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0.45) 60%, transparent)" }}>
-        <span className="fl-body text-[11px] font-semibold leading-tight block truncate" style={{ color: C.white }}>{p.name}</span>
+      <div className="absolute inset-x-0 bottom-0 px-1.5 pt-4 pb-1.5 z-10" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0.45) 60%, transparent)" }}>
+        <div className="flex items-center gap-1">
+          <PositionBadge posKey={p.position} size="sm" />
+          <span className="fl-body text-[11px] font-semibold leading-tight truncate" style={{ color: C.white }}>{p.name}</span>
+        </div>
       </div>
       {pickNumber != null && (
-        <span className="absolute -top-1.5 -left-1.5 z-20 flex items-center justify-center fl-mono text-[10px] font-bold rounded-full"
-          style={{ width: 20, height: 20, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 0 8px ${C.principal}77` }}>
+        <div className="absolute top-0 left-2.5 z-20 flex items-center justify-center fl-mono text-[11px] font-bold"
+          style={{
+            width: 22, paddingTop: 3, paddingBottom: 7,
+            background: `linear-gradient(160deg, ${C.principal}, ${C.baby})`,
+            color: C.white,
+            clipPath: "polygon(0 0, 100% 0, 100% 78%, 50% 100%, 0 78%)",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.5)",
+          }}>
           {pickNumber}
-        </span>
+        </div>
       )}
       {gotIt && (
-        <span className="absolute -top-1.5 -right-1.5 z-20 flex items-center justify-center rounded-full" style={{ background: C.navy900, width: 18, height: 18 }}>
+        <span className="absolute top-1.5 right-1.5 z-20 flex items-center justify-center rounded-full" style={{ background: C.navy900, width: 18, height: 18, marginTop: 22 }}>
           <CircleCheck size={16} color={C.positive} />
         </span>
       )}
@@ -7308,26 +7343,35 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
           se sabe hasta que el reparto ya ha pasado). Por eso salen vacías
           hasta que corresponda. */}
       {activeGroup && (
-        <div className="space-y-2 mb-3">
+        <div className="space-y-2.5 mb-3">
           {playoffState.qualifiers.map((u) => {
             const isMe = u === profile.name;
             const squadIds = (playoffState.squads[round] || {})[u] || [];
             return (
-              <div key={u} className="fl-row flex items-center gap-3 p-2.5" style={{ border: `1px solid ${C.principal}22` }}>
-                <div className="flex items-center justify-center fl-mono text-xs font-bold flex-shrink-0 rounded-full"
-                  style={{ width: 32, height: 32, background: isMe ? `linear-gradient(135deg, ${C.principal}, ${C.baby})` : C.navy700, color: isMe ? C.white : C.muted }}>
-                  {(u || "?")[0].toUpperCase()}
+              <div key={u} className="fl-row p-2.5" style={{ border: `1px solid ${C.principal}22` }}>
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <div className="flex items-center justify-center fl-mono text-xs font-bold flex-shrink-0 rounded-full"
+                    style={{ width: 30, height: 30, background: isMe ? `linear-gradient(135deg, ${C.principal}, ${C.baby})` : C.navy700, color: isMe ? C.white : C.muted }}>
+                    {(u || "?")[0].toUpperCase()}
+                  </div>
+                  <span className="fl-body text-xs font-semibold flex-1 truncate" style={{ color: isMe ? C.baby : C.white }}>{u}{isMe ? " (tú)" : ""}</span>
                 </div>
-                <span className="fl-body text-xs font-semibold flex-1 truncate" style={{ color: isMe ? C.baby : C.white }}>{u}{isMe ? " (tú)" : ""}</span>
-                <div className="flex items-center gap-1.5 flex-shrink-0">
+                <div className="flex gap-2.5">
                   {activeGroup.indices.map((idx) => {
                     const pid = squadIds[idx];
                     const p = pid ? players.find((x) => x.id === pid) : null;
                     return (
-                      <div key={idx} className="relative" style={{ width: 40, height: 40 }}>
-                        <span className="absolute -top-1.5 -left-1.5 z-10 flex items-center justify-center fl-mono text-[9px] font-bold rounded-full"
-                          style={{ width: 16, height: 16, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white }}>{idx + 1}</span>
-                        {p ? <PlayerPhoto url={p.photo} size={40} rounded={8} /> : <div style={{ width: 40, height: 40, borderRadius: 8, background: C.navy700, border: `1px dashed ${C.line}` }} />}
+                      <div key={idx} className="flex-1" style={{ maxWidth: 100 }}>
+                        <div className="relative rounded-xl overflow-hidden" style={{ aspectRatio: "3 / 4", background: C.navy700, border: `1px dashed ${p ? "transparent" : C.line}` }}>
+                          {p && <PlayerPhoto url={p.photo} width="100%" height="100%" rounded={0} noBorder focusTop />}
+                          <span className="absolute top-1 left-1 z-10 flex items-center justify-center fl-mono text-[10px] font-bold rounded-full"
+                            style={{ width: 18, height: 18, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: "0 1px 4px rgba(0,0,0,0.5)" }}>{idx + 1}</span>
+                          {p && (
+                            <div className="absolute inset-x-0 bottom-0 px-1 py-1" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), transparent)" }}>
+                              <span className="fl-body text-[9px] font-medium leading-tight block truncate" style={{ color: C.white }}>{p.name}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
