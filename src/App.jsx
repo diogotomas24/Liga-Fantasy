@@ -960,6 +960,30 @@ const playoffService = {
     return picks;
   },
 
+  // Reparto forzoso de última hora (viernes, si sigue faltando plantilla):
+  // recorre a los incompletos en orden de clasificación (mejor primero),
+  // dando en cada vuelta la mejor jugadora que quede libre a quien le toque
+  // — nada de listas, ya no da tiempo a más rondas de preferencia.
+  catchUpAllocation({ order, squadsSoFar, sortedPoolIds, targetSize }) {
+    const remaining = [...sortedPoolIds];
+    const picks = [];
+    const counts = {};
+    order.forEach((u) => { counts[u] = (squadsSoFar[u] || []).length; });
+    let progress = true;
+    while (progress && remaining.length > 0) {
+      progress = false;
+      for (const userName of order) {
+        if (counts[userName] >= targetSize) continue;
+        if (remaining.length === 0) break;
+        const pid = remaining.shift();
+        picks.push({ userName, playerId: pid });
+        counts[userName]++;
+        progress = true;
+      }
+    }
+    return picks;
+  },
+
   // Reparto de la final: una sola sesión, recorriendo las listas ronda a
   // ronda (1ª elección de cada uno, luego 2ª...), alternando entre los 2
   // finalistas — el mejor situado en semis elige primero en cada vuelta —
@@ -1114,27 +1138,37 @@ const realBracketService = {
     return { ready: true, top8, cuartos, semis, final };
   },
 
-  // Partidos "a mostrar" de una jornada de playoffs. En cuanto el admin haya
-  // cargado partidos de verdad para esa jornada concreta (los que sean, no
-  // hace falta que cuadren con el emparejamiento "de libro"), se muestran
-  // esos tal cual y no se añade nada más encima — así no salen duplicados
-  // ("por determinar" repitiendo un cruce que ya está puesto). Solo cuando la
-  // jornada está TOTALMENTE vacía se rellena con la previsión calculada a
-  // partir de la clasificación, para que el Calendario no se quede en blanco
-  // mientras nadie ha tocado nada todavía.
+  // Partidos "a mostrar" de una jornada de playoffs. Si ya hay partidos
+  // reales con equipos asignados, se respetan tal cual (aunque no coincidan
+  // con el emparejamiento "de libro" — el admin puede haberlo puesto a mano).
+  // Si la jornada está vacía, o tiene "huecos" (partidos creados pero
+  // todavía sin equipos, típico de una plantilla previa al resultado), se
+  // completa por posición con el cruce que le toca según la clasificación —
+  // así no hace falta esperar a que nadie escriba nada para saber quién
+  // juega contra quién, y no se duplica nada.
   projectedPartidos(jornadas, jornada) {
     const real = jornada?.partidos || [];
     const fase = jornadaFase(jornada);
-    if (fase === "regular" || real.length > 0) return real;
+    if (fase === "regular") return real;
     const bracket = this.buildBracket(jornadas);
-    if (!bracket.ready) return real;
     let pairs = [];
     if (fase === "cuartos") pairs = bracket.cuartos.map((m) => [m.teamA, m.teamB]);
     else if (fase === "semis") pairs = bracket.semis.map((m) => [m.teamA, m.teamB]);
     else if (fase === "final") pairs = [[bracket.final.teamA, bracket.final.teamB]];
-    return pairs
-      .filter(([teamA, teamB]) => teamA && teamB)
-      .map(([teamA, teamB], i) => ({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true }));
+
+    if (real.length === 0) {
+      if (!bracket.ready) return real;
+      return pairs
+        .filter(([teamA, teamB]) => teamA && teamB)
+        .map(([teamA, teamB], i) => ({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true }));
+    }
+
+    return real.map((p, i) => {
+      if (p.local && p.visitante) return p; // ya tiene equipos asignados: se respeta
+      const pair = pairs[i];
+      if (!pair || !pair[0] || !pair[1]) return p;
+      return { ...p, local: p.local || pair[0], visitante: p.visitante || pair[1], previsto: true };
+    });
   },
 };
 
@@ -3003,6 +3037,12 @@ export default function App() {
       // que mandar una nueva (ya sin las jugadoras de hoy, que han
       // desaparecido del fondo disponible) — no vale seguir tirando de la
       // lista de ayer día tras día.
+      // El reparto diario dura como mucho 5 días (lunes a viernes). Si al
+      // acabar el del viernes a alguien le sigue faltando plantilla, se
+      // completa ahí mismo por orden de clasificación (mejor primero), dando
+      // siempre la mejor jugadora que quede libre según los puntos de la fase
+      // anterior (temporada regular en cuartos, cuartos global en semis) —
+      // sin mirar ya listas de preferencia, que no da tiempo a más días.
       if ((state.phase === "cuartos_draft" || state.phase === "semis_draft") && state.lastAllocationDate !== todayStr) {
         const round = state.round;
         const lists = (state.lists && state.lists[round]) || {};
@@ -3013,15 +3053,36 @@ export default function App() {
         const picks = playoffService.runDailyAllocation({ order: state.qualifiers, lists, squadsSoFar, availableIds: pool.map((p) => p.id), targetSize });
         const nextSquads = { ...squadsSoFar };
         const nextLog = [...state.log];
+        const nextDraftDay = state.draftDay + 1;
         picks.forEach(({ userName, playerId }) => {
           nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
           nextLog.push({ round, day: state.draftDay, userName, playerId, ts: Date.now() });
         });
+
+        // Viernes (5º día) ya cerrado: quien siga incompleta, reparto forzoso.
+        if (nextDraftDay >= 5) {
+          const stillShort = state.qualifiers.some((u) => (nextSquads[u] || []).length < targetSize);
+          if (stillShort) {
+            const draftedNow = Object.values(nextSquads).flat();
+            const leftoverPlayers = playoffService.availablePool(freshJornadas, freshPlayers, round, draftedNow);
+            const basisJornadas = round === "CUARTOS" ? playoffService.regularJornadas(freshJornadas) : playoffService.jornadasForRound(freshJornadas, "CUARTOS");
+            const scoreFor = (p) => basisJornadas.reduce((s, j) => s + (p.position === "DT"
+              ? calcCoachPoints(null, resolveCoachWin(j, p.team)).total
+              : calcPlayerPoints(j.stats?.[p.id], p.position)), 0);
+            const sortedIds = [...leftoverPlayers].sort((a, b) => scoreFor(b) - scoreFor(a)).map((p) => p.id);
+            const catchUpPicks = playoffService.catchUpAllocation({ order: state.qualifiers, squadsSoFar: nextSquads, sortedPoolIds: sortedIds, targetSize });
+            catchUpPicks.forEach(({ userName, playerId }) => {
+              nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
+              nextLog.push({ round, day: nextDraftDay, userName, playerId, ts: Date.now(), forced: true });
+            });
+          }
+        }
+
         const nextLists = { ...lists };
         state.qualifiers.forEach((u) => {
           if ((nextSquads[u] || []).length < targetSize) delete nextLists[u];
         });
-        state = { ...state, squads: { ...state.squads, [round]: nextSquads }, lists: { ...state.lists, [round]: nextLists }, log: nextLog, draftDay: state.draftDay + 1, lastAllocationDate: todayStr };
+        state = { ...state, squads: { ...state.squads, [round]: nextSquads }, lists: { ...state.lists, [round]: nextLists }, log: nextLog, draftDay: nextDraftDay, lastAllocationDate: todayStr };
         changed = true;
       }
 
@@ -5651,6 +5712,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
               squadIds: (playoffState.squads[playoffState.round] || {})[viewingTeam] || [],
               lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
               points: (playoffRows.find((r) => r.name === viewingTeam) || {}).pts || 0,
+              roundJornadas: playoffService.jornadasForRound(jornadas, playoffState.round),
             }}
             onClose={() => setViewingTeam(null)} />
         )}
@@ -5789,10 +5851,61 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
 
         {sub === "puntos" && (
           playoffView ? (
-            <div className="fl-row p-5 text-center">
-              <Trophy size={26} color={C.gold} style={{ margin: "0 auto 8px" }} />
-              <div className="fl-mono text-3xl font-bold" style={{ color: C.gold }}>{totalPts}</div>
-              <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>puntos en esta ronda de playoffs</div>
+            <div className="space-y-2">
+              <div className="fl-row p-4 text-center mb-1">
+                <Trophy size={24} color={C.gold} style={{ margin: "0 auto 6px" }} />
+                <div className="fl-mono text-3xl font-bold" style={{ color: C.gold }}>{totalPts}</div>
+                <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>puntos en esta ronda de playoffs</div>
+              </div>
+              {allSquad.length === 0 ? (
+                <EmptyState title="Sin plantilla todavía" text="Se irá completando según avance el draft de esta ronda." />
+              ) : (
+                <>
+                  {(lineup.starters || []).length === 0 && !lineup.titularCoach ? (
+                    <div className="fl-row p-4 text-center">
+                      <span className="fl-body text-xs" style={{ color: C.muted }}>Todavía no ha guardado una alineación en esta ronda.</span>
+                    </div>
+                  ) : (
+                    <>
+                      {(lineup.starters || []).map((id) => {
+                        const p = players.find((x) => x.id === id);
+                        if (!p) return null;
+                        const raw = playoffView.roundJornadas.reduce((s, j) => s + calcPlayerPoints(j.stats?.[id], p.position), 0);
+                        const isCaptain = id === lineup.captainId;
+                        return (
+                          <button key={id} onClick={() => setDetailPlayerId(id)} className="fl-tap fl-row w-full flex items-center justify-between px-3 py-2.5 text-left">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <PlayerPhoto url={p.photo} size={32} rounded={8} />
+                              <div className="min-w-0">
+                                <div className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{p.name}{isCaptain ? " (C)" : ""}</div>
+                                <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{p.team}</div>
+                              </div>
+                            </div>
+                            <span className="fl-mono text-sm font-bold flex-shrink-0" style={{ color: C.gold }}>{isCaptain ? raw * 2 : raw}</span>
+                          </button>
+                        );
+                      })}
+                      {lineup.titularCoach && (() => {
+                        const coach = players.find((x) => x.id === lineup.titularCoach);
+                        if (!coach) return null;
+                        const pts = playoffView.roundJornadas.reduce((s, j) => s + calcCoachPoints(null, resolveCoachWin(j, coach.team)).total, 0);
+                        return (
+                          <button onClick={() => setDetailPlayerId(coach.id)} className="fl-tap fl-row w-full flex items-center justify-between px-3 py-2.5 text-left">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <PlayerPhoto url={coach.photo} size={32} rounded={8} />
+                              <div className="min-w-0">
+                                <div className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{coach.name} (DT)</div>
+                                <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{coach.team}</div>
+                              </div>
+                            </div>
+                            <span className="fl-mono text-sm font-bold flex-shrink-0" style={{ color: C.gold }}>{pts}</span>
+                          </button>
+                        );
+                      })()}
+                    </>
+                  )}
+                </>
+              )}
             </div>
           ) : (
             <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
@@ -7158,6 +7271,7 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
   const [error, setError] = useState("");
   const [view, setView] = useState("lista"); // "lista" | "picks_<inicioDeRango>"
   const [search, setSearch] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
   const round = playoffState.round;
   const isParticipant = (playoffState.qualifiers || []).includes(profile.name);
   const myList = (playoffState.lists[round] || {})[profile.name] || null;
@@ -7203,6 +7317,7 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
   };
   const submit = async () => {
     if (draft.length === 0) { setError("Añade al menos una jugadora a tu lista."); return; }
+    setShowConfirm(false);
     setBusy(true); setError("");
     const res = await onSubmitDraftList(round, draft);
     setBusy(false);
@@ -7221,9 +7336,16 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
 
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-3">
-        <FlaskConical size={14} color={C.gold} />
-        <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Draft — {roundLabel}</span>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-1.5">
+          <FlaskConical size={14} color={C.gold} />
+          <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Draft — {roundLabel}</span>
+        </div>
+        {(playoffState.phase === "cuartos_draft" || playoffState.phase === "semis_draft") && (
+          <span className="fl-mono text-[10px] font-semibold px-2 py-1 rounded-full" style={{ background: C.navy800, border: `1px solid ${C.principal}44`, color: C.principal }}>
+            Día {Math.min(playoffState.draftDay + 1, 5)} de 5
+          </span>
+        )}
       </div>
 
       {/* Cabecera de pestañas: LISTA DEL DRAFT + PICKS 1-2 / 3-4 / ... */}
@@ -7315,7 +7437,7 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
                 </div>
               )}
 
-              <button onClick={submit} disabled={busy || draft.length === 0 || !!myList} className="fl-tap w-full rounded-full py-3 mt-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 fl-display uppercase tracking-wide"
+              <button onClick={() => setShowConfirm(true)} disabled={busy || draft.length === 0 || !!myList} className="fl-tap w-full rounded-full py-3 mt-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 fl-display uppercase tracking-wide"
                 style={{ background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 4px 18px ${C.principalSoft}` }}>
                 {myList
                   ? <>Lista enviada <CircleCheck size={15} /></>
@@ -7379,6 +7501,29 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
               </div>
             );
           })}
+        </div>
+      )}
+
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => setShowConfirm(false)}>
+          <div className="w-full rounded-t-3xl p-5" style={{ background: C.navy800, border: `1px solid ${C.line}` }} onClick={(e) => e.stopPropagation()}>
+            <div className="text-center mb-4">
+              <Star size={26} color={C.gold} style={{ margin: "0 auto 8px" }} />
+              <div className="fl-display text-base uppercase" style={{ color: C.white }}>¿Confirmas tu lista?</div>
+              <div className="fl-body text-xs mt-1.5" style={{ color: C.muted }}>
+                Son {draft.length} jugadoras en orden de preferencia. Una vez enviada no podrás cambiarla hasta el reparto de mañana.
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowConfirm(false)} className="fl-tap flex-1 rounded-full py-3 text-sm font-semibold" style={{ background: C.navy700, color: C.white, border: `1px solid ${C.line}` }}>
+                Revisar de nuevo
+              </button>
+              <button onClick={submit} disabled={busy} className="fl-tap flex-1 rounded-full py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-1.5"
+                style={{ background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white }}>
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <>Sí, confirmar</>}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
