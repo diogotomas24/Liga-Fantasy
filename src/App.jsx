@@ -1156,7 +1156,13 @@ const realBracketService = {
     else if (fase === "semis") pairs = bracket.semis.map((m) => [m.teamA, m.teamB]);
     else if (fase === "final") pairs = [[bracket.final.teamA, bracket.final.teamB]];
 
-    if (real.length === 0) {
+    // "Sin asignar" cuenta tanto el hueco vacío como el texto literal
+    // "Por determinar" que se guarda de plantilla mientras no se sabe quién
+    // juega — en ambos casos hay que sustituirlo por el cruce real ya
+    // calculado en Clasificación, no dejarlo tal cual.
+    const isBlank = (name) => !name || /por determinar/i.test(String(name).trim());
+
+    if (real.length === 0 || real.every((p) => isBlank(p.local) && isBlank(p.visitante))) {
       if (!bracket.ready) return real;
       return pairs
         .filter(([teamA, teamB]) => teamA && teamB)
@@ -1164,10 +1170,10 @@ const realBracketService = {
     }
 
     return real.map((p, i) => {
-      if (p.local && p.visitante) return p; // ya tiene equipos asignados: se respeta
+      if (!isBlank(p.local) && !isBlank(p.visitante)) return p; // ya tiene equipos asignados de verdad: se respeta
       const pair = pairs[i];
       if (!pair || !pair[0] || !pair[1]) return p;
-      return { ...p, local: p.local || pair[0], visitante: p.visitante || pair[1], previsto: true };
+      return { ...p, local: isBlank(p.local) ? pair[0] : p.local, visitante: isBlank(p.visitante) ? pair[1] : p.visitante, previsto: true };
     });
   },
 };
