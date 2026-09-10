@@ -6097,7 +6097,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           </ActionSheet>
         )}
 
-        {showActions && entry && (
+        {showActions && isOwned && entry && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
             <ActionSheetItem label="Blindar jugador" disabled subtitle="Próximamente" />
             <ActionSheetItem
