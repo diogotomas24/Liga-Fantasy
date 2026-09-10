@@ -848,29 +848,164 @@ const realStandingsService = {
   },
 };
 
-// --- playoffService -------------------------------------------------------
-// Los partidos de playoffs viven en jornadas normales (misma tabla de
-// siempre), reconocidas solo por su nombre — así no hace falta ninguna
-// pantalla ni columna nueva en Supabase. Convención de nombres (no importan
-// mayúsculas):
-//   "Playoff Cuartos Ida"    → jornada con los 4 partidos de ida de cuartos
-//   "Playoff Cuartos Vuelta" → jornada con los 4 partidos de vuelta
-//   "Playoff Semifinal"      → jornada con los 2 partidos de semifinales
-//   "Playoff Final"          → jornada con el partido de la final
-// El resto de jornadas (las que no empiezan por "Playoff") son liga regular.
-function jornadaFase(name) {
-  const n = (name || "").trim().toLowerCase();
-  if (!n.startsWith("playoff")) return "regular";
-  if (n.includes("cuartos")) return "cuartos";
-  if (n.includes("semifinal") || n.includes("semis")) return "semis";
-  if (n.includes("final")) return "final";
-  return "regular";
-}
-function jornadaLeg(name) {
-  return (name || "").toLowerCase().includes("vuelta") ? 2 : 1;
-}
+// --- playoffService ----------------------------------------------------
+// Motor de reglas de los playoffs (ver conversación de diseño): quién
+// entra, el draft (día a día en cuartos/semis, de una sola tacada en la
+// final), y quién pasa de ronda. Todo el estado compartido de esta fase
+// vive en un único objeto guardado en kv_store ("playoffState" de cada
+// liga), para que todo el mundo vea lo mismo en tiempo real.
+const PLAYOFF_SQUAD_SIZE = { CUARTOS: 10, SEMIS: 9, FINAL: 9 }; // incluye entrenadora/or
+const PLAYOFF_LIST_SIZE = { CUARTOS: 16, SEMIS: 16, FINAL: 20 };
 
 const playoffService = {
+  emptyState() {
+    return {
+      phase: "none", // none | cuartos_draft | cuartos_live | semis_draft | semis_live | final_draft | final_live | finished
+      round: null, // "CUARTOS" | "SEMIS" | "FINAL": ronda de draft/juego actual
+      qualifiers: [], // [userName,...] en orden (mejor primero) — fijado al empezar cada ronda
+      draftDay: 0, // para cuartos/semis: qué día del reparto multi-día vamos
+      lastAllocationDate: null, // fecha (YYYY-MM-DD) del último reparto diario ya hecho, para no repetirlo
+      lists: {}, // { [round]: { [userName]: [playerId,...] } } — listas YA ENVIADAS (bloqueadas en cuanto se guardan)
+      squads: {}, // { [round]: { [userName]: [playerId,...] } } — lo que se ha repartido de verdad
+      lineups: {}, // { [round]: { [userName]: lineup } } — alineación de playoffs de cada uno, por ronda
+      log: [], // [{ round, day, userName, playerId, ts }] — "diario del draft" para el modo espectador
+      pointsByRound: {}, // { [round]: { [userName]: number } }
+      champion: null,
+    };
+  },
+
+  isPlayoffJornada(j) { return !!j?.playoffRound; },
+  // Jornadas que SÍ cuentan para la clasificación de liga regular.
+  regularJornadas(jornadas) { return (jornadas || []).filter((j) => !j.playoffRound); },
+  findRoundJornadas(jornadas, playoffRound) { return (jornadas || []).filter((j) => j.playoffRound === playoffRound); },
+
+  // Jornada(s) que definen una ronda (cuartos son 2, semis y final 1 sola).
+  jornadasForRound(jornadas, round) {
+    if (round === "CUARTOS") {
+      return [...playoffService.findRoundJornadas(jornadas, "CUARTOS_IDA"), ...playoffService.findRoundJornadas(jornadas, "CUARTOS_VUELTA")];
+    }
+    return playoffService.findRoundJornadas(jornadas, round);
+  },
+
+  // Los equipos reales "vivos" en una ronda son, sencillamente, los que
+  // tengan algún partido programado en la(s) jornada(s) de esa ronda — se
+  // deduce del calendario que ya cargas tal cual, sin mantener nada aparte.
+  aliveRealTeams(jornadas, round) {
+    const teams = new Set();
+    playoffService.jornadasForRound(jornadas, round).forEach((j) => (j.partidos || []).forEach((p) => { teams.add(p.local); teams.add(p.visitante); }));
+    return teams;
+  },
+
+  // Fondo de jugadoras disponible para una ronda: todas las de los equipos
+  // reales vivos, quitando las que ya se hayan repartido en ESTA ronda.
+  availablePool(jornadas, players, round, alreadyDraftedIds) {
+    const alive = playoffService.aliveRealTeams(jornadas, round);
+    const drafted = new Set(alreadyDraftedIds || []);
+    return players.filter((p) => alive.has(p.team) && !drafted.has(p.id));
+  },
+
+  // ¿Ya hay resultado completo de la(s) jornada(s) de esta ronda? (todos sus
+  // partidos con marcador puesto) — así se sabe cuándo cerrarla y calcular
+  // quién pasa.
+  roundHasResults(jornadas, round) {
+    const js = playoffService.jornadasForRound(jornadas, round);
+    if (js.length === 0) return false;
+    return js.every((j) => (j.partidos || []).length > 0 && (j.partidos || []).every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null));
+  },
+
+  // Reparto de un día de cuartos/semis: 2 vueltas, en el orden de
+  // clasificación de esta ronda; cada uno se lleva, en cada vuelta, su
+  // preferencia más alta de su lista que siga libre. Ignora a quien ya haya
+  // llegado a su objetivo de plantilla.
+  runDailyAllocation({ order, lists, squadsSoFar, availableIds, targetSize }) {
+    const remaining = new Set(availableIds);
+    const picks = [];
+    for (let vuelta = 0; vuelta < 2; vuelta++) {
+      for (const userName of order) {
+        const already = (squadsSoFar[userName] || []).length + picks.filter((p) => p.userName === userName).length;
+        if (already >= targetSize) continue;
+        const list = lists[userName] || [];
+        const pick = list.find((pid) => remaining.has(pid));
+        if (pick) { remaining.delete(pick); picks.push({ userName, playerId: pick }); }
+      }
+    }
+    return picks;
+  },
+
+  // Reparto de la final: una sola sesión, recorriendo las listas ronda a
+  // ronda (1ª elección de cada uno, luego 2ª...), alternando entre los 2
+  // finalistas — el mejor situado en semis elige primero en cada vuelta —
+  // hasta que cada uno complete su plantilla.
+  runFinalAllocation({ order, lists, availableIds, targetSize }) {
+    const remaining = new Set(availableIds);
+    const picks = [];
+    const counts = {}; order.forEach((u) => { counts[u] = 0; });
+    const maxRounds = Math.max(0, ...order.map((u) => (lists[u] || []).length));
+    for (let round = 0; round < maxRounds && [...remaining].length > 0; round++) {
+      for (const userName of order) {
+        if (counts[userName] >= targetSize) continue;
+        const list = lists[userName] || [];
+        const pid = list[round];
+        const chosen = pid && remaining.has(pid) ? pid : null;
+        if (chosen) { remaining.delete(chosen); picks.push({ userName, playerId: chosen }); counts[userName]++; }
+      }
+    }
+    // Si a alguien le sigue faltando plantilla al acabar las listas (p. ej.
+    // listas más cortas que 20), se completa con lo primero que quede libre.
+    for (const userName of order) {
+      while (counts[userName] < targetSize && remaining.size > 0) {
+        const fallback = [...remaining][0];
+        remaining.delete(fallback);
+        picks.push({ userName, playerId: fallback });
+        counts[userName]++;
+      }
+    }
+    return picks;
+  },
+
+  // Puntos de un usuario en una ronda de playoffs, con su alineación de
+  // PLAYOFFS (no la de temporada), sumando la(s) jornada(s) de esa ronda.
+  computeRoundPoints(jornadas, round, lineup, players) {
+    const js = playoffService.jornadasForRound(jornadas, round);
+    if (!lineup) return 0;
+    const ids = [...(lineup.starters || [])];
+    if (lineup.titularCoach) ids.push(lineup.titularCoach);
+    return js.reduce((sum, j) => sum + ids.reduce((s, id) => {
+      const player = players.find((p) => p.id === id);
+      if (!player) return s;
+      const pts = player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total : calcPlayerPoints(j.stats?.[id], player.position);
+      return s + (id === lineup.captainId ? pts * 2 : pts);
+    }, 0), 0);
+  },
+
+  // Corte de una ronda: ordena por puntos (desempate: mejor puesto en la
+  // ronda/clasificación anterior, que ya viene dado por el orden en
+  // "qualifiers"), y devuelve los "cutSize" primeros.
+  cutTop(qualifiersOrder, pointsByUser, cutSize) {
+    const withIdx = qualifiersOrder.map((u, i) => ({ u, pts: pointsByUser[u] || 0, seedIdx: i }));
+    withIdx.sort((a, b) => (b.pts - a.pts) || (a.seedIdx - b.seedIdx));
+    return withIdx.slice(0, cutSize).map((x) => x.u);
+  },
+};
+
+// --- realBracketService ----------------------------------------------------
+// Cuadro de PLAYOFFS DE LOS EQUIPOS REALES (el basket de verdad, ida+vuelta
+// en cuartos, partido único en semis/final) — no confundir con el sistema de
+// fantasy (draft + corte por puntos). Usa la misma columna "playoff_round"
+// de las jornadas que el sistema de fantasy, así solo hay que rellenar un
+// dato por jornada, no dos convenciones distintas.
+function jornadaFase(j) {
+  const r = j?.playoffRound;
+  if (r === "CUARTOS_IDA" || r === "CUARTOS_VUELTA") return "cuartos";
+  if (r === "SEMIS") return "semis";
+  if (r === "FINAL") return "final";
+  return "regular";
+}
+function jornadaLeg(j) {
+  return j?.playoffRound === "CUARTOS_VUELTA" ? 2 : 1;
+}
+
+const realBracketService = {
   // Busca, dentro de los partidos de una jornada, el que enfrenta a estos dos
   // equipos (sin importar quién fue local o visitante), y devuelve el
   // marcador ya "orientado" a (teamA, teamB) para poder sumar ida+vuelta.
@@ -912,15 +1047,15 @@ const playoffService = {
   // "provisional" ya se ve desde antes de que acabe la liga regular y se va
   // actualizando jornada a jornada.
   buildBracket(jornadas) {
-    const regularJornadas = (jornadas || []).filter((j) => jornadaFase(j.name) === "regular");
+    const regularJornadas = (jornadas || []).filter((j) => jornadaFase(j) === "regular");
     const standings = realStandingsService.compute(regularJornadas);
     const top8 = standings.slice(0, 8);
     if (top8.length < 8) return { ready: false, top8 };
 
-    const cuartosIda = jornadas.find((j) => jornadaFase(j.name) === "cuartos" && jornadaLeg(j.name) === 1);
-    const cuartosVuelta = jornadas.find((j) => jornadaFase(j.name) === "cuartos" && jornadaLeg(j.name) === 2);
-    const semisJornada = jornadas.find((j) => jornadaFase(j.name) === "semis");
-    const finalJornada = jornadas.find((j) => jornadaFase(j.name) === "final");
+    const cuartosIda = jornadas.find((j) => jornadaFase(j) === "cuartos" && jornadaLeg(j) === 1);
+    const cuartosVuelta = jornadas.find((j) => jornadaFase(j) === "cuartos" && jornadaLeg(j) === 2);
+    const semisJornada = jornadas.find((j) => jornadaFase(j) === "semis");
+    const finalJornada = jornadas.find((j) => jornadaFase(j) === "final");
 
     const pairs = [[0, 7], [1, 6], [2, 5], [3, 4]];
     const cuartos = pairs.map(([hi, lo]) => {
@@ -1205,8 +1340,9 @@ const rankingService = {
       const cCount = squad.length - jCount;
       const total = pointsFor(name, t.lineup);
       const prevTotal = singleJornada ? total : totalUpTo(name, t.lineup, Math.max(0, jornadas.length - 1));
-      return { name, total, prevTotal, jCount, cCount, value: (t.budgetSpent || 0) };
-    }).sort((a, b) => b.total - a.total);
+      const squadValue = teamService.currentSquadValue(t, players); // desempate: más valor de plantilla ACTUAL gana
+      return { name, total, prevTotal, jCount, cCount, value: (t.budgetSpent || 0), squadValue };
+    }).sort((a, b) => (b.total - a.total) || (b.squadValue - a.squadValue));
     // variación de posición respecto a antes de la última jornada (no aplica al ver una
     // jornada concreta suelta, ahí no mostramos flecha de variación).
     const prevOrder = [...rows].sort((a, b) => b.prevTotal - a.prevTotal).map(r => r.name);
@@ -1605,6 +1741,7 @@ async function readJornadas() {
         stats: statsByJornada[j.id] || {},
         lineups: j.lineups || {},
         mvpPlayerId: j.mvp_player_id || null,
+        playoffRound: j.playoff_round || null, // null | CUARTOS_IDA | CUARTOS_VUELTA | SEMIS | FINAL
       }))
       .sort((a, b) => jornadaNumberFromName(a.name) - jornadaNumberFromName(b.name));
   } catch {
@@ -2406,6 +2543,7 @@ export default function App() {
   const [tripleEntries, setTripleEntries] = useState([]);
   const [marketHistory, setMarketHistory] = useState([]);
   const [activity, setActivity] = useState([]);
+  const [playoffState, setPlayoffState] = useState(playoffService.emptyState());
 
   const [tab, setTab] = useState("inicio");
   const [saving, setSaving] = useState(false);
@@ -2736,15 +2874,158 @@ export default function App() {
     } catch {}
   }, []);
 
+  // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
+  // Añade una entrada al feed de "Actividad" de la liga (ventas a la liga,
+  // premios del Triple Fantasy...). Los fichajes del mercado ya se registran
+  // aparte, dentro de syncMarket.
+  const logActivity = useCallback(async (entry) => {
+    const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
+    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
+    setActivity(nextActivity);
+  }, [activeLeagueId, activity]);
+
+  // Automatización de playoffs: detecta el arranque, reparte cada día en
+  // cuartos/semis, resuelve la final de una tacada en cuanto ambos
+  // finalistas hayan enviado su lista, y avanza de ronda sola en cuanto hay
+  // resultado real de los partidos de esa ronda.
+  const checkPlayoffProgress = useCallback(async () => {
+    if (!activeLeagueId) return;
+    try {
+      const [freshJornadas, freshPlayers, teamsMap] = await Promise.all([readJornadas(), readPlayers(), readAllTeams(activeLeagueId)]);
+      let state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
+      const todayStr = toDateStr(getEffectiveToday());
+      let changed = false;
+
+      // 1) Arranque: en cuanto exista la jornada de Cuartos-ida con partidos, se generan los clasificados.
+      if (state.phase === "none") {
+        const cuartosIda = playoffService.findRoundJornadas(freshJornadas, "CUARTOS_IDA")[0];
+        if (cuartosIda && (cuartosIda.partidos || []).length > 0) {
+          const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
+          const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
+          if (qualifiers.length > 0) {
+            state = { ...playoffService.emptyState(), phase: "cuartos_draft", round: "CUARTOS", qualifiers, draftDay: 0 };
+            changed = true;
+            await logActivity({ type: "playoff_start", qualifiers });
+          }
+        }
+      }
+
+      // 2) Reparto diario en cuartos/semis (una vez por día natural).
+      if ((state.phase === "cuartos_draft" || state.phase === "semis_draft") && state.lastAllocationDate !== todayStr) {
+        const round = state.round;
+        const lists = (state.lists && state.lists[round]) || {};
+        const squadsSoFar = (state.squads && state.squads[round]) || {};
+        const alreadyDrafted = Object.values(squadsSoFar).flat();
+        const pool = playoffService.availablePool(freshJornadas, freshPlayers, round, alreadyDrafted);
+        const targetSize = PLAYOFF_SQUAD_SIZE[round];
+        const picks = playoffService.runDailyAllocation({ order: state.qualifiers, lists, squadsSoFar, availableIds: pool.map((p) => p.id), targetSize });
+        const nextSquads = { ...squadsSoFar };
+        const nextLog = [...state.log];
+        picks.forEach(({ userName, playerId }) => {
+          nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
+          nextLog.push({ round, day: state.draftDay, userName, playerId, ts: Date.now() });
+        });
+        state = { ...state, squads: { ...state.squads, [round]: nextSquads }, log: nextLog, draftDay: state.draftDay + 1, lastAllocationDate: todayStr };
+        changed = true;
+      }
+
+      // 3) Fin de ronda: con resultado real ya cargado, se calcula quién pasa.
+      if (state.phase === "cuartos_draft" && playoffService.roundHasResults(freshJornadas, "CUARTOS")) {
+        const pointsByUser = {};
+        state.qualifiers.forEach((u) => {
+          const lineup = (state.lineups.CUARTOS || {})[u] || null;
+          pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "CUARTOS", lineup, freshPlayers) : 0;
+        });
+        const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(4, state.qualifiers.length));
+        state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser } };
+        changed = true;
+        await logActivity({ type: "playoff_advance", round: "CUARTOS", advancing });
+      } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS")) {
+        const pointsByUser = {};
+        state.qualifiers.forEach((u) => {
+          const lineup = (state.lineups.SEMIS || {})[u] || null;
+          pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "SEMIS", lineup, freshPlayers) : 0;
+        });
+        const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(2, state.qualifiers.length));
+        state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser } };
+        changed = true;
+        await logActivity({ type: "playoff_advance", round: "SEMIS", advancing });
+      } else if (state.phase === "final_draft") {
+        // La final se reparte de una sola vez, en cuanto los finalistas hayan enviado su lista de 20.
+        const lists = state.lists.FINAL || {};
+        const bothSubmitted = state.qualifiers.length > 0 && state.qualifiers.every((u) => (lists[u] || []).length > 0);
+        const alreadyDone = Object.keys(state.squads.FINAL || {}).length > 0;
+        if (bothSubmitted && !alreadyDone) {
+          const pool = playoffService.availablePool(freshJornadas, freshPlayers, "FINAL", []);
+          const picks = playoffService.runFinalAllocation({ order: state.qualifiers, lists, availableIds: pool.map((p) => p.id), targetSize: PLAYOFF_SQUAD_SIZE.FINAL });
+          const nextSquads = {};
+          const nextLog = [...state.log];
+          picks.forEach(({ userName, playerId }) => {
+            nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
+            nextLog.push({ round: "FINAL", day: 0, userName, playerId, ts: Date.now() });
+          });
+          state = { ...state, squads: { ...state.squads, FINAL: nextSquads }, log: nextLog };
+          changed = true;
+        }
+        if (playoffService.roundHasResults(freshJornadas, "FINAL")) {
+          const pointsByUser = {};
+          state.qualifiers.forEach((u) => {
+            const lineup = (state.lineups.FINAL || {})[u] || null;
+            pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "FINAL", lineup, freshPlayers) : 0;
+          });
+          const champion = playoffService.cutTop(state.qualifiers, pointsByUser, 1)[0] || null;
+          state = { ...state, phase: "finished", champion, pointsByRound: { ...state.pointsByRound, FINAL: pointsByUser } };
+          changed = true;
+          if (champion) await logActivity({ type: "playoff_champion", champion });
+        }
+      }
+
+      if (changed) {
+        await writeShared(leagueKey(activeLeagueId, "playoffState"), state);
+        setPlayoffState(state);
+      } else {
+        setPlayoffState(state);
+      }
+    } catch {}
+  }, [activeLeagueId, logActivity]);
+
+  // Guarda la lista de preferencias del draft de una ronda — una vez
+  // guardada, queda bloqueada para siempre (no se puede reenviar/editar).
+  const submitDraftList = useCallback(async (round, orderedPlayerIds) => {
+    if (!activeLeagueId || !profile) return { ok: false, error: "Sin sesión." };
+    const state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
+    if (!state.qualifiers.includes(profile.name)) return { ok: false, error: "No estás clasificada/o para esta ronda." };
+    const already = (state.lists[round] || {})[profile.name];
+    if (already) return { ok: false, error: "Ya has enviado tu lista para esta ronda; no se puede cambiar." };
+    const nextLists = { ...state.lists, [round]: { ...(state.lists[round] || {}), [profile.name]: orderedPlayerIds } };
+    const nextState = { ...state, lists: nextLists };
+    await writeShared(leagueKey(activeLeagueId, "playoffState"), nextState);
+    setPlayoffState(nextState);
+    return { ok: true };
+  }, [activeLeagueId, profile]);
+
+  // Guarda la alineación de PLAYOFFS de una ronda (independiente de la de temporada).
+  const savePlayoffLineup = useCallback(async (round, lineup) => {
+    if (!activeLeagueId || !profile) return { ok: false, error: "Sin sesión." };
+    const state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
+    const nextLineups = { ...state.lineups, [round]: { ...(state.lineups[round] || {}), [profile.name]: lineup } };
+    const nextState = { ...state, lineups: nextLineups };
+    await writeShared(leagueKey(activeLeagueId, "playoffState"), nextState);
+    setPlayoffState(nextState);
+    return { ok: true };
+  }, [activeLeagueId, profile]);
+
   useEffect(() => {
     if (profile === undefined) return;
     checkJornadaStartWarning();
     checkIdealFive();
     checkLineupLock();
     checkDailyMarketPricing();
-    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); checkLineupLock(); checkDailyMarketPricing(); }, 60000);
+    checkPlayoffProgress();
+    const t = setInterval(() => { checkJornadaStartWarning(); checkIdealFive(); checkLineupLock(); checkDailyMarketPricing(); checkPlayoffProgress(); }, 60000);
     return () => clearInterval(t);
-  }, [profile, checkJornadaStartWarning, checkIdealFive, checkLineupLock, checkDailyMarketPricing]);
+  }, [profile, checkJornadaStartWarning, checkIdealFive, checkLineupLock, checkDailyMarketPricing, checkPlayoffProgress]);
 
   // Carga inicial GLOBAL: jugadoras, jornadas, config del mercado y escudos son
   // compartidos por TODAS las ligas, así que se cargan una sola vez, independientemente
@@ -3214,17 +3495,6 @@ export default function App() {
     setBids(nextBids);
     return { ok: true };
   }, [market, bids, profile, activeLeagueId]);
-
-  // Venta inmediata a la liga: se cobra el 50% del valor de mercado actual, al instante.
-  // Añade una entrada al feed de "Actividad" de la liga (ventas a la liga,
-  // premios del Triple Fantasy...). Los fichajes del mercado ya se registran
-  // aparte, dentro de syncMarket.
-  const logActivity = useCallback(async (entry) => {
-    const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
-    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
-    await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
-    setActivity(nextActivity);
-  }, [activeLeagueId, activity]);
 
   const buyClause = useCallback(async (sellerName, asset, amount) => {
     const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
@@ -4439,7 +4709,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
   const [showValorChart, setShowValorChart] = useState(false);
   const [showAllMovers, setShowAllMovers] = useState(false);
   const [showClasificacion, setShowClasificacion] = useState(false);
-  const standings = useMemo(() => rankingService.computeStandings(teams, players, jornadas, leagueId), [teams, players, jornadas, leagueId]);
+  const standings = useMemo(() => rankingService.computeStandings(teams, players, playoffService.regularJornadas(jornadas), leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const lastJornada = findCurrentJornada(jornadas);
   const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
@@ -4687,9 +4957,9 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 // clasificación y de las jornadas "Playoff …" que haya en Supabase).
 function ClasificacionRealScreen({ jornadas, teamCrests, onClose }) {
   const [subtab, setSubtab] = useState("general"); // "general" | "playoffs"
-  const regularJornadas = useMemo(() => (jornadas || []).filter((j) => jornadaFase(j.name) === "regular"), [jornadas]);
+  const regularJornadas = useMemo(() => (jornadas || []).filter((j) => jornadaFase(j) === "regular"), [jornadas]);
   const rows = useMemo(() => realStandingsService.compute(regularJornadas), [regularJornadas]);
-  const bracket = useMemo(() => playoffService.buildBracket(jornadas), [jornadas]);
+  const bracket = useMemo(() => realBracketService.buildBracket(jornadas), [jornadas]);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -4970,7 +5240,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
-  const jornadasIniciadas = startedJornadas(jornadas);
+  const jornadasIniciadas = startedJornadas(playoffService.regularJornadas(jornadas));
   const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadasIniciadas, leagueId, filterJornadaId), [teams, players, jornadasIniciadas, leagueId, filterJornadaId]);
   const options = [{ id: null, label: "Total" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name }))];
   const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "Total";
@@ -5106,7 +5376,7 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         const p = players.find(x => x.id === detailPlayerId);
         if (!p) return null;
         return (
-          <PlayerDetailScreen player={p} entry={null} jornadas={jornadas} isOwned={false}
+          <PlayerDetailScreen player={p} entry={squadEntries.find(e => e.id === p.id)} jornadas={jornadas} isOwned={false}
             isFavorite={false} onToggleFavorite={() => {}}
             teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
             onClose={() => setDetailPlayerId(null)} />
@@ -5541,7 +5811,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           </ActionSheet>
         )}
 
-        {showActions && isOwned && entry && (
+        {showActions && entry && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
             <ActionSheetItem label="Blindar jugador" disabled subtitle="Próximamente" />
             <ActionSheetItem
@@ -7163,6 +7433,12 @@ function ActividadFeed({ activity, players }) {
           text = <>
             <span style={{ color: C.baby }}>{a.sellerName}</span> le ha vendido a <span style={{ color: C.baby }}>{a.buyerName}</span> <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)} (oferta aceptada)
           </>;
+        } else if (a.type === "playoff_start") {
+          text = <>🏆 ¡Empiezan los <span style={{ color: C.gold, fontWeight: 700 }}>playoffs</span>! Clasificados: {(a.qualifiers || []).join(", ")}</>;
+        } else if (a.type === "playoff_advance") {
+          text = <>🔥 Fin de <span style={{ color: C.gold }}>{a.round === "CUARTOS" ? "Cuartos" : "Semis"}</span>. Pasan: {(a.advancing || []).join(", ")}</>;
+        } else if (a.type === "playoff_champion") {
+          text = <>🏆🏀 <span style={{ color: C.gold, fontWeight: 700 }}>{a.champion}</span> es la campeona/ón de los playoffs</>;
         } else {
           text = <>
             <span style={{ color: C.baby }}>{a.userId}</span> ha fichado a <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)}
