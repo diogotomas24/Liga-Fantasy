@@ -3779,7 +3779,7 @@ export default function App() {
           )}
         </div>
       </main>
-      <BottomNav tab={tab} setTab={setTab} />
+      <BottomNav tab={tab} setTab={setTab} isPlayoffMode={playoffState.phase !== "none"} />
     </div>
   );
 }
@@ -4144,12 +4144,39 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
   );
 }
 
-function BottomNav({ tab, setTab }) {
+// Icono a medida para la pestaña de Draft (sustituye al martillo del Mercado
+// durante toda la fase de playoffs): unas "líneas de lista" + una estrella,
+// en el mismo lenguaje visual (stroke fino, estilo lucide) que el resto de
+// iconos de la barra. En estado activo, las líneas llevan el degradado de
+// marca rosa→naranja y la estrella se rellena en dorado, como pide la
+// referencia de diseño.
+function DraftNavIcon({ size = 19, active }) {
+  const lineColor = active ? "url(#draftNavGradient)" : C.muted;
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      {active && (
+        <defs>
+          <linearGradient id="draftNavGradient" x1="2" y1="4" x2="22" y2="20" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor={C.principal} />
+            <stop offset="100%" stopColor={C.baby} />
+          </linearGradient>
+        </defs>
+      )}
+      <path d="M2.5 6h8.5" stroke={lineColor} strokeWidth="2" strokeLinecap="round" />
+      <path d="M2.5 12h6" stroke={lineColor} strokeWidth="2" strokeLinecap="round" />
+      <path d="M2.5 18h3.5" stroke={lineColor} strokeWidth="2" strokeLinecap="round" />
+      <path d="M18 3.8l1.5 3 3.3.5-2.4 2.3.6 3.3-3-1.6-3 1.6.6-3.3-2.4-2.3 3.3-.5z"
+        fill={active ? C.gold : "none"} stroke={active ? C.gold : C.muted} strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function BottomNav({ tab, setTab, isPlayoffMode }) {
   const items = [
     { key: "inicio", label: "Inicio", icon: Trophy },
     { key: "clasificacion", label: "Ranking", icon: Users },
     { key: "equipo", label: "Equipo", icon: ShieldCheck },
-    { key: "mercado", label: "Mercado", icon: Gavel },
+    { key: "mercado", label: isPlayoffMode ? "Draft" : "Mercado", icon: Gavel },
     { key: "mas", label: "Más", icon: Menu },
   ];
   const accentFor = (key) => (key === "mercado" ? C.baby : C.principal);
@@ -4159,11 +4186,22 @@ function BottomNav({ tab, setTab }) {
       {items.map(it => {
         const Icon = it.icon;
         const active = tab === it.key;
+        const isDraft = it.key === "mercado" && isPlayoffMode;
         const accent = accentFor(it.key);
         return (
-          <button key={it.key} onClick={() => setTab(it.key)} className="fl-tap flex-1 flex flex-col items-center gap-0.5 py-1.5">
-            <Icon size={19} color={active ? accent : C.muted} />
-            <span className="fl-mono text-[9px]" style={{ color: active ? accent : C.muted }}>{it.label}</span>
+          <button key={it.key} onClick={() => setTab(it.key)} className="fl-tap flex-1 flex flex-col items-center gap-0.5 py-1.5 relative">
+            {isDraft
+              ? <DraftNavIcon size={19} active={active} />
+              : <Icon size={19} color={active ? accent : C.muted} />}
+            <span className="fl-mono text-[9px] font-semibold"
+              style={active && isDraft
+                ? { background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }
+                : { color: active ? accent : C.muted }}>
+              {it.label}
+            </span>
+            {active && isDraft && (
+              <span className="absolute -bottom-0.5 rounded-full" style={{ width: 26, height: 3, background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, boxShadow: `0 0 8px ${C.principal}aa` }} />
+            )}
           </button>
         );
       })}
@@ -6943,6 +6981,56 @@ function PlayerSearchScreen({ players, jornadas, teams, myTeam, me, budgetAvaila
   );
 }
 
+// Pestaña de la cabecera del draft (segmented pill, degradado rosa→naranja
+// cuando está activa) — mismo lenguaje visual que el resto de segmented
+// controls de la app (ver ClasificacionRealScreen).
+function DraftTabPill({ active, onClick, icon: Icon, label }) {
+  return (
+    <button onClick={onClick} className="fl-tap flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-full fl-display text-[10px] uppercase tracking-wide whitespace-nowrap transition-all"
+      style={active
+        ? { background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 0 14px ${C.principal}66` }
+        : { background: "transparent", border: `1px solid ${C.principal}44`, color: C.muted }}>
+      {Icon && <Icon size={12} />}
+      {label}
+    </button>
+  );
+}
+
+// Tarjeta de jugadora del draft: escudo + posición arriba, foto (o hueco
+// vacío si no hay imagen — no fingimos camisetas ilustradas) y nombre debajo.
+// Al seleccionarla aparece la insignia con el número de orden en la lista.
+function DraftPlayerCard({ p, teamCrests, pickNumber, selected, gotIt, onClick, disabled }) {
+  const Wrapper = onClick ? "button" : "div";
+  const wrapperProps = onClick ? { onClick, disabled } : {};
+  return (
+    <Wrapper {...wrapperProps} className="fl-tap relative flex flex-col items-center gap-1.5 p-2.5 rounded-xl text-center w-full"
+      style={{
+        background: selected ? `linear-gradient(160deg, ${C.principalSoft}, ${C.navy800})` : C.navy800,
+        border: selected ? `1.5px solid ${C.principal}` : `1px solid ${C.line}`,
+        boxShadow: selected ? `0 0 16px ${C.principal}55` : "none",
+        opacity: disabled && !selected ? 0.4 : 1,
+      }}>
+      <div className="w-full flex items-center justify-between">
+        <PositionBadge posKey={p.position} size="sm" />
+        <TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={18} />
+      </div>
+      <PlayerPhoto url={p.photo} size={54} rounded={10} />
+      <span className="fl-body text-[11px] font-medium leading-tight truncate w-full" style={{ color: C.white }}>{p.name}</span>
+      {pickNumber != null && (
+        <span className="absolute -top-1.5 -left-1.5 flex items-center justify-center fl-mono text-[10px] font-bold rounded-full"
+          style={{ width: 20, height: 20, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 0 8px ${C.principal}77` }}>
+          {pickNumber}
+        </span>
+      )}
+      {gotIt && (
+        <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center rounded-full" style={{ background: C.navy900, width: 18, height: 18 }}>
+          <CircleCheck size={16} color={C.positive} />
+        </span>
+      )}
+    </Wrapper>
+  );
+}
+
 // Sustituye al Mercado durante toda la fase de playoffs: pantalla de draft
 // para quien siga clasificada/o (construir tu lista, verla bloqueada tras
 // enviarla, ver tu plantilla de playoffs crecer día a día), y modo
@@ -6951,24 +7039,37 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
   const [draft, setDraft] = useState([]); // lista que se está construyendo, antes de enviar
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [view, setView] = useState("lista"); // "lista" | "picks_<inicioDeRango>"
+  const [search, setSearch] = useState("");
   const round = playoffState.round;
   const isParticipant = (playoffState.qualifiers || []).includes(profile.name);
   const myList = (playoffState.lists[round] || {})[profile.name] || null;
   const mySquadIds = (playoffState.squads[round] || {})[profile.name] || [];
-  const mySquad = mySquadIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
   const targetSize = PLAYOFF_SQUAD_SIZE[round] || 9;
   const listSize = PLAYOFF_LIST_SIZE[round] || 16;
 
   const draftedIds = new Set(Object.values(playoffState.squads[round] || {}).flat());
   const pool = useMemo(() => playoffService.availablePool(jornadas, players, round, [...draftedIds]), [jornadas, players, round, playoffState.squads]);
-  const poolByTeam = useMemo(() => {
-    const m = {};
-    pool.forEach((p) => { (m[p.team] = m[p.team] || []).push(p); });
-    return m;
-  }, [pool]);
+  const filteredPool = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? pool.filter((p) => p.name.toLowerCase().includes(q)) : pool;
+  }, [pool, search]);
 
   const roundLabel = { CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[round] || "";
   const roundLog = (playoffState.log || []).filter((l) => l.round === round).slice().reverse();
+
+  // Pestañas "PICKS 1-2", "PICKS 3-4"... agrupando la lista de preferencia
+  // de dos en dos, tal y como pide el diseño de referencia.
+  const pickGroups = useMemo(() => {
+    const groups = [];
+    for (let start = 0; start < listSize; start += 2) {
+      const end = Math.min(start + 1, listSize - 1);
+      groups.push({ key: `picks_${start}`, label: end > start ? `PICKS ${start + 1}-${end + 1}` : `PICK ${start + 1}`, indices: end > start ? [start, end] : [start] });
+    }
+    return groups;
+  }, [listSize]);
+  const canSeeOtherLists = !!myList || !isParticipant;
+  const activeGroup = pickGroups.find((g) => g.key === view);
 
   const toggleDraftPick = (playerId) => {
     setDraft((prev) => prev.includes(playerId) ? prev.filter((id) => id !== playerId) : (prev.length < listSize ? [...prev, playerId] : prev));
@@ -7008,7 +7109,7 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
       </p>
 
       {/* Resumen de plantillas de todos los participantes */}
-      <div className="fl-row p-3 mb-3">
+      <div className="fl-row p-3 mb-3" style={{ border: `1px solid ${C.principal}22` }}>
         <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>PLANTILLAS ({targetSize} objetivo)</div>
         <div className="space-y-1.5">
           {playoffState.qualifiers.map((u) => {
@@ -7027,110 +7128,145 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
         </div>
       </div>
 
-      {isParticipant && !myList && (
-        <div className="fl-row p-3.5 mb-3" style={{ border: `1.5px solid ${C.gold}` }}>
-          <div className="flex items-center justify-between mb-2.5">
-            <span className="fl-mono text-[10px] font-bold" style={{ color: C.gold }}>TU LISTA ({draft.length}/{listSize})</span>
-          </div>
-          {draft.length > 0 && (
-            <div className="space-y-1.5 mb-3">
-              {draft.map((id, i) => {
-                const p = players.find((x) => x.id === id);
-                if (!p) return null;
-                return (
-                  <div key={id} className="flex items-center gap-2 rounded-md px-2 py-1.5" style={{ background: C.navy800 }}>
-                    <span className="fl-mono text-[10px] font-bold w-4" style={{ color: C.gold }}>{i + 1}</span>
-                    <PlayerPhoto url={p.photo} size={26} rounded={999} />
-                    <span className="fl-body text-xs flex-1 truncate" style={{ color: C.white }}>{p.name}</span>
-                    <button onClick={() => moveUp(i)} disabled={i === 0} className="fl-tap p-1 disabled:opacity-20"><ChevronUp size={14} color={C.muted} /></button>
-                    <button onClick={() => toggleDraftPick(id)} className="fl-tap p-1"><X size={14} color={C.negative} /></button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {error && <div className="fl-mono text-[10px] mb-2" style={{ color: C.negative }}>{error}</div>}
-          <button onClick={submit} disabled={busy || draft.length === 0} className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2" style={{ background: C.gold, color: C.ink }}>
-            {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar lista (no se podrá cambiar)"}
-          </button>
+      {/* Cabecera de pestañas: LISTA DEL DRAFT + PICKS 1-2 / 3-4 / ... */}
+      <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar pb-1">
+        <DraftTabPill active={view === "lista"} onClick={() => setView("lista")} icon={Users} label="Lista del draft" />
+        {pickGroups.map((g) => (
+          <DraftTabPill key={g.key} active={view === g.key} onClick={() => setView(g.key)} label={g.label} />
+        ))}
+      </div>
 
-          <div className="fl-mono text-[10px] font-bold mt-4 mb-2" style={{ color: C.muted }}>JUGADORAS DISPONIBLES</div>
-          <div className="space-y-3 max-h-96 overflow-y-auto fl-scrollbar">
-            {Object.entries(poolByTeam).map(([team, teamPlayers]) => (
-              <div key={team}>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <TeamCrest name={team} photo={teamCrests?.[team]} size={18} />
-                  <span className="fl-mono text-[10px] font-semibold" style={{ color: C.muted }}>{team}</span>
-                </div>
-                <div className="space-y-1">
-                  {teamPlayers.map((p) => {
-                    const picked = draft.includes(p.id);
+      {/* Cabecera de contenido: título de la vista + contador/buscador (solo en la lista) */}
+      <div className="flex items-center justify-between gap-2 mb-2.5">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {view === "lista" ? <Users size={14} color={C.principal} /> : <Star size={14} color={C.principal} />}
+          <span className="fl-display text-xs uppercase truncate" style={{ color: C.white }}>{view === "lista" ? "Lista del draft" : activeGroup?.label}</span>
+        </div>
+        {view === "lista" && (
+          <span className="fl-mono text-[10px] flex-shrink-0" style={{ color: C.muted }}>{(isParticipant && myList ? myList.length : filteredPool.length)} JUGADORAS</span>
+        )}
+      </div>
+
+      {view === "lista" && (isParticipant && !myList) && (
+        <div className="relative mb-3">
+          <Search size={13} color={C.muted} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar jugadora..."
+            className="w-full fl-body text-xs rounded-lg py-2 pl-7 pr-3 outline-none" style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }} />
+        </div>
+      )}
+
+      {view === "lista" && (
+        <>
+          {isParticipant && !myList && (
+            <div className="mb-3">
+              {draft.length > 0 && (
+                <div className="flex gap-1.5 mb-3 overflow-x-auto fl-scrollbar pb-1">
+                  {draft.map((id, i) => {
+                    const p = players.find((x) => x.id === id);
+                    if (!p) return null;
                     return (
-                      <button key={p.id} onClick={() => toggleDraftPick(p.id)} className="fl-tap w-full flex items-center gap-2 rounded-md px-2 py-1.5"
-                        style={{ background: picked ? `${C.gold}22` : C.navy800, border: picked ? `1px solid ${C.gold}` : "1px solid transparent" }}>
-                        <PlayerPhoto url={p.photo} size={26} rounded={999} />
-                        <div className="flex-1 min-w-0 text-left">
-                          <div className="fl-body text-xs truncate" style={{ color: C.white }}>{p.name}</div>
-                        </div>
-                        <PositionBadge posKey={p.position} size="sm" />
-                        {picked && <span className="fl-mono text-[10px] font-bold" style={{ color: C.gold }}>#{draft.indexOf(p.id) + 1}</span>}
-                      </button>
+                      <div key={id} className="flex-shrink-0 flex items-center gap-1 rounded-full pl-1 pr-2 py-1"
+                        style={{ background: `${C.principal}18`, border: `1px solid ${C.principal}55` }}>
+                        <span className="fl-mono text-[10px] font-bold flex items-center justify-center rounded-full flex-shrink-0"
+                          style={{ width: 16, height: 16, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white }}>{i + 1}</span>
+                        <span className="fl-body text-[11px] whitespace-nowrap" style={{ color: C.white }}>{p.name}</span>
+                        <button onClick={() => moveUp(i)} disabled={i === 0} className="fl-tap disabled:opacity-20"><ChevronUp size={11} color={C.muted} /></button>
+                        <button onClick={() => toggleDraftPick(id)} className="fl-tap"><X size={11} color={C.negative} /></button>
+                      </div>
                     );
                   })}
                 </div>
+              )}
+
+              {error && <div className="fl-mono text-[10px] mb-2" style={{ color: C.negative }}>{error}</div>}
+
+              <div className="grid grid-cols-3 gap-2 max-h-[26rem] overflow-y-auto fl-scrollbar pb-1">
+                {filteredPool.map((p) => {
+                  const picked = draft.includes(p.id);
+                  return (
+                    <DraftPlayerCard key={p.id} p={p} teamCrests={teamCrests} selected={picked}
+                      pickNumber={picked ? draft.indexOf(p.id) + 1 : null} onClick={() => toggleDraftPick(p.id)} />
+                  );
+                })}
+                {filteredPool.length === 0 && (
+                  <div className="col-span-3 fl-mono text-[11px] py-4 text-center" style={{ color: C.muted }}>
+                    {pool.length === 0 ? "Ya no quedan jugadoras libres para esta ronda." : "Ninguna jugadora coincide con la búsqueda."}
+                  </div>
+                )}
               </div>
-            ))}
-            {pool.length === 0 && <div className="fl-mono text-[11px]" style={{ color: C.muted }}>Ya no quedan jugadoras libres para esta ronda.</div>}
-          </div>
-        </div>
+
+              <button onClick={submit} disabled={busy || draft.length === 0} className="fl-tap w-full rounded-full py-3 mt-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2 fl-display uppercase tracking-wide"
+                style={{ background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 4px 18px ${C.principalSoft}` }}>
+                {busy ? <Loader2 size={15} className="animate-spin" /> : <>Confirmar draft <ChevronRight size={15} /></>}
+              </button>
+              <div className="fl-mono text-[9px] text-center mt-1.5" style={{ color: C.muted }}>Una vez enviada, la lista no se podrá cambiar.</div>
+            </div>
+          )}
+
+          {isParticipant && myList && (
+            <div className="mb-3">
+              <div className="fl-mono text-[10px] font-bold mb-2 flex items-center gap-1.5" style={{ color: C.positive }}><CircleCheck size={12} /> LISTA ENVIADA (bloqueada)</div>
+              <div className="grid grid-cols-3 gap-2">
+                {myList.map((id, i) => {
+                  const p = players.find((x) => x.id === id);
+                  if (!p) return null;
+                  return <DraftPlayerCard key={id} p={p} teamCrests={teamCrests} pickNumber={i + 1} gotIt={mySquadIds.includes(id)} disabled />;
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isParticipant && (
+            <div className="grid grid-cols-3 gap-2 max-h-[26rem] overflow-y-auto fl-scrollbar pb-1 mb-3">
+              {filteredPool.map((p) => <DraftPlayerCard key={p.id} p={p} teamCrests={teamCrests} disabled />)}
+              {filteredPool.length === 0 && <div className="col-span-3 fl-mono text-[11px] py-4 text-center" style={{ color: C.muted }}>Ya no quedan jugadoras libres para esta ronda.</div>}
+            </div>
+          )}
+        </>
       )}
 
-      {isParticipant && myList && (
-        <div className="fl-row p-3.5 mb-3">
-          <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.positive }}>✓ TU LISTA ENVIADA (bloqueada)</div>
-          <div className="space-y-1">
-            {myList.map((id, i) => {
-              const p = players.find((x) => x.id === id);
-              if (!p) return null;
-              const gotIt = mySquadIds.includes(id);
-              return (
-                <div key={id} className="flex items-center gap-2 text-xs" style={{ color: gotIt ? C.positive : C.muted }}>
-                  <span className="fl-mono w-4">{i + 1}</span> {p.name} {gotIt && <CircleCheck size={11} />}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Listas de los demás — solo visibles si tú ya has enviado la tuya (o si no participas, siempre visibles como espectador) */}
-      {(myList || !isParticipant) && (
-        <div className="fl-row p-3.5 mb-3">
-          <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>LISTAS DE TODOS</div>
-          <div className="space-y-3">
-            {playoffState.qualifiers.filter((u) => u !== profile.name).map((u) => {
+      {/* Pestañas PICKS N-M: para cada participante, quién marcó a quién en esos puestos de la lista.
+          Solo visibles si tú ya has enviado la tuya (o si no participas, siempre visibles como espectador). */}
+      {activeGroup && (
+        canSeeOtherLists ? (
+          <div className="space-y-2 mb-3">
+            {playoffState.qualifiers.map((u) => {
+              const isMe = u === profile.name;
               const list = (playoffState.lists[round] || {})[u];
               return (
-                <div key={u}>
-                  <div className="fl-body text-xs font-semibold mb-1" style={{ color: C.white }}>{u}</div>
-                  {!list ? (
-                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Todavía no ha enviado su lista.</div>
-                  ) : (
-                    <div className="flex flex-wrap gap-1">
-                      {list.map((id, i) => {
-                        const p = players.find((x) => x.id === id);
-                        return p ? <span key={id} className="fl-mono text-[10px] px-1.5 py-0.5 rounded" style={{ background: C.navy800, color: C.muted }}>{i + 1}. {p.name}</span> : null;
-                      })}
-                    </div>
-                  )}
+                <div key={u} className="fl-row flex items-center gap-3 p-2.5" style={{ border: `1px solid ${C.principal}22` }}>
+                  <div className="flex items-center justify-center fl-mono text-xs font-bold flex-shrink-0 rounded-full"
+                    style={{ width: 32, height: 32, background: isMe ? `linear-gradient(135deg, ${C.principal}, ${C.baby})` : C.navy700, color: isMe ? C.white : C.muted }}>
+                    {(u || "?")[0].toUpperCase()}
+                  </div>
+                  <span className="fl-body text-xs font-semibold flex-1 truncate" style={{ color: isMe ? C.baby : C.white }}>{u}{isMe ? " (tú)" : ""}</span>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {!list ? (
+                      <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Sin enviar</span>
+                    ) : activeGroup.indices.map((idx) => {
+                      const pid = list[idx];
+                      const p = pid ? players.find((x) => x.id === pid) : null;
+                      return (
+                        <div key={idx} className="relative" style={{ width: 40, height: 40 }}>
+                          <span className="absolute -top-1.5 -left-1.5 z-10 flex items-center justify-center fl-mono text-[9px] font-bold rounded-full"
+                            style={{ width: 16, height: 16, background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white }}>{idx + 1}</span>
+                          {p ? <PlayerPhoto url={p.photo} size={40} rounded={8} /> : <div style={{ width: 40, height: 40, borderRadius: 8, background: C.navy700, border: `1px dashed ${C.line}` }} />}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })}
           </div>
-        </div>
+        ) : (
+          <div className="fl-row p-4 text-center mb-3">
+            <span className="fl-body text-xs" style={{ color: C.muted }}>Envía tu lista para poder ver la de los demás.</span>
+          </div>
+        )
       )}
 
-      <div className="fl-row p-3.5">
+      <div className="fl-row p-3.5" style={{ border: `1px solid ${C.principal}22` }}>
         <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>DIARIO DEL DRAFT</div>
         {roundLog.length === 0 ? (
           <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Todavía no se ha repartido nada.</div>
