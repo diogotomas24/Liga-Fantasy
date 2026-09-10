@@ -785,11 +785,12 @@ function toDateStr(d) {
 // chips ya se ven...) la usa como si fuera "hoy" de verdad, en vez de la
 // fecha real del dispositivo. Sin modo pruebas, funciona exactamente igual
 // que siempre (usa la fecha real). Se actualiza desde App() cuando se pulsa
-// "Avanzar día" o "Salir" del modo pruebas.
+// "Avanzar día", se salta a una fecha/hora concreta, o se sale del modo.
 let __simulatedTodayStr = null;
-function setSimulatedToday(dateStr) { __simulatedTodayStr = dateStr || null; }
+let __simulatedTimeStr = "12:00";
+function setSimulatedToday(dateStr, timeStr) { __simulatedTodayStr = dateStr || null; __simulatedTimeStr = timeStr || "12:00"; }
 function getEffectiveToday() {
-  if (__simulatedTodayStr) return new Date(__simulatedTodayStr + "T12:00:00");
+  if (__simulatedTodayStr) return new Date(`${__simulatedTodayStr}T${__simulatedTimeStr}:00`);
   return new Date();
 }
 
@@ -2891,7 +2892,7 @@ export default function App() {
       let simDate = await readShared("marketSimDate", null);
       // Si la fecha simulada ya quedó atrás (la real la ha alcanzado o pasado), se
       // desactiva sola el modo pruebas, para no quedarse encallado en el pasado.
-      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); setSimulatedToday(null); }
+      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); await deleteShared("marketSimTime"); setSimulatedToday(null); }
       const todayStr = simDate || realTodayStr;
       const lastRun = await readShared("marketPricingLastRun", "");
       if (lastRun === todayStr) return;
@@ -3198,13 +3199,13 @@ export default function App() {
     (async () => {
       const sess = await getSessionProfile();
       const fav = await readPersonal("favoritos", []);
-      const [pl, jo, crests, simDate] = await Promise.all([
-        readPlayers(), readJornadas(), readTeamCrests(), readShared("marketSimDate", null),
+      const [pl, jo, crests, simDate, simTime] = await Promise.all([
+        readPlayers(), readJornadas(), readTeamCrests(), readShared("marketSimDate", null), readShared("marketSimTime", null),
       ]);
       setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
-      setSimulatedToday(simDate);
+      setSimulatedToday(simDate, simTime);
       if (sess.hasSession && sess.name) {
         const prof = { name: sess.name };
         await writePersonal("profile", prof);
@@ -3558,9 +3559,48 @@ export default function App() {
 
   const exitSimMode = useCallback(async () => {
     await deleteShared("marketSimDate");
+    await deleteShared("marketSimTime");
     setSimulatedToday(null); // vuelve a la fecha real para todo el sistema de fechas
     return { ok: true };
   }, []);
+
+  // MODO PRUEBAS: salta DIRECTAMENTE a la fecha y hora que se elija (en vez
+  // de ir avanzando de un día en un día), para poder probar de un tirón el
+  // inicio de una jornada concreta a su hora exacta, sin tener que darle a
+  // "Avanzar 1 día" muchas veces. Dispara la misma cascada de efectos que el
+  // avance normal (motor de precios, bloqueo de alineaciones, mercado…).
+  const jumpToSimDateTime = useCallback(async (dateStr, timeStr) => {
+    if (!dateStr) return null;
+    const hhmm = timeStr && /^\d{2}:\d{2}$/.test(timeStr) ? timeStr : "12:00";
+
+    const baseline = await readShared("testBaselinePrices", null);
+    if (!baseline) {
+      const currentPlayers = await readPlayers();
+      const snapshot = {};
+      currentPlayers.forEach((p) => { snapshot[p.id] = p.basePrice; });
+      await writeShared("testBaselinePrices", snapshot);
+    }
+
+    await writeShared("marketSimDate", dateStr);
+    await writeShared("marketSimTime", hhmm);
+    setSimulatedToday(dateStr, hhmm);
+    await writeShared("marketPricingLastRun", ""); // para que el motor de precios corra ya mismo si tocaba
+    await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que "empiece" con este salto
+    await checkDailyMarketPricing();
+
+    if (activeLeagueId) {
+      const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
+      if (freshMarket && !freshMarket.resolved && Date.now() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+      }
+      await syncMarket(activeLeagueId, marketResetHour);
+    }
+
+    const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
+    setPlayers(freshPlayers);
+    setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
+    return { date: dateStr, time: hhmm };
+  }, [checkDailyMarketPricing, checkLineupLock, activeLeagueId, marketResetHour, syncMarket]);
 
   // Reinicia toda la prueba: vuelve los precios a como estaban antes del
   // primer "Avanzar día" de esta ronda, borra estadísticas y resultados de
@@ -3585,7 +3625,7 @@ export default function App() {
     // si no, se quedan pegadas para siempre y nunca se vuelven a capturar bien.
     await supabase.from("jornadas").update({ lineups: {} }).neq("id", "__none__");
     await Promise.all([
-      deleteShared("marketSimDate"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
+      deleteShared("marketSimDate"), deleteShared("marketSimTime"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
       deleteShared("jornadaMvpPriced"), deleteShared("lineupLocked"), deleteShared("testBaselinePrices"),
     ]);
     setSimulatedToday(null);
@@ -3882,7 +3922,7 @@ export default function App() {
             )
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} />
+            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} onJumpSimDateTime={jumpToSimDateTime} />
           )}
         </div>
       </main>
@@ -8202,8 +8242,12 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock }) {
+function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock, onJumpSimDateTime }) {
   const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
+  const [simTime, setSimTime] = useState(null);
+  const [jumpDate, setJumpDate] = useState("");
+  const [jumpTime, setJumpTime] = useState("12:00");
+  const [jumpBusy, setJumpBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [debugJornadaId, setDebugJornadaId] = useState("j1");
@@ -8211,20 +8255,39 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
   const [debugBusy, setDebugBusy] = useState(false);
 
   useEffect(() => {
-    (async () => { setSimDate(await readShared("marketSimDate", null)); })();
+    (async () => {
+      const d = await readShared("marketSimDate", null);
+      const t = await readShared("marketSimTime", null);
+      setSimDate(d);
+      setSimTime(t || "12:00");
+      // Precarga los selectores de fecha/hora con el momento simulado actual
+      // (o con hoy si todavía no hay ninguna simulación activa).
+      setJumpDate(d || toDateStr(new Date()));
+      setJumpTime(t || "12:00");
+    })();
   }, []);
 
   const advance = async () => {
     setBusy(true);
     const next = await onAdvanceSimDay();
     setSimDate(next);
+    setSimTime("12:00");
+    setJumpDate(next); setJumpTime("12:00");
     setBusy(false);
   };
   const exit = async () => {
     setBusy(true);
     await onExitSimMode();
     setSimDate(null);
+    setSimTime(null);
     setBusy(false);
+  };
+  const jumpNow = async () => {
+    if (!jumpDate) return;
+    setJumpBusy(true);
+    const res = await onJumpSimDateTime(jumpDate, jumpTime);
+    if (res) { setSimDate(res.date); setSimTime(res.time); }
+    setJumpBusy(false);
   };
   const doReset = async () => {
     setBusy(true);
@@ -8252,7 +8315,7 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
           Adelanta un día "de mentira" para ver cómo se mueve el mercado sin esperar a la medianoche real: mueve precios y también resuelve el mercado de tu liga actual (entrega jugadoras a quien más pujó). Como el precio es global, esto se ve en cualquier liga.
         </p>
         <div className="fl-mono text-[11px] mb-2.5" style={{ color: C.white }}>
-          {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span></> : "Sin simular (fecha real)"}
+          {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span> a las <span style={{ color: C.gold, fontWeight: 700 }}>{simTime || "12:00"}</span></> : "Sin simular (fecha real)"}
         </div>
         <div className="flex gap-2 mb-2">
           <button disabled={busy} onClick={advance} className="fl-tap flex-1 rounded-md py-2 text-xs font-semibold disabled:opacity-50" style={{ background: C.gold, color: C.ink }}>
@@ -8263,6 +8326,27 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
               Salir
             </button>
           )}
+        </div>
+
+        {/* Saltar directamente a una fecha y hora concretas, para probar el
+            inicio exacto de una jornada sin tener que avanzar día a día. */}
+        <div className="rounded-md p-2.5 mb-2.5" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Clock size={12} color={C.gold} />
+            <span className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>SALTAR A FECHA Y HORA</span>
+          </div>
+          <div className="flex gap-2 mb-2">
+            <input type="date" value={jumpDate} onChange={(e) => setJumpDate(e.target.value)}
+              className="flex-1 fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
+            <input type="time" value={jumpTime} onChange={(e) => setJumpTime(e.target.value)}
+              className="fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ width: 92, background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
+          </div>
+          <button disabled={jumpBusy || !jumpDate} onClick={jumpNow} className="fl-tap w-full rounded-md py-2 text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" style={{ background: C.principal, color: C.white }}>
+            {jumpBusy ? <Loader2 size={13} className="animate-spin" /> : <>Ir a esta fecha y hora <ChevronRight size={13} /></>}
+          </button>
+          <p className="fl-body text-[10px] mt-2" style={{ color: C.muted }}>
+            Útil para probar el inicio de una jornada a su hora exacta, o cualquier comportamiento que dependa del reloj, sin ir avanzando de un día en un día.
+          </p>
         </div>
 
         {confirmReset ? (
