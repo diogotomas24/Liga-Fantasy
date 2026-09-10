@@ -907,13 +907,21 @@ const playoffService = {
     return playoffService.findRoundJornadas(jornadas, round);
   },
 
-  // Los equipos reales "vivos" en una ronda son, sencillamente, los que
-  // tengan algún partido programado en la(s) jornada(s) de esa ronda — se
-  // deduce del calendario que ya cargas tal cual, sin mantener nada aparte.
+  // Los equipos reales "vivos" en una ronda son los que la clasificación real
+  // dice que corresponden a esa ronda del cuadro (mismo cálculo que
+  // Clasificación → Playoffs, vía realBracketService): en cuartos, el top 8
+  // de la liga regular directamente — no hace falta esperar a que alguien
+  // rellene a mano los partidos de esa jornada; en semis/final, quien haya
+  // ganado su serie/partido anterior según los marcadores reales ya
+  // cargados. Así el fondo de jugadoras del draft nunca se queda vacío por
+  // un dato administrativo que todavía no se ha escrito.
   aliveRealTeams(jornadas, round) {
-    const teams = new Set();
-    playoffService.jornadasForRound(jornadas, round).forEach((j) => (j.partidos || []).forEach((p) => { teams.add(p.local); teams.add(p.visitante); }));
-    return teams;
+    const bracket = realBracketService.buildBracket(jornadas);
+    if (!bracket.ready) return new Set();
+    if (round === "CUARTOS") return new Set(bracket.top8.map((r) => r.team));
+    if (round === "SEMIS") return new Set(bracket.cuartos.map((m) => m.winner).filter(Boolean));
+    if (round === "FINAL") return new Set(bracket.semis.map((m) => m.winner).filter(Boolean));
+    return new Set();
   },
 
   // Fondo de jugadoras disponible para una ronda: todas las de los equipos
@@ -1104,6 +1112,31 @@ const realBracketService = {
       : this.singleMatch(finalJornada, finalTeamA, finalTeamB);
 
     return { ready: true, top8, cuartos, semis, final };
+  },
+
+  // Partidos "a mostrar" de una jornada de playoffs: los que ya haya
+  // cargados de verdad (con o sin marcador todavía) más, para los cruces del
+  // cuadro que no tengan partido cargado, uno "previsto" sin marcador con los
+  // equipos que le tocan según la clasificación — así el Calendario nunca se
+  // queda vacío en cuanto se abre la ronda, y siempre coincide con lo que se
+  // ve en Clasificación → Playoffs (es el mismo cálculo).
+  projectedPartidos(jornadas, jornada) {
+    const real = jornada?.partidos || [];
+    const fase = jornadaFase(jornada);
+    if (fase === "regular") return real;
+    const bracket = this.buildBracket(jornadas);
+    if (!bracket.ready) return real;
+    let pairs = [];
+    if (fase === "cuartos") pairs = bracket.cuartos.map((m) => [m.teamA, m.teamB]);
+    else if (fase === "semis") pairs = bracket.semis.map((m) => [m.teamA, m.teamB]);
+    else if (fase === "final") pairs = [[bracket.final.teamA, bracket.final.teamB]];
+    const merged = [...real];
+    pairs.forEach(([teamA, teamB], i) => {
+      if (!teamA || !teamB) return;
+      const yaExiste = real.some((p) => (p.local === teamA && p.visitante === teamB) || (p.local === teamB && p.visitante === teamA));
+      if (!yaExiste) merged.push({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true });
+    });
+    return merged;
   },
 };
 
@@ -3800,7 +3833,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
 
   const currentJornada = useMemo(() => findCurrentJornada(jornadas), [jornadas]);
   const currentJornadaNumber = currentJornada ? jornadas.findIndex(j => j.id === currentJornada.id) + 1 : 0;
-  const partidosPreview = (currentJornada?.partidos || []).slice(0, 4);
+  const partidosPreview = useMemo(() => realBracketService.projectedPartidos(jornadas, currentJornada).slice(0, 4), [jornadas, currentJornada]);
 
   const submitCreate = async () => {
     if (!name.trim()) return;
@@ -3921,12 +3954,12 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
                 {partidosPreview.map(m => <PartidoRow key={m.id} m={m} teamCrests={teamCrests} jornada={currentJornada} players={players} />)}
               </div>
             )}
-            {(currentJornada.partidos || []).length > 0 && (
+            {(currentJornada.partidos || []).length > 0 || partidosPreview.length > 0 ? (
               <button onClick={() => setShowCalendar(true)}
                 className="fl-tap w-full mt-3 rounded-md py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
                 Todos los partidos
               </button>
-            )}
+            ) : null}
           </div>
         )}
       </div>
@@ -4443,7 +4476,8 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
 function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players }) {
   const [idx, setIdx] = useState(initialIndex ?? Math.max(jornadas.length - 1, 0));
   const jornada = jornadas[idx];
-  const grouped = useMemo(() => groupPartidosByFecha(jornada?.partidos), [jornada]);
+  const partidos = useMemo(() => realBracketService.projectedPartidos(jornadas, jornada), [jornadas, jornada]);
+  const grouped = useMemo(() => groupPartidosByFecha(partidos), [partidos]);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -4469,7 +4503,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
       </div>
 
       <div className="flex-1 overflow-y-auto fl-scrollbar px-3 py-4">
-        {!jornada || (jornada.partidos || []).length === 0 ? (
+        {!jornada || partidos.length === 0 ? (
           <EmptyState title="Sin partidos" text="Todavía no hay partidos añadidos para esta jornada." />
         ) : (
           <div className="space-y-4">
@@ -4813,7 +4847,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
   const myRow = standings.find(r => r.name === profile.name);
   const lastJornada = findCurrentJornada(jornadas);
   const currentJornadaNumber = lastJornada ? jornadas.findIndex(j => j.id === lastJornada.id) + 1 : jornadas.length + 1;
-  const partidos = lastJornada?.partidos || [];
+  const partidos = useMemo(() => realBracketService.projectedPartidos(jornadas, lastJornada), [jornadas, lastJornada]);
   const myTripleEntry = lastJornada ? (tripleEntries || []).find(e => e.jornadaId === lastJornada.id && e.userId === profile.name) : null;
   const isPlayoffMode = playoffState && playoffState.phase !== "none";
 
@@ -5140,14 +5174,19 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         <ClasificacionRealScreen jornadas={jornadas} teamCrests={teamCrests} onClose={() => setShowClasificacion(false)} />
       )}
 
-      {showPlayoffIntro && <PlayoffIntroScreen onClose={() => setShowPlayoffIntro(false)} />}
+      {showPlayoffIntro && (
+        <PlayoffIntroScreen
+          qualified={!!playoffState?.qualifiers?.includes(profile.name)}
+          onClose={() => setShowPlayoffIntro(false)}
+        />
+      )}
     </div>
   );
 }
 
 // Animación + hoja explicativa que se ve una única vez, el primer día que se
 // detectan playoffs activos en este dispositivo.
-function PlayoffIntroScreen({ onClose }) {
+function PlayoffIntroScreen({ qualified, onClose }) {
   const [phase, setPhase] = useState("anim"); // "anim" -> "sheet"
   useEffect(() => {
     const t = setTimeout(() => setPhase("sheet"), 1800);
@@ -5169,11 +5208,35 @@ function PlayoffIntroScreen({ onClose }) {
     );
   }
 
+  // Segunda pantalla: si te has clasificado, cómo funciona la fase; si no,
+  // un mensaje de despedida de temporada con la misma estética del juego.
+  if (!qualified) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <span style={{ fontSize: 56 }}>👋</span>
+          <div className="fl-display text-xl uppercase mt-4 mb-2" style={{ color: C.white }}>Se acaba tu temporada aquí</div>
+          <div className="fl-body text-sm mb-1" style={{ color: C.muted, maxWidth: 280 }}>
+            Sorry, no ha sido posible clasificar — tu equipo ha llegado hasta aquí.
+          </div>
+          <div className="fl-body text-sm" style={{ color: C.muted, maxWidth: 280 }}>
+            El año que viene seguro que vas a más. 💪
+          </div>
+        </div>
+        <div className="p-4">
+          <button onClick={onClose} className="fl-tap w-full rounded-md py-3 text-sm font-semibold" style={{ background: C.gold, color: C.ink }}>
+            Entendido
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex-1 overflow-y-auto fl-scrollbar p-5" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
         <div className="text-center mb-5"><span style={{ fontSize: 56 }}>🏆</span></div>
-        <div className="fl-display text-xl uppercase text-center mb-1" style={{ color: C.white }}>Ha acabado la liga regular</div>
+        <div className="fl-display text-xl uppercase text-center mb-1" style={{ color: C.white }}>¡Te has clasificado!</div>
         <div className="fl-body text-sm text-center mb-6" style={{ color: C.muted }}>Ahora empiezan los playoffs — así funcionan:</div>
         <div className="space-y-4">
           {[
@@ -7056,18 +7119,19 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
   }, [pool, search]);
 
   const roundLabel = { CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[round] || "";
-  const roundLog = (playoffState.log || []).filter((l) => l.round === round).slice().reverse();
 
-  // Pestañas "PICKS 1-2", "PICKS 3-4"... agrupando la lista de preferencia
-  // de dos en dos, tal y como pide el diseño de referencia.
+  // Pestañas "PICKS 1-2", "PICKS 3-4"... agrupando la lista de preferencia de
+  // dos en dos — solo hasta completar plantilla (targetSize): a partir de ahí
+  // ya no hace falta pestaña propia, porque esos puestos de la lista son solo
+  // reserva por si algo se lo lleva otra persona antes.
   const pickGroups = useMemo(() => {
     const groups = [];
-    for (let start = 0; start < listSize; start += 2) {
-      const end = Math.min(start + 1, listSize - 1);
+    for (let start = 0; start < targetSize; start += 2) {
+      const end = Math.min(start + 1, targetSize - 1);
       groups.push({ key: `picks_${start}`, label: end > start ? `PICKS ${start + 1}-${end + 1}` : `PICK ${start + 1}`, indices: end > start ? [start, end] : [start] });
     }
     return groups;
-  }, [listSize]);
+  }, [targetSize]);
   const canSeeOtherLists = !!myList || !isParticipant;
   const activeGroup = pickGroups.find((g) => g.key === view);
 
@@ -7098,34 +7162,9 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
 
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-1">
+      <div className="flex items-center gap-1.5 mb-3">
         <FlaskConical size={14} color={C.gold} />
         <span className="fl-display text-sm uppercase" style={{ color: C.white }}>Draft — {roundLabel}</span>
-      </div>
-      <p className="fl-body text-xs mb-3" style={{ color: C.muted }}>
-        {isParticipant
-          ? "Sin presupuesto: elige en orden de preferencia. Cada día (o de una vez en la final) se reparten jugadoras de los equipos reales que sigan vivos."
-          : "No sigues en esta ronda — puedes ver cómo avanza el draft de tus compañeros, sin poder participar."}
-      </p>
-
-      {/* Resumen de plantillas de todos los participantes */}
-      <div className="fl-row p-3 mb-3" style={{ border: `1px solid ${C.principal}22` }}>
-        <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>PLANTILLAS ({targetSize} objetivo)</div>
-        <div className="space-y-1.5">
-          {playoffState.qualifiers.map((u) => {
-            const size = ((playoffState.squads[round] || {})[u] || []).length;
-            const submitted = !!(playoffState.lists[round] || {})[u];
-            return (
-              <div key={u} className="flex items-center justify-between">
-                <span className="fl-body text-xs" style={{ color: u === profile.name ? C.baby : C.white }}>{u}{u === profile.name ? " (tú)" : ""}</span>
-                <div className="flex items-center gap-2">
-                  {submitted && <CircleCheck size={12} color={C.positive} />}
-                  <span className="fl-mono text-xs font-semibold" style={{ color: C.gold }}>{size}/{targetSize}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </div>
 
       {/* Cabecera de pestañas: LISTA DEL DRAFT + PICKS 1-2 / 3-4 / ... */}
@@ -7199,7 +7238,6 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
                 style={{ background: `linear-gradient(135deg, ${C.principal}, ${C.baby})`, color: C.white, boxShadow: `0 4px 18px ${C.principalSoft}` }}>
                 {busy ? <Loader2 size={15} className="animate-spin" /> : <>Confirmar draft <ChevronRight size={15} /></>}
               </button>
-              <div className="fl-mono text-[9px] text-center mt-1.5" style={{ color: C.muted }}>Una vez enviada, la lista no se podrá cambiar.</div>
             </div>
           )}
 
@@ -7265,24 +7303,6 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
           </div>
         )
       )}
-
-      <div className="fl-row p-3.5" style={{ border: `1px solid ${C.principal}22` }}>
-        <div className="fl-mono text-[10px] font-bold mb-2" style={{ color: C.muted }}>DIARIO DEL DRAFT</div>
-        {roundLog.length === 0 ? (
-          <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Todavía no se ha repartido nada.</div>
-        ) : (
-          <div className="space-y-1.5 max-h-64 overflow-y-auto fl-scrollbar">
-            {roundLog.map((l, i) => {
-              const p = players.find((x) => x.id === l.playerId);
-              return (
-                <div key={i} className="fl-body text-[11px]" style={{ color: C.white }}>
-                  <span style={{ color: C.baby }}>{l.userName}</span> se llevó a <span style={{ color: C.gold }}>{p?.name || "—"}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
