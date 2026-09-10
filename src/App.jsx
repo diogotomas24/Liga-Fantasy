@@ -867,16 +867,36 @@ const playoffService = {
       lastAllocationDate: null, // fecha (YYYY-MM-DD) del último reparto diario ya hecho, para no repetirlo
       lists: {}, // { [round]: { [userName]: [playerId,...] } } — listas YA ENVIADAS (bloqueadas en cuanto se guardan)
       squads: {}, // { [round]: { [userName]: [playerId,...] } } — lo que se ha repartido de verdad
-      lineups: {}, // { [round]: { [userName]: lineup } } — alineación de playoffs de cada uno, por ronda
+      lineups: {}, // { [round]: { [userName]: lineup } } — alineación de playoffs EN VIVO de cada uno (editable hasta que se congela)
+      lockedLineups: {}, // { [jornadaTag]: { [userName]: lineup } } — alineación YA CONGELADA de cada jornada concreta (CUARTOS_IDA, CUARTOS_VUELTA, SEMIS o FINAL), igual que en liga regular
       log: [], // [{ round, day, userName, playerId, ts }] — "diario del draft" para el modo espectador
       pointsByRound: {}, // { [round]: { [userName]: number } }
       champion: null,
     };
   },
 
+  // Etiquetas de jornada concretas que congelan alineación por separado — en
+  // cuartos son DOS (ida y vuelta), porque se puede cambiar a la reserva
+  // entre un partido y otro; semis y final solo tienen una.
+  jornadaTagsForRound(round) {
+    return round === "CUARTOS" ? ["CUARTOS_IDA", "CUARTOS_VUELTA"] : [round];
+  },
+
   isPlayoffJornada(j) { return !!j?.playoffRound; },
   // Jornadas que SÍ cuentan para la clasificación de liga regular.
   regularJornadas(jornadas) { return (jornadas || []).filter((j) => !j.playoffRound); },
+  // ¿Ha acabado ya la liga regular de verdad? (la última jornada regular
+  // tiene TODOS sus partidos con marcador puesto). En cuanto esto es true,
+  // se abre el draft de cuartos — aunque el primer partido de playoffs de
+  // verdad todavía no haya llegado, dejando así los días de margen para
+  // hacer el draft antes de que empiece a jugarse.
+  regularSeasonFinished(jornadas) {
+    const regular = playoffService.regularJornadas(jornadas);
+    if (regular.length === 0) return false;
+    const last = [...regular].sort((a, b) => jornadaNumberFromName(b.name) - jornadaNumberFromName(a.name))[0];
+    const partidos = last.partidos || [];
+    return partidos.length > 0 && partidos.every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
+  },
   findRoundJornadas(jornadas, playoffRound) { return (jornadas || []).filter((j) => j.playoffRound === playoffRound); },
 
   // Jornada(s) que definen una ronda (cuartos son 2, semis y final 1 sola).
@@ -963,19 +983,26 @@ const playoffService = {
     return picks;
   },
 
-  // Puntos de un usuario en una ronda de playoffs, con su alineación de
-  // PLAYOFFS (no la de temporada), sumando la(s) jornada(s) de esa ronda.
-  computeRoundPoints(jornadas, round, lineup, players) {
+  // Puntos de un usuario en una ronda de playoffs. Usa la alineación YA
+  // CONGELADA de cada jornada concreta (una para ida, otra para vuelta en
+  // cuartos) — igual que en liga regular, una vez empezada esa jornada ya no
+  // vale cambiarla. Antes de que empiece, se usa la alineación en vivo como
+  // previsión.
+  computeRoundPoints(jornadas, round, lockedLineups, userName, players, liveLineup) {
     const js = playoffService.jornadasForRound(jornadas, round);
-    if (!lineup) return 0;
-    const ids = [...(lineup.starters || [])];
-    if (lineup.titularCoach) ids.push(lineup.titularCoach);
-    return js.reduce((sum, j) => sum + ids.reduce((s, id) => {
-      const player = players.find((p) => p.id === id);
-      if (!player) return s;
-      const pts = player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total : calcPlayerPoints(j.stats?.[id], player.position);
-      return s + (id === lineup.captainId ? pts * 2 : pts);
-    }, 0), 0);
+    return js.reduce((sum, j) => {
+      const locked = (lockedLineups[j.playoffRound] || {})[userName];
+      const lineup = locked || (hasJornadaEffectivelyStarted(j) ? null : liveLineup);
+      if (!lineup) return sum;
+      const ids = [...(lineup.starters || [])];
+      if (lineup.titularCoach) ids.push(lineup.titularCoach);
+      return sum + ids.reduce((s, id) => {
+        const player = players.find((p) => p.id === id);
+        if (!player) return s;
+        const pts = player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total : calcPlayerPoints(j.stats?.[id], player.position);
+        return s + (id === lineup.captainId ? pts * 2 : pts);
+      }, 0);
+    }, 0);
   },
 
   // Corte de una ronda: ordena por puntos (desempate: mejor puesto en la
@@ -2897,10 +2924,13 @@ export default function App() {
       const todayStr = toDateStr(getEffectiveToday());
       let changed = false;
 
-      // 1) Arranque: en cuanto exista la jornada de Cuartos-ida con partidos, se generan los clasificados.
+      // 1) Arranque: en cuanto la LIGA REGULAR haya acabado de verdad (todos
+      // los partidos de su última jornada con marcador puesto) se abre el
+      // draft — no hace falta esperar a la fecha del primer partido de
+      // playoffs, así quedan esos días de margen para hacer el draft antes.
       if (state.phase === "none") {
         const cuartosIda = playoffService.findRoundJornadas(freshJornadas, "CUARTOS_IDA")[0];
-        if (cuartosIda && (cuartosIda.partidos || []).length > 0) {
+        if (cuartosIda && playoffService.regularSeasonFinished(freshJornadas)) {
           const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
           const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
           if (qualifiers.length > 0) {
@@ -2909,6 +2939,31 @@ export default function App() {
             await logActivity({ type: "playoff_start", qualifiers });
           }
         }
+      }
+
+      // 1.5) Bloqueo de alineación: en cuanto una jornada de playoffs "empieza"
+      // (mismo criterio que en liga regular), se congela la alineación EN VIVO
+      // de ese momento para cada clasificada/o, tal como haya jugado esa
+      // jornada concreta (ida y vuelta de cuartos se bloquean por separado).
+      if (state.phase !== "none" && state.phase !== "finished") {
+        (["CUARTOS_IDA", "CUARTOS_VUELTA", "SEMIS", "FINAL"]).forEach((tag) => {
+          const j = playoffService.findRoundJornadas(freshJornadas, tag)[0];
+          if (!j || !hasJornadaEffectivelyStarted(j)) return;
+          const round = tag.startsWith("CUARTOS") ? "CUARTOS" : tag;
+          const already = state.lockedLineups[tag] || {};
+          const liveLineups = state.lineups[round] || {};
+          let lockChanged = false;
+          const nextLocked = { ...already };
+          (state.qualifiers || []).forEach((u) => {
+            if (nextLocked[u]) return; // ya congelada esta jornada para esta persona
+            const live = liveLineups[u];
+            if (live) { nextLocked[u] = live; lockChanged = true; }
+          });
+          if (lockChanged) {
+            state = { ...state, lockedLineups: { ...state.lockedLineups, [tag]: nextLocked } };
+            changed = true;
+          }
+        });
       }
 
       // 2) Reparto diario en cuartos/semis (una vez por día natural).
@@ -2934,8 +2989,8 @@ export default function App() {
       if (state.phase === "cuartos_draft" && playoffService.roundHasResults(freshJornadas, "CUARTOS")) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
-          const lineup = (state.lineups.CUARTOS || {})[u] || null;
-          pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "CUARTOS", lineup, freshPlayers) : 0;
+          const liveLineup = (state.lineups.CUARTOS || {})[u] || null;
+          pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "CUARTOS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(4, state.qualifiers.length));
         state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser } };
@@ -2944,8 +2999,8 @@ export default function App() {
       } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS")) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
-          const lineup = (state.lineups.SEMIS || {})[u] || null;
-          pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "SEMIS", lineup, freshPlayers) : 0;
+          const liveLineup = (state.lineups.SEMIS || {})[u] || null;
+          pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "SEMIS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(2, state.qualifiers.length));
         state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser } };
@@ -2971,8 +3026,8 @@ export default function App() {
         if (playoffService.roundHasResults(freshJornadas, "FINAL")) {
           const pointsByUser = {};
           state.qualifiers.forEach((u) => {
-            const lineup = (state.lineups.FINAL || {})[u] || null;
-            pointsByUser[u] = lineup ? playoffService.computeRoundPoints(freshJornadas, "FINAL", lineup, freshPlayers) : 0;
+            const liveLineup = (state.lineups.FINAL || {})[u] || null;
+            pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "FINAL", state.lockedLineups, u, freshPlayers, liveLineup);
           });
           const champion = playoffService.cutTop(state.qualifiers, pointsByUser, 1)[0] || null;
           state = { ...state, phase: "finished", champion, pointsByRound: { ...state.pointsByRound, FINAL: pointsByUser } };
@@ -5417,8 +5472,8 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
     const out = [];
     // Activos: ordenados por puntos en vivo de la ronda actual.
     playoffState.qualifiers.forEach((u) => {
-      const lineup = (playoffState.lineups[playoffState.round] || {})[u] || null;
-      const pts = lineup ? playoffService.computeRoundPoints(jornadas, playoffState.round, lineup, players) : 0;
+      const liveLineup = (playoffState.lineups[playoffState.round] || {})[u] || null;
+      const pts = playoffService.computeRoundPoints(jornadas, playoffState.round, playoffState.lockedLineups, u, players, liveLineup);
       out.push({ name: u, pts, active: true });
       seen.add(u);
     });
@@ -6165,7 +6220,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
   const reserva = allSquad.filter(p => !startersSet.has(p.id) && !benchIds.has(p.id) && p.id !== lineup.titularCoach);
   const jornadasIniciadas = isPlayoffMode ? playoffService.jornadasForRound(jornadas, playoffState.round) : startedJornadas(jornadas);
   const history = isPlayoffMode
-    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeRoundPoints(jornadas, playoffState.round, lineup, players) }))
+    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeRoundPoints(jornadas, playoffState.round, playoffState.lockedLineups, teamName, players, lineup) }))
     : jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
 
   const valorPlantilla = isPlayoffMode
@@ -6237,7 +6292,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
       {sub === "puntos" && (
         <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={teamName}
-          players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} forceLineup={isPlayoffMode} />
+          players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} playoffLockedLineups={isPlayoffMode ? playoffState.lockedLineups : null} />
       )}
 
       {detailPlayerId && (() => {
@@ -6259,18 +6314,21 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 // Vista de "Puntos" por jornada: chips J1, J2... para elegir la jornada, y
 // debajo la alineación GUARDADA en esa jornada concreta (titulares, banquillo
 // y entrenadora/or), cada una con los puntos que hizo ese día.
-function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests, onOpenPlayer, forceLineup }) {
+function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lineup, teamCrests, onOpenPlayer, playoffLockedLineups }) {
   const [selectedIdx, setSelectedIdx] = useState(() => Math.max(jornadas.length - 1, 0));
   const [showIdealFive, setShowIdealFive] = useState(false);
   if (jornadas.length === 0) return <EmptyState title="Sin jornadas todavía" text="Los puntos de cada jornada aparecerán aquí." />;
 
   const jornada = jornadas[selectedIdx];
-  // En playoffs no hay "congelado" por jornada (cada ronda es un draft
-  // aparte, no una temporada larga): se usa directamente la alineación de
-  // playoffs tal cual esté puesta ahora mismo.
-  const usedLineup = forceLineup
-    ? lineup
-    : (jornada?.lineups?.[`${leagueId}::${teamName}`] || null) || (hasJornadaEffectivelyStarted(jornada) ? null : lineup);
+  // Igual que en liga regular: una vez empezada la jornada, solo vale la
+  // alineación ya congelada de ESA jornada concreta (en playoffs, cada
+  // jornada -incluida ida/vuelta de cuartos por separado- tiene su propio
+  // bloqueo, guardado en playoffLockedLineups). Antes de empezar, se usa la
+  // alineación en vivo como previsión.
+  const savedLineup = jornada.playoffRound
+    ? (playoffLockedLineups && (playoffLockedLineups[jornada.playoffRound] || {})[teamName]) || null
+    : (jornada?.lineups?.[`${leagueId}::${teamName}`] || null);
+  const usedLineup = savedLineup || (hasJornadaEffectivelyStarted(jornada) ? null : lineup);
   const total = history[selectedIdx]?.pts ?? 0;
 
   const findPlayer = (id) => players.find(p => p.id === id) || null;
