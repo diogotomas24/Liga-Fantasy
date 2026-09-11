@@ -1825,10 +1825,16 @@ function mergeJornadasPreservingLineups(freshJornadas, prevJornadas) {
 
 async function readJornadas() {
   try {
+    // OJO: .limit() explícito y alto en las tres — sin él, Supabase corta en
+    // 1000 filas por defecto SIN avisar de ningún error. Si esto pasara
+    // alguna vez sin que nos diéramos cuenta, cualquier función que luego
+    // "guarde" esa jornada incompleta (como el guardado de alineaciones)
+    // podría dar por hecho que esos partidos "no existen" y acabar
+    // borrándolos de verdad. Mejor un límite generoso que dejarlo al default.
     const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }] = await Promise.all([
-      supabase.from("jornadas").select("*"),
-      supabase.from("partidos").select("*"),
-      supabase.from("jornada_stats").select("*"),
+      supabase.from("jornadas").select("*").limit(2000),
+      supabase.from("partidos").select("*").limit(20000),
+      supabase.from("jornada_stats").select("*").limit(50000),
     ]);
     if (e1) throw e1; if (e2) throw e2; if (e3) throw e3;
 
@@ -1877,9 +1883,17 @@ async function writeJornada(jornada) {
     const r1 = await supabase.from("jornadas").upsert({ id, name, lineups: lineups || {}, mvp_player_id: mvpPlayerId || null });
     if (r1.error) { console.error("writeJornada: error guardando jornadas", r1.error); return { ok: false, error: r1.error.message }; }
 
-    const r2 = await supabase.from("partidos").delete().eq("jornada_id", id);
-    if (r2.error) { console.error("writeJornada: error borrando partidos", r2.error); return { ok: false, error: r2.error.message }; }
+    // OJO — protección importante: NUNCA se tocan los partidos si el objeto
+    // que nos han pasado no trae ninguno. Antes se borraban siempre (aunque
+    // "partidos" viniera vacío) y solo se reinsertaban si había algo que
+    // insertar — así que cualquier llamada con el campo "partidos" vacío o
+    // sin cargar (p. ej. al guardar solo las alineaciones bloqueadas) se
+    // llevaba por delante los enfrentamientos reales para siempre, sin
+    // reinsertarlos. Ahora, si no hay partidos en el objeto, simplemente no
+    // se toca la tabla "partidos" de esa jornada.
     if (partidos && partidos.length > 0) {
+      const r2 = await supabase.from("partidos").delete().eq("jornada_id", id);
+      if (r2.error) { console.error("writeJornada: error borrando partidos", r2.error); return { ok: false, error: r2.error.message }; }
       const rows = partidos.map((p) => ({
         id: p.id, jornada_id: id, local: p.local, visitante: p.visitante,
         fecha: p.fecha || null, hora: p.hora || null,
@@ -3017,15 +3031,37 @@ export default function App() {
       const todayStr = toDateStr(getEffectiveToday());
       let changed = false;
 
-      // 1) Arranque: en cuanto la LIGA REGULAR haya acabado de verdad (todos
-      // los partidos de su última jornada con marcador puesto) se abre el
-      // draft — no hace falta esperar a la fecha del primer partido de
-      // playoffs, NI a que exista todavía la jornada "Playoff Cuartos Ida"
-      // en Supabase (esa se crea más adelante, cuando se sepan los partidos
-      // reales de verdad); así quedan esos días de margen para hacer el
-      // draft antes de que empiece a jugarse nada.
+      // 1) Arranque: se abre el draft de playoffs en cuanto se cumpla
+      // CUALQUIERA de estas dos condiciones (la que llegue antes):
+      //   a) La LIGA REGULAR ha acabado de verdad (todos los partidos de su
+      //      última jornada con marcador puesto), o
+      //   b) Ya ha pasado el día siguiente a la fecha programada del último
+      //      partido de esa última jornada — aunque a alguien se le haya
+      //      olvidado meter algún marcador todavía. Sin esto, si falta
+      //      cargar un solo resultado, el juego se queda encallado en
+      //      Mercado para siempre aunque el calendario real ya haya pasado
+      //      de sobra la fecha de esa jornada.
+      // No hace falta esperar a que exista todavía la jornada "Playoff
+      // Cuartos Ida" en Supabase (esa se crea más adelante, cuando se sepan
+      // los partidos reales de verdad): así quedan días de margen para
+      // hacer el draft antes de que empiece a jugarse nada.
       if (state.phase === "none") {
-        if (playoffService.regularSeasonFinished(freshJornadas)) {
+        const regular = playoffService.regularJornadas(freshJornadas);
+        const lastRegular = regular.length > 0 ? [...regular].sort((a, b) => jornadaNumberFromName(b.name) - jornadaNumberFromName(a.name))[0] : null;
+        const resultsReady = playoffService.regularSeasonFinished(freshJornadas);
+        let dateReady = false;
+        if (lastRegular) {
+          const endDate = jornadaEndDate(lastRegular);
+          if (endDate) {
+            const dayAfter = new Date(endDate);
+            dayAfter.setDate(dayAfter.getDate() + 1);
+            dayAfter.setHours(0, 0, 0, 0);
+            const today = getEffectiveToday();
+            today.setHours(0, 0, 0, 0);
+            dateReady = today >= dayAfter;
+          }
+        }
+        if (resultsReady || dateReady) {
           const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
           const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
           if (qualifiers.length > 0) {
