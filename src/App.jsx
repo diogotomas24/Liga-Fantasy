@@ -515,7 +515,7 @@ const auctionService = {
   },
   upsertBid(bids, { marketId, assetId, userId, amount }) {
     const existingIdx = bids.findIndex(b => b.marketId === marketId && b.assetId === assetId && b.userId === userId && b.status === "active");
-    const now = Date.now();
+    const now = nowMs();
     if (existingIdx >= 0) {
       const next = [...bids];
       next[existingIdx] = { ...next[existingIdx], amount, createdAt: now };
@@ -547,7 +547,7 @@ const auctionService = {
       const team = nextTeams[winner.userId] || teamService.emptyTeam();
       nextTeams[winner.userId] = teamService.addAsset(team, asset, winner.amount);
       results.push({ assetId, winnerUserId: winner.userId, amount: winner.amount, bidCount: candidates.length });
-      activityEntries.push({ id: uid("act"), ts: Date.now(), type: "fichaje", userId: winner.userId, assetId, amount: winner.amount });
+      activityEntries.push({ id: uid("act"), ts: nowMs(), type: "fichaje", userId: winner.userId, assetId, amount: winner.amount });
     });
 
     const historyEntry = { id: market.id, closesAt: market.closesAt, opensAt: market.opensAt, results };
@@ -617,7 +617,7 @@ const offerService = {
     return { ok: true };
   },
   create(offers, { fromUser, toUser, assetId, amount }) {
-    return [...offers, { id: uid("of"), fromUser, toUser, assetId, amount, createdAt: Date.now(), status: "pending" }];
+    return [...offers, { id: uid("of"), fromUser, toUser, assetId, amount, createdAt: nowMs(), status: "pending" }];
   },
   setStatus(offers, offerId, status) {
     return offers.map(o => o.id === offerId ? { ...o, status } : o);
@@ -780,19 +780,32 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 
-// "Reloj" del modo pruebas: si hay una fecha simulada activa, TODO el
-// sistema de fechas de la app (qué jornada toca, si ya ha empezado, si los
-// chips ya se ven...) la usa como si fuera "hoy" de verdad, en vez de la
-// fecha real del dispositivo. Sin modo pruebas, funciona exactamente igual
-// que siempre (usa la fecha real). Se actualiza desde App() cuando se pulsa
-// "Avanzar día", se salta a una fecha/hora concreta, o se sale del modo.
-let __simulatedTodayStr = null;
-let __simulatedTimeStr = "12:00";
-function setSimulatedToday(dateStr, timeStr) { __simulatedTodayStr = dateStr || null; __simulatedTimeStr = timeStr || "12:00"; }
+// "Reloj" del modo pruebas: si hay una fecha/hora simulada activa, TODO el
+// sistema de fechas/horas de la app (qué jornada toca, si ya ha empezado, si
+// el mercado está abierto, cuándo avisar de notificaciones, cláusulas y
+// ofertas caducadas, los chips ya se ven...) la usa como si fuera "ahora" de
+// verdad, en vez de la hora real del dispositivo. El reloj simulado no se
+// queda congelado: en cuanto se fija (al avanzar un día o saltar a una fecha
+// y hora), sigue corriendo solo al mismo ritmo que el tiempo real desde ese
+// instante — así se puede ver pasar segundos, minutos y horas de mentira
+// para probar avisos y caducidades sin esperar a que pase de verdad. Sin
+// modo pruebas, funciona exactamente igual que siempre (usa la hora real).
+let __simAnchorSimMs = null; // instante simulado (ms) que se fijó la última vez
+let __simAnchorRealMs = null; // instante real (ms) en que se fijó
+function setSimulatedToday(dateStr, timeStr) {
+  if (!dateStr) { __simAnchorSimMs = null; __simAnchorRealMs = null; return; }
+  __simAnchorSimMs = new Date(`${dateStr}T${timeStr || "12:00"}:00`).getTime();
+  __simAnchorRealMs = Date.now();
+}
 function getEffectiveToday() {
-  if (__simulatedTodayStr) return new Date(`${__simulatedTodayStr}T${__simulatedTimeStr}:00`);
+  if (__simAnchorSimMs != null) return new Date(__simAnchorSimMs + (Date.now() - __simAnchorRealMs));
   return new Date();
 }
+// Atajo para comparaciones de "ahora mismo" en milisegundos (mercado
+// abierto/cerrado, cláusulas y ofertas caducadas, avisos de notificación...).
+// Usar SIEMPRE esto en vez de Date.now() para cualquier cosa que deba
+// respetar el modo pruebas.
+function nowMs() { return getEffectiveToday().getTime(); }
 
 // --- realStandingsService ------------------------------------------------
 // Clasificación de los equipos REALES (no de fantasy), con el criterio de
@@ -1378,7 +1391,7 @@ const marketService = {
   // liga (la hora a la que se creó), se cierra, se reparten las pujas
   // ganadas, y se abre uno nuevo con jugadoras distintas al instante.
   // "resetHour" es un texto "HH:MM".
-  computeWindow(resetHour, now = Date.now()) {
+  computeWindow(resetHour, now = nowMs()) {
     const reset = marketService.parseHM(resetHour);
     const todayReset = marketService.atHour(now, reset);
     const closesAt = now < todayReset ? todayReset : todayReset + 24 * 3600 * 1000;
@@ -2426,8 +2439,8 @@ function BidStatusPill({ status }) {
 }
 
 function CountdownChip({ closesAt, opensAt, isOpen }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const [now, setNow] = useState(nowMs());
+  useEffect(() => { const t = setInterval(() => setNow(nowMs()), 1000); return () => clearInterval(t); }, []);
   const target = isOpen ? closesAt : opensAt;
   const remaining = target - now;
   const closing = isOpen && remaining < 5 * 60 * 1000;
@@ -2698,7 +2711,7 @@ export default function App() {
     try {
       const freshJ = await readJornadas();
       const warned = await readShared("jornadaStartWarned", []);
-      const now = Date.now();
+      const now = nowMs();
       for (const jornada of freshJ) {
         if (warned.includes(jornada.id)) continue;
         const start = computeJornadaStartTime(jornada);
@@ -2979,7 +2992,7 @@ export default function App() {
   // aparte, dentro de syncMarket.
   const logActivity = useCallback(async (entry) => {
     const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
-    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    const nextActivity = [{ id: uid("act"), ts: nowMs(), ...entry }, ...freshActivity].slice(0, 60);
     await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
     setActivity(nextActivity);
   }, [activeLeagueId, activity]);
@@ -3063,7 +3076,7 @@ export default function App() {
         const nextDraftDay = state.draftDay + 1;
         picks.forEach(({ userName, playerId }) => {
           nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-          nextLog.push({ round, day: state.draftDay, userName, playerId, ts: Date.now() });
+          nextLog.push({ round, day: state.draftDay, userName, playerId, ts: nowMs() });
         });
 
         // Viernes (5º día) ya cerrado: quien siga incompleta, reparto forzoso.
@@ -3080,7 +3093,7 @@ export default function App() {
             const catchUpPicks = playoffService.catchUpAllocation({ order: state.qualifiers, squadsSoFar: nextSquads, sortedPoolIds: sortedIds, targetSize });
             catchUpPicks.forEach(({ userName, playerId }) => {
               nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-              nextLog.push({ round, day: nextDraftDay, userName, playerId, ts: Date.now(), forced: true });
+              nextLog.push({ round, day: nextDraftDay, userName, playerId, ts: nowMs(), forced: true });
             });
           }
         }
@@ -3126,7 +3139,7 @@ export default function App() {
           const nextLog = [...state.log];
           picks.forEach(({ userName, playerId }) => {
             nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-            nextLog.push({ round: "FINAL", day: 0, userName, playerId, ts: Date.now() });
+            nextLog.push({ round: "FINAL", day: 0, userName, playerId, ts: nowMs() });
           });
           state = { ...state, squads: { ...state.squads, FINAL: nextSquads }, log: nextLog };
           changed = true;
@@ -3245,7 +3258,7 @@ export default function App() {
   // esa liga sea la "activa" en ese momento (p. ej. desde Mis Ligas).
   const logActivityFor = useCallback(async (leagueId, entry) => {
     const freshActivity = await readShared(leagueKey(leagueId, "activity"), []);
-    const nextActivity = [{ id: uid("act"), ts: Date.now(), ...entry }, ...freshActivity].slice(0, 60);
+    const nextActivity = [{ id: uid("act"), ts: nowMs(), ...entry }, ...freshActivity].slice(0, 60);
     await writeShared(leagueKey(leagueId, "activity"), nextActivity);
     if (leagueId === activeLeagueId) setActivity(nextActivity);
   }, [activeLeagueId]);
@@ -3391,7 +3404,7 @@ export default function App() {
         return;
       }
       const freshTeams = freshTeamsOrNull;
-      const now = Date.now();
+      const now = nowMs();
       const window_ = marketService.computeWindow(resetHour, now);
 
       let teamsNext = freshTeams, bidsNext = freshBids, playersNext = freshPlayers, historyNext = freshHistory, activityNext = freshActivity;
@@ -3473,7 +3486,7 @@ export default function App() {
           // Registra en Actividad a quien haya ganado premio (0 € no se registra).
           const wonEntries = Object.entries(teamCredits).filter(([, amount]) => amount > 0);
           if (wonEntries.length > 0) {
-            const tripleActivity = wonEntries.map(([userName, amount]) => ({ id: uid("act"), ts: Date.now(), type: "triple", userId: userName, amount }));
+            const tripleActivity = wonEntries.map(([userName, amount]) => ({ id: uid("act"), ts: nowMs(), type: "triple", userId: userName, amount }));
             activityNext = [...tripleActivity, ...activityNext].slice(0, 60);
             await writeShared(leagueKey(leagueId, "activity"), activityNext);
           }
@@ -3545,8 +3558,8 @@ export default function App() {
     // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
     if (activeLeagueId) {
       const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
-      if (freshMarket && !freshMarket.resolved && Date.now() < freshMarket.closesAt) {
-        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+      if (freshMarket && !freshMarket.resolved && nowMs() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
       }
       await syncMarket(activeLeagueId, marketResetHour);
     }
@@ -3563,6 +3576,17 @@ export default function App() {
     setSimulatedToday(null); // vuelve a la fecha real para todo el sistema de fechas
     return { ok: true };
   }, []);
+
+  // MODO PRUEBAS: reinicia SOLO la fase de playoffs de la liga activa (sin
+  // tocar estadísticas, precios ni resultados de liga regular) — para poder
+  // saltar el reloj hacia antes/después del corte de playoffs las veces que
+  // haga falta sin tener que rehacer toda la temporada cada vez.
+  const resetPlayoffState = useCallback(async () => {
+    if (!activeLeagueId) return { ok: false };
+    await deleteShared(leagueKey(activeLeagueId, "playoffState"));
+    setPlayoffState(playoffService.emptyState());
+    return { ok: true };
+  }, [activeLeagueId]);
 
   // MODO PRUEBAS: salta DIRECTAMENTE a la fecha y hora que se elija (en vez
   // de ir avanzando de un día en un día), para poder probar de un tirón el
@@ -3590,8 +3614,8 @@ export default function App() {
 
     if (activeLeagueId) {
       const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
-      if (freshMarket && !freshMarket.resolved && Date.now() < freshMarket.closesAt) {
-        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+      if (freshMarket && !freshMarket.resolved && nowMs() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
       }
       await syncMarket(activeLeagueId, marketResetHour);
     }
@@ -3627,7 +3651,12 @@ export default function App() {
     await Promise.all([
       deleteShared("marketSimDate"), deleteShared("marketSimTime"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
       deleteShared("jornadaMvpPriced"), deleteShared("lineupLocked"), deleteShared("testBaselinePrices"),
+      deleteShared("jornadaStartWarned"),
     ]);
+    // También se reinicia la fase de playoffs de la liga activa — si no, se
+    // queda "pegada" en cuartos/semis/final aunque retrocedas el calendario
+    // a antes de que empezara, y no coincidiría con lo que tocaría ver.
+    if (activeLeagueId) await deleteShared(leagueKey(activeLeagueId, "playoffState"));
     setSimulatedToday(null);
     const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
     setPlayers(freshPlayers);
@@ -3651,7 +3680,7 @@ export default function App() {
   const budgetAvailable = profile ? auctionService.availableBudget(myTeam, bids, market?.id, profile.name) : BUDGET_TOTAL;
   const budgetCommitted = profile ? auctionService.committedByUser(bids, market?.id, profile.name) : 0;
 
-  const isMarketOpen = market ? (Date.now() >= market.opensAt && Date.now() < market.closesAt) : false;
+  const isMarketOpen = market ? (nowMs() >= market.opensAt && nowMs() < market.closesAt) : false;
 
   const saveLineup = useCallback(async (lineup) => {
     setSaving(true);
@@ -3678,7 +3707,7 @@ export default function App() {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
     const team = (await readTeam(activeLeagueId, profile.name)) || teamService.emptyTeam();
-    const open = freshMarket && Date.now() >= freshMarket.opensAt && Date.now() < freshMarket.closesAt;
+    const open = freshMarket && nowMs() >= freshMarket.opensAt && nowMs() < freshMarket.closesAt;
     const check = auctionService.validateBid({ team, players, asset, amount, marketOpen: open, bids: freshBids, marketId: freshMarket?.id, userId: profile.name });
     if (!check.ok) return check;
     const nextBids = auctionService.upsertBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name, amount });
@@ -3690,7 +3719,7 @@ export default function App() {
   const withdrawBid = useCallback(async (asset) => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
-    const open = freshMarket && Date.now() >= freshMarket.opensAt && Date.now() < freshMarket.closesAt;
+    const open = freshMarket && nowMs() >= freshMarket.opensAt && nowMs() < freshMarket.closesAt;
     if (!open) return { ok: false, error: "El mercado está cerrado ahora mismo." };
     const nextBids = auctionService.withdrawBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name });
     await writeShared(leagueKey(activeLeagueId, "bids"), nextBids);
@@ -3742,7 +3771,7 @@ export default function App() {
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const entry = teamService.getSquadEntry(fresh, assetId);
     if (!entry?.saleOffer) return { ok: false, error: "Esta jugadora ya no tiene una oferta activa." };
-    if (entry.saleOffer.expiresAt && Date.now() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
+    if (entry.saleOffer.expiresAt && nowMs() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
     const amount = entry.saleOffer.amount;
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
@@ -3795,7 +3824,7 @@ export default function App() {
     const nextTeam = { ...fresh, budgetSpent: (fresh.budgetSpent || 0) + TRIPLE_ENTRY_FEE };
     const nextEntries = [...freshEntries, {
       id: uid("tf"), jornadaId, userId: profile.name, picks, mvpChoice, mvpOptions,
-      paidAt: Date.now(), settled: false, correct: null, mvpCorrect: null, prize: null,
+      paidAt: nowMs(), settled: false, correct: null, mvpCorrect: null, prize: null,
     }];
     await Promise.all([
       writeTeam(activeLeagueId, profile.name, nextTeam),
@@ -3856,7 +3885,7 @@ export default function App() {
   const forceResolveMarket = useCallback(async () => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     if (!freshMarket) return;
-    await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: Date.now() - 1000 });
+    await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
     await syncMarket(activeLeagueId, marketResetHour);
   }, [market, syncMarket, activeLeagueId, marketResetHour]);
 
@@ -3922,7 +3951,7 @@ export default function App() {
             )
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} onJumpSimDateTime={jumpToSimDateTime} />
+            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} onJumpSimDateTime={jumpToSimDateTime} onResetPlayoffState={resetPlayoffState} />
           )}
         </div>
       </main>
@@ -7587,7 +7616,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
   const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length
-    + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || Date.now() <= e.saleOffer.expiresAt)).length;
+    + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || nowMs() <= e.saleOffer.expiresAt)).length;
   const sentOffersCount = (offers || []).filter(o => o.status === "pending" && o.fromUser === profile.name).length;
 
   if (clauseTarget) {
@@ -7697,7 +7726,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
               <div>
                 <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS DE LA LIGA</div>
                 {(() => {
-                  const misOfertasLiga = (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || Date.now() <= e.saleOffer.expiresAt));
+                  const misOfertasLiga = (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || nowMs() <= e.saleOffer.expiresAt));
                   if (misOfertasLiga.length === 0) {
                     return <EmptyState compact title="Sin ofertas de la liga" text="Cuando pongas una jugadora en venta, la oferta que te haga la liga aparecerá aquí." />;
                   }
@@ -8242,7 +8271,7 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock, onJumpSimDateTime }) {
+function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock, onJumpSimDateTime, onResetPlayoffState }) {
   const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
   const [simTime, setSimTime] = useState(null);
   const [jumpDate, setJumpDate] = useState("");
@@ -8253,6 +8282,17 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
   const [debugJornadaId, setDebugJornadaId] = useState("j1");
   const [debugSteps, setDebugSteps] = useState(null);
   const [debugBusy, setDebugBusy] = useState(false);
+  const [playoffResetBusy, setPlayoffResetBusy] = useState(false);
+  const [liveClock, setLiveClock] = useState(() => getEffectiveToday());
+
+  // Reloj en vivo del modo pruebas: tiquea cada segundo con la hora
+  // simulada (o la real, si no hay simulación activa), para poder ver pasar
+  // segundos/minutos/horas y comprobar en directo avisos, cláusulas y
+  // caducidades sin tener que refrescar nada a mano.
+  useEffect(() => {
+    const t = setInterval(() => setLiveClock(getEffectiveToday()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -8289,6 +8329,11 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
     if (res) { setSimDate(res.date); setSimTime(res.time); }
     setJumpBusy(false);
   };
+  const resetPlayoffsOnly = async () => {
+    setPlayoffResetBusy(true);
+    await onResetPlayoffState();
+    setPlayoffResetBusy(false);
+  };
   const doReset = async () => {
     setBusy(true);
     await onResetTest();
@@ -8317,6 +8362,22 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
         <div className="fl-mono text-[11px] mb-2.5" style={{ color: C.white }}>
           {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span> a las <span style={{ color: C.gold, fontWeight: 700 }}>{simTime || "12:00"}</span></> : "Sin simular (fecha real)"}
         </div>
+
+        {/* Reloj en vivo: tiquea de verdad, para ver pasar el tiempo simulado
+            segundo a segundo y comprobar avisos/cláusulas/caducidades en directo. */}
+        <div className="rounded-md p-3 mb-2.5 text-center" style={{ background: C.navy900, border: `1px solid ${simDate ? C.gold + "55" : C.line}` }}>
+          <div className="flex items-center justify-center gap-1.5 mb-1">
+            <Clock size={11} color={simDate ? C.gold : C.muted} className={simDate ? "fl-pulse" : ""} />
+            <span className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>{simDate ? "RELOJ SIMULADO (EN VIVO)" : "RELOJ REAL"}</span>
+          </div>
+          <div className="fl-mono text-2xl font-bold" style={{ color: simDate ? C.gold : C.white }}>
+            {liveClock.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </div>
+          <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>
+            {liveClock.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
+          </div>
+        </div>
+
         <div className="flex gap-2 mb-2">
           <button disabled={busy} onClick={advance} className="fl-tap flex-1 rounded-md py-2 text-xs font-semibold disabled:opacity-50" style={{ background: C.gold, color: C.ink }}>
             {busy ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Avanzar 1 día"}
@@ -8338,16 +8399,20 @@ function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest
           <div className="flex gap-2 mb-2">
             <input type="date" value={jumpDate} onChange={(e) => setJumpDate(e.target.value)}
               className="flex-1 fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
-            <input type="time" value={jumpTime} onChange={(e) => setJumpTime(e.target.value)}
-              className="fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ width: 92, background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
+            <input type="time" value={jumpTime} onChange={(e) => setJumpTime(e.target.value)} step="1"
+              className="fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ width: 100, background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
           </div>
           <button disabled={jumpBusy || !jumpDate} onClick={jumpNow} className="fl-tap w-full rounded-md py-2 text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" style={{ background: C.principal, color: C.white }}>
             {jumpBusy ? <Loader2 size={13} className="animate-spin" /> : <>Ir a esta fecha y hora <ChevronRight size={13} /></>}
           </button>
           <p className="fl-body text-[10px] mt-2" style={{ color: C.muted }}>
-            Útil para probar el inicio de una jornada a su hora exacta, o cualquier comportamiento que dependa del reloj, sin ir avanzando de un día en un día.
+            Todo el juego (mercado, jornadas, notificaciones, cláusulas, ofertas, playoffs…) usa este reloj en vez del real mientras esté activo. Al saltar hacia atrás de antes de que empezaran los playoffs, usa el botón de abajo para reiniciar también esa fase si se había quedado activada.
           </p>
         </div>
+
+        <button disabled={playoffResetBusy} onClick={resetPlayoffsOnly} className="fl-tap w-full rounded-md py-2 mb-2.5 text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" style={{ border: `1px solid ${C.principal}55`, color: C.principal }}>
+          {playoffResetBusy ? <Loader2 size={13} className="animate-spin" /> : <>Reiniciar solo fase de playoffs</>}
+        </button>
 
         {confirmReset ? (
           <div className="rounded-md p-2.5 mb-2.5" style={{ background: `${C.negative}15`, border: `1px solid ${C.negative}` }}>
