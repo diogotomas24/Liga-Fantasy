@@ -787,15 +787,23 @@ function toDateStr(d) {
 // verdad, en vez de la hora real del dispositivo. El reloj simulado no se
 // queda congelado: en cuanto se fija (al avanzar un día o saltar a una fecha
 // y hora), sigue corriendo solo al mismo ritmo que el tiempo real desde ese
-// instante — así se puede ver pasar segundos, minutos y horas de mentira
-// para probar avisos y caducidades sin esperar a que pase de verdad. Sin
+// instante — INCLUSO con la app cerrada, porque el ancla se guarda también en
+// Supabase (marketSimAnchorRealMs) y se reconstruye tal cual al volver a
+// abrir, en vez de "reiniciarse" al momento fijado. Así si pones el reloj en
+// unas 15:40 y vuelves a entrar 5 minutos reales después, verás 15:45. Sin
 // modo pruebas, funciona exactamente igual que siempre (usa la hora real).
 let __simAnchorSimMs = null; // instante simulado (ms) que se fijó la última vez
-let __simAnchorRealMs = null; // instante real (ms) en que se fijó
+let __simAnchorRealMs = null; // instante real (ms) en que se fijó esa última vez
 function setSimulatedToday(dateStr, timeStr) {
   if (!dateStr) { __simAnchorSimMs = null; __simAnchorRealMs = null; return; }
-  __simAnchorSimMs = new Date(`${dateStr}T${timeStr || "12:00"}:00`).getTime();
-  __simAnchorRealMs = Date.now();
+  setSimulatedAnchor(new Date(`${dateStr}T${timeStr || "12:00"}:00`).getTime(), Date.now());
+}
+// Fija el ancla directamente con SU PROPIO instante real de referencia (en
+// vez de "ahora mismo") — se usa al recargar la app, para reconstruir el
+// reloj simulado exactamente como estaba, ya avanzado lo que corresponda.
+function setSimulatedAnchor(simMs, realMs) {
+  __simAnchorSimMs = simMs;
+  __simAnchorRealMs = realMs;
 }
 function getEffectiveToday() {
   if (__simAnchorSimMs != null) return new Date(__simAnchorSimMs + (Date.now() - __simAnchorRealMs));
@@ -1165,6 +1173,7 @@ const realBracketService = {
     const fase = jornadaFase(jornada);
     if (fase === "regular") return real;
     const bracket = this.buildBracket(jornadas);
+    if (!bracket.ready) return real; // sin 8 clasificadas todavía no hay cuadro que proyectar: se deja tal cual
     let pairs = [];
     if (fase === "cuartos") pairs = bracket.cuartos.map((m) => [m.teamA, m.teamB]);
     else if (fase === "semis") pairs = bracket.semis.map((m) => [m.teamA, m.teamB]);
@@ -1177,7 +1186,6 @@ const realBracketService = {
     const isBlank = (name) => !name || /por determinar/i.test(String(name).trim());
 
     if (real.length === 0 || real.every((p) => isBlank(p.local) && isBlank(p.visitante))) {
-      if (!bracket.ready) return real;
       return pairs
         .filter(([teamA, teamB]) => teamA && teamB)
         .map(([teamA, teamB], i) => ({ id: `proj_${jornada?.id || fase}_${i}`, local: teamA, visitante: teamB, marcadorLocal: "", marcadorVisitante: "", fecha: null, previsto: true }));
@@ -2905,7 +2913,7 @@ export default function App() {
       let simDate = await readShared("marketSimDate", null);
       // Si la fecha simulada ya quedó atrás (la real la ha alcanzado o pasado), se
       // desactiva sola el modo pruebas, para no quedarse encallado en el pasado.
-      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); await deleteShared("marketSimTime"); setSimulatedToday(null); }
+      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); await deleteShared("marketSimTime"); await deleteShared("marketSimAnchorRealMs"); setSimulatedToday(null); }
       const todayStr = simDate || realTodayStr;
       const lastRun = await readShared("marketPricingLastRun", "");
       if (lastRun === todayStr) return;
@@ -3212,13 +3220,20 @@ export default function App() {
     (async () => {
       const sess = await getSessionProfile();
       const fav = await readPersonal("favoritos", []);
-      const [pl, jo, crests, simDate, simTime] = await Promise.all([
-        readPlayers(), readJornadas(), readTeamCrests(), readShared("marketSimDate", null), readShared("marketSimTime", null),
+      const [pl, jo, crests, simDate, simTime, simAnchorRealMs] = await Promise.all([
+        readPlayers(), readJornadas(), readTeamCrests(), readShared("marketSimDate", null), readShared("marketSimTime", null), readShared("marketSimAnchorRealMs", null),
       ]);
       setPlayers(pl); setJornadas(jo);
       setTeamCrests(crests || {});
       setFavoritos(fav || []);
-      setSimulatedToday(simDate, simTime);
+      // Reconstruye el reloj simulado con SU ancla real original (no con
+      // "ahora"), para que siga corriendo también el tiempo que la app
+      // estuvo cerrada, en vez de reiniciarse al momento exacto que se fijó.
+      if (simDate && simAnchorRealMs) {
+        setSimulatedAnchor(new Date(`${simDate}T${simTime || "12:00"}:00`).getTime(), simAnchorRealMs);
+      } else {
+        setSimulatedToday(simDate, simTime);
+      }
       if (sess.hasSession && sess.name) {
         const prof = { name: sess.name };
         await writePersonal("profile", prof);
@@ -3549,8 +3564,11 @@ export default function App() {
     if (base < realToday) base.setTime(realToday.getTime()); // por si la simulada se quedó atrás
     base.setDate(base.getDate() + 1);
     const nextDateStr = toDateStr(base);
+    const anchorRealMs = Date.now();
     await writeShared("marketSimDate", nextDateStr);
-    setSimulatedToday(nextDateStr); // pone en hora el "reloj" que usa el resto de la app (qué jornada toca, si ya empezó...)
+    await writeShared("marketSimTime", "12:00");
+    await writeShared("marketSimAnchorRealMs", anchorRealMs);
+    setSimulatedAnchor(new Date(`${nextDateStr}T12:00:00`).getTime(), anchorRealMs); // pone en hora el "reloj" que usa el resto de la app (qué jornada toca, si ya empezó...) y lo deja corriendo de verdad desde aquí
     await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que acabe de "empezar", sin esperar al intervalo de 60s
     await checkDailyMarketPricing();
@@ -3573,6 +3591,7 @@ export default function App() {
   const exitSimMode = useCallback(async () => {
     await deleteShared("marketSimDate");
     await deleteShared("marketSimTime");
+    await deleteShared("marketSimAnchorRealMs");
     setSimulatedToday(null); // vuelve a la fecha real para todo el sistema de fechas
     return { ok: true };
   }, []);
@@ -3607,7 +3626,9 @@ export default function App() {
 
     await writeShared("marketSimDate", dateStr);
     await writeShared("marketSimTime", hhmm);
-    setSimulatedToday(dateStr, hhmm);
+    const anchorRealMs = Date.now();
+    await writeShared("marketSimAnchorRealMs", anchorRealMs);
+    setSimulatedAnchor(new Date(`${dateStr}T${hhmm}:00`).getTime(), anchorRealMs);
     await writeShared("marketPricingLastRun", ""); // para que el motor de precios corra ya mismo si tocaba
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que "empiece" con este salto
     await checkDailyMarketPricing();
@@ -3649,7 +3670,7 @@ export default function App() {
     // si no, se quedan pegadas para siempre y nunca se vuelven a capturar bien.
     await supabase.from("jornadas").update({ lineups: {} }).neq("id", "__none__");
     await Promise.all([
-      deleteShared("marketSimDate"), deleteShared("marketSimTime"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
+      deleteShared("marketSimDate"), deleteShared("marketSimTime"), deleteShared("marketSimAnchorRealMs"), deleteShared("marketPricingLastRun"), deleteShared("idealFiveAwarded"),
       deleteShared("jornadaMvpPriced"), deleteShared("lineupLocked"), deleteShared("testBaselinePrices"),
       deleteShared("jornadaStartWarned"),
     ]);
