@@ -3020,10 +3020,12 @@ export default function App() {
       // 1) Arranque: en cuanto la LIGA REGULAR haya acabado de verdad (todos
       // los partidos de su última jornada con marcador puesto) se abre el
       // draft — no hace falta esperar a la fecha del primer partido de
-      // playoffs, así quedan esos días de margen para hacer el draft antes.
+      // playoffs, NI a que exista todavía la jornada "Playoff Cuartos Ida"
+      // en Supabase (esa se crea más adelante, cuando se sepan los partidos
+      // reales de verdad); así quedan esos días de margen para hacer el
+      // draft antes de que empiece a jugarse nada.
       if (state.phase === "none") {
-        const cuartosIda = playoffService.findRoundJornadas(freshJornadas, "CUARTOS_IDA")[0];
-        if (cuartosIda && playoffService.regularSeasonFinished(freshJornadas)) {
+        if (playoffService.regularSeasonFinished(freshJornadas)) {
           const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
           const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
           if (qualifiers.length > 0) {
@@ -3572,6 +3574,7 @@ export default function App() {
     await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que acabe de "empezar", sin esperar al intervalo de 60s
     await checkDailyMarketPricing();
+    await checkPlayoffProgress(); // por si este salto cruza el corte de fin de liga regular / inicio o fin de una ronda de playoffs
 
     // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
     if (activeLeagueId) {
@@ -3586,7 +3589,7 @@ export default function App() {
     setPlayers(freshPlayers);
     setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
     return nextDateStr;
-  }, [checkDailyMarketPricing, checkLineupLock, activeLeagueId, marketResetHour, syncMarket]);
+  }, [checkDailyMarketPricing, checkLineupLock, checkPlayoffProgress, activeLeagueId, marketResetHour, syncMarket]);
 
   const exitSimMode = useCallback(async () => {
     await deleteShared("marketSimDate");
@@ -3632,6 +3635,7 @@ export default function App() {
     await writeShared("marketPricingLastRun", ""); // para que el motor de precios corra ya mismo si tocaba
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que "empiece" con este salto
     await checkDailyMarketPricing();
+    await checkPlayoffProgress(); // por si este salto cruza el corte de fin de liga regular / inicio o fin de una ronda de playoffs
 
     if (activeLeagueId) {
       const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
@@ -3645,7 +3649,7 @@ export default function App() {
     setPlayers(freshPlayers);
     setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
     return { date: dateStr, time: hhmm };
-  }, [checkDailyMarketPricing, checkLineupLock, activeLeagueId, marketResetHour, syncMarket]);
+  }, [checkDailyMarketPricing, checkLineupLock, checkPlayoffProgress, activeLeagueId, marketResetHour, syncMarket]);
 
   // Reinicia toda la prueba: vuelve los precios a como estaban antes del
   // primer "Avanzar día" de esta ronda, borra estadísticas y resultados de
