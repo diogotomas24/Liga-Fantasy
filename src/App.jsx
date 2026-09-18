@@ -2583,7 +2583,7 @@ function Onboarding({ onEnter, onGoogle }) {
       <div className="w-full max-w-sm">
         <div className="text-center mb-6">
           <div className="fl-mono text-sm tracking-[0.2em]" style={{ color: C.white }}>TEMPORADA 2026/2027</div>
-          <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fantasy Liga<br />Copa Aragón</h1>
+          <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fabtasy Liga<br />Copa Aragón</h1>
         </div>
         <div className="fl-card p-5">
           <button disabled={googleBusy} onClick={submitGoogle}
@@ -4442,7 +4442,7 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
       <div className="flex items-end justify-between mt-1">
         <div className="flex items-baseline gap-2 min-w-0">
           <h1 className="fl-display text-2xl uppercase flex-shrink-0" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
-            Fantasy
+            Fabtasy
           </h1>
           <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
         </div>
@@ -4845,7 +4845,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
       <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
         <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
           <button onClick={() => setShowHistory(false)} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
-          <span className="fl-display text-base uppercase" style={{ color: C.white }}>Historial Triple Fantasy</span>
+          <span className="fl-display text-base uppercase" style={{ color: C.white }}>Historial Triple Fabtasy</span>
           <span style={{ width: 28 }} />
         </div>
         <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
@@ -4901,7 +4901,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
       <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
         <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
           <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
-          <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
+          <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fabtasy</span>
           <button onClick={() => setShowHistory(true)} className="fl-tap p-1.5 -mr-1"><Clock size={20} color={C.muted} /></button>
         </div>
         <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
@@ -4974,7 +4974,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
         <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
-        <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fantasy</span>
+        <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fabtasy</span>
         <button onClick={() => setShowHistory(true)} className="fl-tap p-1.5 -mr-1"><Clock size={20} color={C.muted} /></button>
       </div>
       <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
@@ -5408,7 +5408,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
             <span style={{ fontSize: 22, lineHeight: 1 }}>🏀</span>
           </div>
           <div className="text-left flex-1 relative z-10">
-            <div className="fl-display text-base uppercase" style={{ color: C.white }}>Triple Fantasy</div>
+            <div className="fl-display text-base uppercase" style={{ color: C.white }}>Triple Fabtasy</div>
             <div className="fl-mono text-[11px] mt-0.5" style={{ color: "rgba(255,255,255,0.75)" }}>
               {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : (
                 <>Entrada <span style={{ color: C.principal, fontWeight: 700 }}>{fmtCredits(TRIPLE_ENTRY_FEE)}</span> · hasta {fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}</>
@@ -6877,9 +6877,9 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
             <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
               {rows.map(({ pos, ids, need }) => {
                 const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
-                const isWing = pos.key === "ALERO";
+                const isWing = pos.key === "ALERO" && need > 1;
                 return (
-                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-3"}`}>
+                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-8"}`}>
                     {slots.map((id, i) => {
                       const p = id ? findPlayer(id) : null;
                       const isOut = id && swappedOutIds.has(id);
@@ -7204,9 +7204,13 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
         <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
           {rows.map(({ pos, ids, need }) => {
             const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
-            const isWing = pos.key === "ALERO";
+            // Los aleros se separan hacia los laterales SOLO cuando hay 2 o más
+            // (huecos en las esquinas cerca del triple); con uno solo (p. ej. en
+            // la formación 2-1-2) se centra sobre el tiro libre, como el resto de
+            // filas con un único hueco.
+            const isWing = pos.key === "ALERO" && need > 1;
             return (
-              <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-3"}`}>
+              <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-8"}`}>
                 {slots.map((id, i) => {
                   const p = id ? myJugadoras.find(x => x.id === id) : null;
                   return (
@@ -8633,7 +8637,7 @@ function ActividadFeed({ activity, players }) {
           </>;
         } else if (a.type === "triple") {
           text = <>
-            <span style={{ color: C.baby }}>{a.userId}</span> ha ganado <span className="font-medium">{fmtCredits(a.amount)}</span> en el 🏀 Triple Fantasy
+            <span style={{ color: C.baby }}>{a.userId}</span> ha ganado <span className="font-medium">{fmtCredits(a.amount)}</span> en el 🏀 Triple Fabtasy
           </>;
         } else if (a.type === "union") {
           text = <>
@@ -8764,7 +8768,7 @@ function JornadaDetail({ jornada, players }) {
           <table className="w-full text-xs" style={{ minWidth: 420 }}>
             <thead><tr className="text-left" style={{ color: C.muted }}>
               <th className="py-1.5 pr-2">Nombre</th><th className="px-1 text-center">Jugó</th><th className="px-1 text-center">Victoria</th>
-              <th className="px-1 text-center">Diferencia</th><th className="px-1 text-center">MVP</th><th className="px-1 text-right">Fantasy</th>
+              <th className="px-1 text-center">Diferencia</th><th className="px-1 text-center">MVP</th><th className="px-1 text-right">Fabtasy</th>
             </tr></thead>
             <tbody>
               {entrenadoras.map(p => {
