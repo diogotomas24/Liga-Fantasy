@@ -99,6 +99,7 @@ const FORMATIONS = {
   "2-2-1": { BASE: 2, ALERO: 2, PIVOT: 1 },
   "1-3-1": { BASE: 1, ALERO: 3, PIVOT: 1 },
   "1-2-2": { BASE: 1, ALERO: 2, PIVOT: 2 },
+  "2-1-2": { BASE: 2, ALERO: 1, PIVOT: 2 },
 };
 const BENCH_CAP_PER_POS = 1; // banquillo: máx. 1 base + 1 alero + 1 pívot
 
@@ -717,8 +718,8 @@ const tripleFantasyService = {
 
 // --- idealFiveService ------------------------------------------------------
 // "5 ideal" de cada jornada: las 5 jugadoras (nunca entrenadoras/es) que más
-// puntos Fantasy hacen esa jornada, cuadrando con alguna de las 3
-// alineaciones válidas (2-2-1 / 1-3-1 / 1-2-2). Se prueban las 3 y se elige la
+// puntos Fantasy hacen esa jornada, cuadrando con alguna de las alineaciones
+// válidas (2-2-1 / 1-3-1 / 1-2-2 / 2-1-2). Se prueban todas y se elige la
 // combinación con más puntos en total. Cada persona de la liga que tenga
 // alguna de esas 5 jugadoras en su plantilla recibe 100.000 €.
 const IDEAL_FIVE_REWARD = 0.1; // 100.000 €
@@ -2218,6 +2219,13 @@ function crestColorFor(name) {
   return CREST_PALETTE[h % CREST_PALETTE.length];
 }
 function TeamCrest({ name, size = 34, photo }) {
+  // "DESCANSA" no es un equipo de verdad (es el hueco de quien no juega esa
+  // jornada porque ahora son impares) — no le pintamos ningún escudo ni
+  // iniciales, solo un espacio en blanco del mismo tamaño para no descuadrar
+  // la fila.
+  if ((name || "").trim().toUpperCase() === "DESCANSA") {
+    return <div className="flex-shrink-0" style={{ width: size, height: size }} />;
+  }
   const initials = (name || "?").trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "?";
   if (photo) {
     return (
@@ -4066,7 +4074,7 @@ export default function App() {
               onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
               onBuyClause={buyClause} onSendOffer={sendOffer} playoffState={playoffState} />
           )}
-          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} onGoTo={setTab} playoffState={playoffState} />}
+          {tab === "clasificacion" && <ClasificacionTab teams={teams} players={players} jornadas={jornadas} me={profile.name} leagueId={activeLeagueId} teamCrests={teamCrests} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer} onGoTo={setTab} playoffState={playoffState} favoritos={favoritos} onToggleFavorite={toggleFavorito} />}
           {tab === "equipo" && (
             <EquipoTab myJugadoras={myJugadoras} myCoaches={myCoaches} myTeam={myTeam}
               budgetAvailable={budgetAvailable} budgetCommitted={budgetCommitted}
@@ -5841,7 +5849,7 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
-function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo, playoffState }) {
+function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo, playoffState, favoritos, onToggleFavorite }) {
   const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
@@ -5922,6 +5930,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
         {viewingTeam && (
           <RivalTeamScreen ownerName={viewingTeam} team={teams[viewingTeam]} players={players} jornadas={jornadas}
             leagueId={leagueId} teamCrests={teamCrests} teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+            favoritos={favoritos} onToggleFavorite={onToggleFavorite}
             playoffView={{
               squadIds: (playoffState.squads[playoffState.round] || {})[viewingTeam] || [],
               lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
@@ -5978,6 +5987,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
       {viewingTeam && (
         <RivalTeamScreen ownerName={viewingTeam} team={teams[viewingTeam]} players={players} jornadas={jornadas}
           leagueId={leagueId} teamCrests={teamCrests} teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
+          favoritos={favoritos} onToggleFavorite={onToggleFavorite}
           playoffView={isPlayoffMode ? {
             squadIds: (playoffState.squads[playoffState.round] || {})[viewingTeam] || [],
             lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
@@ -5993,7 +6003,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
 // liga: se abre al tocar su fila en Clasificación. Reutiliza el mismo
 // PuntosJornadaView que usa cada uno para su propio equipo, pasándole el
 // nombre y la alineación de la persona que se está mirando.
-function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCrests, teams, me, budgetAvailable, onBuyClause, onSendOffer, onClose, playoffView }) {
+function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCrests, teams, me, budgetAvailable, onBuyClause, onSendOffer, onClose, playoffView, favoritos, onToggleFavorite }) {
   const [sub, setSub] = useState("plantilla");
   const [detailPlayerId, setDetailPlayerId] = useState(null);
   const defaultLineup = { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
@@ -6132,8 +6142,8 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         const p = players.find(x => x.id === detailPlayerId);
         if (!p) return null;
         return (
-          <PlayerDetailScreen player={p} entry={squadEntries.find(e => e.id === p.id)} jornadas={jornadas} isOwned={false}
-            isFavorite={false} onToggleFavorite={() => {}}
+          <PlayerDetailScreen player={p} entry={null} jornadas={jornadas} isOwned={false}
+            isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => onToggleFavorite?.(p.id)}
             teams={teams} me={me} budgetAvailable={budgetAvailable} onBuyClause={onBuyClause} onSendOffer={onSendOffer}
             onClose={() => setDetailPlayerId(null)} />
         );
@@ -8105,7 +8115,6 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           <span>{fmtCredits(Number(amountEuros) / 1000000)}</span>
           <Pencil size={14} color={C.muted} />
         </button>
-        <p className="fl-body text-[11px] mt-2" style={{ color: C.muted }}>{sellerName} decidirá si acepta o rechaza tu oferta. Nunca puede ser menor que su valor actual ({fmtCredits(asset.basePrice || 0)}), aunque la jugadora esté protegida por cláusula.</p>
         {error && <div className="fl-mono text-[11px] mt-3" style={{ color: C.negative }}>{error}</div>}
       </div>
       <div className="px-5 pb-3">
