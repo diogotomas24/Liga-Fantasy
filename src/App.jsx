@@ -1700,6 +1700,20 @@ async function readFavoritesGlobalCounts() {
     return {};
   }
 }
+// Mapa completo playerId -> [usuarios que la tienen en favoritos], para poder
+// avisar a todos de una sola consulta (en vez de una por jugadora) cuando
+// alguna favorita suya sale al mercado o cambia de manos.
+async function readFavoritesMap() {
+  try {
+    const { data, error } = await supabase.from("favorites").select("player_id,user_name");
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((row) => { (map[row.player_id] ||= []).push(row.user_name); });
+    return map;
+  } catch {
+    return {};
+  }
+}
 async function addFavoriteGlobal(playerId, userName) {
   try { await supabase.from("favorites").upsert({ player_id: playerId, user_name: userName }); } catch {}
 }
@@ -2047,6 +2061,21 @@ async function disablePushNotifications() {
 function sendPushNotification(leagueId, userName, title, body, extra) {
   try {
     supabase.functions.invoke("send-push", { body: { leagueId, userName, title, body, ...extra } }).catch(() => {});
+  } catch {}
+}
+
+// Avisa a todo el mundo que tenga esta jugadora en favoritos de que ha
+// cambiado de manos (fichaje, cláusula, oferta aceptada...), menos a quien
+// ya vaya a recibir su propio aviso específico de esa operación (comprador
+// y/o vendedor, que se pasan en "exclude").
+async function notifyFavoriters(leagueId, assetId, assetName, exclude, title, body) {
+  try {
+    const favMap = await readFavoritesMap();
+    const excludeSet = new Set(exclude || []);
+    (favMap[assetId] || []).forEach((userName) => {
+      if (excludeSet.has(userName)) return;
+      sendPushNotification(leagueId, userName, title, body);
+    });
   } catch {}
 }
 
@@ -2772,18 +2801,30 @@ export default function App() {
         const idealSet = new Set(ideal.playerIds);
         const allTeams = (await readAllTeamsGlobal()) || {};
         const writes = [];
+        const activityByLeague = {}; // leagueId -> [entradas del historial a añadir]
         Object.values(allTeams).forEach((t) => {
-          const owns = teamService.squadIds(t).some((id) => idealSet.has(id));
-          if (!owns) return;
+          const ownedIds = teamService.squadIds(t).filter((id) => idealSet.has(id));
+          if (ownedIds.length === 0) return;
           const nextT = { ...t, budgetSpent: (t.budgetSpent || 0) - IDEAL_FIVE_REWARD };
           writes.push(writeTeam(t.leagueId, t.name, nextT));
           sendPushNotification(t.leagueId, t.name, "⭐ ¡Estás en el 5 ideal!", `Una de tus jugadoras ha entrado en el 5 ideal de ${jornada.name}. Te llevas ${fmtCredits(IDEAL_FIVE_REWARD)}.`);
+          const playerNames = ownedIds.map((id) => freshPlayers.find((p) => p.id === id)?.name).filter(Boolean).join(", ");
+          (activityByLeague[t.leagueId] ||= []).push({ type: "ideal_five", userId: t.name, jornadaName: jornada.name, amount: IDEAL_FIVE_REWARD, playerNames });
         });
         await Promise.all(writes);
+        // Deja constancia en el Histórico de cada liga afectada, para que se
+        // vea cuánto se ha cobrado (o no) por el 5 ideal de esa jornada.
+        await Promise.all(Object.entries(activityByLeague).map(async ([leagueId, entries]) => {
+          const freshActivity = await readShared(leagueKey(leagueId, "activity"), []);
+          const withIds = entries.map((e) => ({ id: uid("act"), ts: nowMs(), ...e }));
+          const nextActivity = [...withIds, ...freshActivity].slice(0, 60);
+          await writeShared(leagueKey(leagueId, "activity"), nextActivity);
+          if (leagueId === activeLeagueId) setActivity(nextActivity);
+        }));
         await writeShared("idealFiveAwarded", [...awarded, jornada.id]);
       }
     } catch {}
-  }, []);
+  }, [activeLeagueId]);
 
   // En cuanto empieza el primer partido de una jornada (misma hora que usa el
   // aviso de "quedan 10 minutos"), se congela la alineación de CADA equipo de
@@ -3231,7 +3272,7 @@ export default function App() {
   const savePlayoffLineup = useCallback(async (round, lineup) => {
     if (!activeLeagueId || !profile) return { ok: false, error: "Sin sesión." };
     const state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
-    const nextLineups = { ...state.lineups, [round]: { ...(state.lineups[round] || {}), [profile.name]: lineup } };
+    const nextLineups = { ...state.lineups, [round]: { ...(state.lineups[round] || {}), [profile.name]: { ...lineup, savedAt: nowMs() } } };
     const nextState = { ...state, lineups: nextLineups };
     await writeShared(leagueKey(activeLeagueId, "playoffState"), nextState);
     setPlayoffState(nextState);
@@ -3487,6 +3528,20 @@ export default function App() {
               sendPushNotification(leagueId, r.winnerUserId, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
             }
           });
+          // A quien tenga en favoritos alguna de las jugadoras que se acaban
+          // de fichar (y no sea quien se la ha llevado, que ya tiene su
+          // propio aviso de arriba), se le avisa por separado.
+          if ((historyEntry.results || []).length > 0) {
+            const favMap = await readFavoritesMap();
+            historyEntry.results.forEach((r) => {
+              const asset = freshPlayers.find((p) => p.id === r.assetId);
+              if (!asset) return;
+              (favMap[r.assetId] || []).forEach((userName) => {
+                if (userName === r.winnerUserId) return;
+                sendPushNotification(leagueId, userName, "⭐ Una favorita tuya ha cambiado de manos", `${r.winnerUserId} ha fichado a ${asset.name} por ${fmtCredits(r.amount)}.`);
+              });
+            });
+          }
         }
       }
 
@@ -3495,6 +3550,20 @@ export default function App() {
         const assetIds = marketService.buildAssets(playersNext, teamsNext, MARKET_ASSET_COUNT);
         marketNext = { id: uid("mk"), opensAt: window_.opensAt, closesAt: window_.closesAt, assetIds, resolved: false };
         await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
+
+        // A quien tenga en favoritos alguna jugadora que acaba de salir en
+        // este mercado nuevo, se le avisa — así se entera sin tener que
+        // estar mirando la lista entera cada vez.
+        if (assetIds.length > 0) {
+          const favMap = await readFavoritesMap();
+          assetIds.forEach((assetId) => {
+            const asset = playersNext.find((p) => p.id === assetId);
+            if (!asset) return;
+            (favMap[assetId] || []).forEach((userName) => {
+              sendPushNotification(leagueId, userName, "⭐ ¡Una favorita tuya está en el mercado!", `${asset.name} ya se puede pujar en el mercado de hoy.`);
+            });
+          });
+        }
 
         // Genera ofertas de la liga por las jugadoras marcadas "en venta" que
         // todavía no tengan una oferta válida para este mercado nuevo.
@@ -3749,7 +3818,7 @@ export default function App() {
     // mercado se resuelve (o cualquier otra persona guarda algo) al mismo tiempo,
     // esa operación vive en otra clave y no puede perderse por esta escritura.
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
-    const nextTeam = { ...fresh, lineup };
+    const nextTeam = { ...fresh, lineup: { ...lineup, savedAt: nowMs() } };
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     setSaving(false);
@@ -3799,6 +3868,7 @@ export default function App() {
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
     sendPushNotification(activeLeagueId, sellerName, "🔒 ¡Te han clausulado!", `${profile.name} se ha llevado a ${asset.name} por ${fmtCredits(amount)}.`);
     sendPushNotification(activeLeagueId, profile.name, "✅ Fichaje confirmado", `Has fichado a ${asset.name} por ${fmtCredits(amount)}.`);
+    notifyFavoriters(activeLeagueId, asset.id, asset.name, [profile.name, sellerName], "⭐ Una favorita tuya ha cambiado de manos", `${profile.name} ha pagado la cláusula de ${asset.name} por ${fmtCredits(amount)}.`);
     if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
       sendPushNotification(activeLeagueId, profile.name, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
     }
@@ -3901,8 +3971,15 @@ export default function App() {
   const sendOffer = useCallback(async (sellerName, asset, amount) => {
     const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
     const freshOffers = await readShared(leagueKey(activeLeagueId, "offers"), offers);
+    // OJO: pujas y mercado se leen frescos de Supabase, no del estado en
+    // memoria — si no, una puja que acabas de retirar (o un mercado que
+    // acaba de cerrar) en otra pestaña/dispositivo podía seguir "contando"
+    // aquí y bloquear una oferta que en realidad sí tenías presupuesto para
+    // hacer ("Presupuesto insuficiente" de mentira).
+    const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
+    const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     const check = offerService.validateSend({
-      buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId: market?.id, offers: freshOffers,
+      buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids: freshBids, marketId: freshMarket?.id, offers: freshOffers,
     });
     if (!check.ok) return check;
     const nextOffers = offerService.create(freshOffers, { fromUser: profile.name, toUser: sellerName, assetId: asset.id, amount });
@@ -3928,6 +4005,7 @@ export default function App() {
       await Promise.all([writeTeam(activeLeagueId, offer.fromUser, nextBuyer), writeTeam(activeLeagueId, offer.toUser, nextSeller)]);
       setTeams(t => ({ ...t, [offer.fromUser]: nextBuyer, [offer.toUser]: nextSeller }));
       sendPushNotification(activeLeagueId, offer.fromUser, "✅ ¡Te han aceptado la oferta!", `Has fichado a ${asset.name} por ${fmtCredits(offer.amount)}.`);
+      notifyFavoriters(activeLeagueId, asset.id, asset.name, [offer.fromUser, offer.toUser], "⭐ Una favorita tuya ha cambiado de manos", `${offer.fromUser} ha fichado a ${asset.name} por ${fmtCredits(offer.amount)} (oferta aceptada).`);
       if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
         sendPushNotification(activeLeagueId, offer.fromUser, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
       }
@@ -6176,7 +6254,7 @@ function ValorHistoricoModal({ player, onClose }) {
 // importe, incluido 1 € de diferencia. `valueEuros` es un string de dígitos
 // (sin separadores); `minEuros`, si se indica, bloquea "Confirmar" por debajo
 // de ese importe.
-function AmountKeypadSheet({ title, subtitle, valueEuros, onChange, onConfirm, onClose, confirmLabel, minEuros }) {
+function AmountKeypadSheet({ title, subtitle, valueEuros, onChange, onConfirm, onClose, confirmLabel, minEuros, error }) {
   const handleKey = (k) => {
     if (k === "back") { onChange(valueEuros.length > 1 ? valueEuros.slice(0, -1) : "0"); return; }
     const next = (valueEuros === "0" ? "" : valueEuros) + k;
@@ -6198,6 +6276,12 @@ function AmountKeypadSheet({ title, subtitle, valueEuros, onChange, onConfirm, o
           <div className="fl-mono font-bold" style={{ color: belowMin ? C.negative : C.white, fontSize: 30 }}>{displayFormatted} €</div>
           {belowMin && <div className="fl-mono text-[10px] mt-1" style={{ color: C.negative }}>Mínimo {minEuros.toLocaleString("es-ES")} €</div>}
         </div>
+        {error && (
+          <div className="mx-4 mb-3 rounded-lg px-3 py-2.5 flex items-start gap-2" style={{ background: `${C.negative}18`, border: `1px solid ${C.negative}55` }}>
+            <CircleX size={15} color={C.negative} style={{ flexShrink: 0, marginTop: 1 }} />
+            <span className="fl-body text-xs" style={{ color: C.negative }}>{error}</span>
+          </div>
+        )}
         <div className="px-4 pb-3">
           <button onClick={() => !belowMin && onConfirm()} disabled={belowMin}
             className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40"
@@ -7154,6 +7238,11 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
         className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold disabled:opacity-40" style={{ background: C.baby, color: C.ink }}>
         {savedFlash ? "Alineación guardada ✓" : "Guardar alineación"}
       </button>
+      {lineup?.savedAt && (
+        <div className="fl-mono text-[10px] text-center mt-1.5" style={{ color: C.muted }}>
+          Último guardado: {new Date(lineup.savedAt).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+        </div>
+      )}
     </div>
   );
 }
@@ -7989,7 +8078,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
 
   if (sent) {
     return (
-      <div className="fixed inset-0 z-20 flex flex-col items-center justify-center px-6" style={{ background: C.navy900 }}>
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6" style={{ background: C.navy900 }}>
         <CircleCheck size={40} color={C.positive} />
         <div className="fl-body text-sm mt-3 text-center" style={{ color: C.white }}>Oferta enviada a {sellerName}.</div>
         <button onClick={onBack} className="fl-tap mt-4 rounded-md px-5 py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>Volver</button>
@@ -7998,7 +8087,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   }
 
   return (
-    <div className="fixed inset-0 z-20 flex flex-col" style={{ background: C.navy900 }}>
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: C.navy900 }}>
       <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta a {sellerName}</div>
@@ -8137,7 +8226,7 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   };
 
   return (
-    <div className="fixed inset-0 z-20 flex flex-col" style={{ background: C.navy900 }}>
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ background: C.navy900 }}>
       <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
         <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta por {asset.name}</div>
@@ -8270,10 +8359,9 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
           )}
         </div>
       </div>
-      {error && <div className="fl-mono text-[10px] mt-2" style={{ color: C.negative }}>{error}</div>}
       {showKeypad && (
         <AmountKeypadSheet title={`Puja por ${asset.name}`} subtitle={`Mínimo ${fmtCredits(asset.basePrice || 1)} · Tu saldo: ${fmtCredits(budgetAvailable)}`}
-          valueEuros={amountEuros} onChange={setAmountEuros} minEuros={minEuros}
+          valueEuros={amountEuros} onChange={setAmountEuros} minEuros={minEuros} error={error}
           confirmLabel={busy ? "Confirmando…" : "Confirmar puja"}
           onConfirm={submit} onClose={() => setShowKeypad(false)} />
       )}
@@ -8297,7 +8385,10 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
   });
   (activity || []).filter(a => a.userId === profile.name && a.type === "venta").forEach(a => {
     const asset = players.find(p => p.id === a.assetId);
-    rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: true });
+    rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)}`, positive: false });
+  });
+  (activity || []).filter(a => a.userId === profile.name && a.type === "ideal_five").forEach(a => {
+    rows.push({ id: a.id, ts: a.ts, text: `Cobras ${fmtCredits(a.amount)} del 5 ideal de ${a.jornadaName} (${a.playerNames})`, positive: true });
   });
   (activity || []).filter(a => a.type === "clausula" && (a.buyerName === profile.name || a.sellerName === profile.name)).forEach(a => {
     const asset = players.find(p => p.id === a.assetId);
@@ -8312,7 +8403,7 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
     if (a.buyerName === profile.name) {
       rows.push({ id: a.id, ts: a.ts, text: `Te han aceptado tu oferta por ${asset?.name || "una jugadora"}, ${fmtCredits(a.amount)}`, positive: true });
     } else {
-      rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)} (oferta aceptada)`, positive: true });
+      rows.push({ id: a.id, ts: a.ts, text: `Has vendido a ${asset?.name || "una jugadora"} por ${fmtCredits(a.amount)} (oferta aceptada)`, positive: false });
     }
   });
   rows.sort((a, b) => b.ts - a.ts);
