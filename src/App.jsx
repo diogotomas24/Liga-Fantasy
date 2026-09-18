@@ -6458,6 +6458,14 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
     for (let i = seasonRows.length - 1; i >= 0; i--) if (seasonRows[i].played) return i;
     return Math.max(seasonRows.length - 1, 0);
   });
+  const jornadaStripRef = useRef(null);
+  const selectedTileRef = useRef(null);
+  // Al abrir la ficha, la tira de jornadas arranca centrada en la
+  // seleccionada (la última jugada) en vez de en la Jornada 1 — para verla
+  // hay que desplazarse hacia atrás, no al revés.
+  useEffect(() => {
+    selectedTileRef.current?.scrollIntoView({ inline: "center", block: "nearest" });
+  }, []);
 
   const totalSeason = seasonRows.reduce((s, r) => s + (r.played ? r.total : 0), 0);
   const playedCount = seasonRows.filter(r => r.played).length;
@@ -6624,9 +6632,9 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
         ) : (
           <>
             {!showHistorico && (
-            <div className="flex gap-1.5 px-4 pt-4 overflow-x-auto overflow-y-visible fl-scrollbar">
+            <div ref={jornadaStripRef} className="flex gap-1.5 px-4 pt-4 overflow-x-auto overflow-y-visible fl-scrollbar">
               {seasonRows.map(r => (
-                <button key={r.jornada.id} onClick={() => setSelectedIdx(r.idx)}
+                <button key={r.jornada.id} ref={r.idx === selectedIdx ? selectedTileRef : null} onClick={() => setSelectedIdx(r.idx)}
                   className="fl-tap flex-shrink-0 relative flex flex-col items-center justify-end rounded-lg overflow-hidden"
                   style={{ width: 60, height: 90, background: r.idx === selectedIdx ? C.white : "transparent" }}>
                   {/* Caja de escala fija (0-20 pts): el relleno crece desde abajo y puede
@@ -7832,7 +7840,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
             <div className="space-y-3">
               {assets.map(asset => (
                 <AuctionCard key={asset.id} asset={asset} market={market} bids={bids} profile={profile} myTeam={myTeam}
-                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onWithdrawBid={onWithdrawBid} onOpenPlayer={setDetailPlayer} teamCrests={teamCrests} />
+                  isMarketOpen={isMarketOpen} budgetAvailable={budgetAvailable} onBid={onBid} onWithdrawBid={onWithdrawBid} onOpenPlayer={setDetailPlayer} teamCrests={teamCrests} favoritos={favoritos} />
               ))}
             </div>
           )}
@@ -8301,13 +8309,14 @@ function ClauseOfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
   );
 }
 
-function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onOpenPlayer, teamCrests }) {
+function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onOpenPlayer, teamCrests, favoritos }) {
   const [showKeypad, setShowKeypad] = useState(false);
   const minEuros = Math.round((asset.basePrice || 1) * 1000000);
   const [amountEuros, setAmountEuros] = useState(String(minEuros));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
+  const isFav = (favoritos || []).includes(asset.id);
 
   const bidCount = auctionService.bidsForAsset(bids, market.id, asset.id).filter(b => b.status === "active").length;
   const myBid = auctionService.userBidForAsset(bids, market.id, asset.id, profile.name);
@@ -8336,7 +8345,12 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
   };
 
   return (
-    <div className="fl-row p-4 fl-pop">
+    <div className="relative fl-row p-4 fl-pop">
+      {isFav && (
+        <div className="absolute z-10 flex items-center justify-center rounded-full" style={{ top: -8, right: -8, width: 26, height: 26, background: C.navy900, border: `1.5px solid ${C.gold}` }}>
+          <Star size={13} color={C.gold} fill={C.gold} />
+        </div>
+      )}
       <div className="flex items-center gap-3.5">
         <button onClick={() => onOpenPlayer(asset)} className="fl-tap flex items-center gap-3.5 flex-1 min-w-0 text-left">
           <div className="relative flex-shrink-0" style={{ width: 76 }}>
