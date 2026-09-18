@@ -762,7 +762,7 @@ const idealFiveService = {
 // y todo el conjunto se amortigua si la jugadora ya es muy cara (>85M), para
 // que las caras no se disparen tanto en euros como las baratas.
 const MARKET_BRAKE_THRESHOLD = 85; // millones: a partir de aquí empieza a frenar
-const WEEK_WEIGHTS = [1.0, 1.3, 0.9, 0.9, 0.9, 0.7]; // día 0..5 desde su último partido; día 6+ se queda en 0.7
+const WEEK_WEIGHTS = [1.0, 1.1, 1.2, 1.3, 1.4, 1.4]; // día 0..5 desde su último partido, subiendo cada día; día 6+ se queda en 1.4
 
 function marketBrakeFactor(priceM) {
   if (!priceM || priceM <= MARKET_BRAKE_THRESHOLD) return 1;
@@ -1280,7 +1280,7 @@ const marketPricingService = {
     const posicionFactor = totalTeams > 0 ? ((totalTeams - teamRank) / totalTeams) * 0.0025 : 0;
     const mvpPartidoFactor = isMvpPartido ? 0.005 : 0;
     const minutosFactor = minutesJump ? 0.0015 : 0;
-    const consistenciaFactor = isConsistentGood ? 0.0015 : 0;
+    const consistenciaFactor = isConsistentGood ? 0.003 : 0;
     return puntosFactor + resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor;
   },
 
@@ -1301,15 +1301,15 @@ const marketPricingService = {
   // Los empujones pequeños que se recalculan todos los días.
   computeDailySmallFactors({ bidsForHer, totalTeams, opponentsAvgWinPct, lowMinutes, favoritesForHer }) {
     const demandConfidence = Math.min(1, bidsForHer / Math.max(1, 3 * totalTeams));
-    const demanda = demandConfidence * 0.006;
+    const demanda = demandConfidence * 0.012;
     let rivales = 0;
     if (opponentsAvgWinPct != null) {
       const diff = 0.5 - opponentsAvgWinPct;
-      rivales = diff >= 0 ? diff * 0.0075 : diff * 0.003;
+      rivales = diff >= 0 ? diff * 0.015 : diff * 0.0001; // rivales fuertes: casi no penaliza
     }
-    const inactividad = lowMinutes ? -0.001 : 0;
+    const inactividad = lowMinutes ? -0.002 : 0;
     const hypeConfidence = Math.min(1, favoritesForHer / Math.max(1, 0.5 * totalTeams));
-    const hype = hypeConfidence * 0.003;
+    const hype = hypeConfidence * 0.006;
     return demanda + rivales + inactividad + hype;
   },
 
