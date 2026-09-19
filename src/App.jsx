@@ -168,7 +168,7 @@ function calcSwishPoints(stats, position) {
     pd: isPivot ? -Math.floor(pd / 3) : -Math.floor(pd / 2),
     tap: isPivot ? Math.floor(tap / 2) : tap,
     faltas: faltas >= 5 ? -3 : -Math.floor(faltas / 3),
-    valoracion: valoracion <= 5 ? 1 : valoracion <= 10 ? 2 : valoracion <= 15 ? 3 : 4,
+    valoracion: valoracion <= 0 ? 0 : valoracion <= 5 ? 1 : valoracion <= 10 ? 2 : valoracion <= 15 ? 3 : 4,
   };
 
   const breakdown = [
@@ -229,23 +229,21 @@ function calcPlayerPoints(stats, position, resolvedWin) {
 }
 
 
-function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
+// Devuelve el conjunto de IDs de jugadoras (titulares, ya sustituidas por
+// banquillo donde tocara, más la entrenadora/or titular) que REALMENTE
+// puntuaron para este equipo en esta jornada — o null si esa jornada no
+// puntúa para este equipo (sin alineación bloqueada, endeudada, o sin
+// quinteto titular completo). Se usa tanto para calcular los puntos del
+// equipo como para decidir quién cobra por el 5 ideal.
+function resolveContributingPlayerIds(jornada, teamName, currentLineup, players) {
   const snapshot = jornada.lineups && jornada.lineups[teamName];
-  // Una vez empezada la jornada, SOLO vale la alineación ya bloqueada (o 0 si
-  // no hay ninguna, por ejemplo por haberte unido a la liga después de que
-  // ya hubiera arrancado) — nunca la alineación actual en vivo, aunque haya
-  // cambiado después. Antes de que empiece, sí se usa la actual como
-  // previsión de lo que puntuarías si se bloqueara ahora mismo.
   const lineup = snapshot || (hasJornadaEffectivelyStarted(jornada) ? null : currentLineup);
-  if (!lineup) return 0;
-  if (lineup.debtLocked) return 0; // estaba endeudada cuando empezó la jornada: no puntúa
+  if (!lineup) return null;
+  if (lineup.debtLocked) return null;
+  if ((lineup.starters || []).length < 5) return null; // sin quinteto titular completo no puntúa
 
   const bench = lineup.bench || {};
   const captainId = lineup.captainId;
-
-  // Agrupa a las titulares por posición, con su puntuación "efectiva" (con el
-  // x2 de capitana ya aplicado si corresponde) — la comparación contra el
-  // banquillo se hace SIEMPRE con ese valor ya doblado, nunca con el bruto.
   const byPos = {};
   (lineup.starters || []).forEach((id) => {
     const player = players.find((p) => p.id === id);
@@ -255,29 +253,39 @@ function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
     (byPos[player.position] = byPos[player.position] || []).push({ id, effective });
   });
 
-  let total = 0;
+  const contributing = new Set();
   Object.entries(byPos).forEach(([pos, list]) => {
     const benchId = bench[pos];
     const benchPlayer = benchId ? players.find((p) => p.id === benchId) : null;
     if (benchPlayer && list.length > 0) {
       const benchRaw = calcPlayerPoints(jornada.stats?.[benchId], pos);
-      // Localiza a la titular "más floja" de esa posición (por puntuación ya
-      // con el x2 aplicado donde toque) — es la única que se puede sustituir.
       let worstIdx = 0;
       list.forEach((s, i) => { if (s.effective < list[worstIdx].effective) worstIdx = i; });
-      if (benchRaw > list[worstIdx].effective) {
-        // Entra la del banquillo SIN bonus de capitana: ese bonus iba ligado
-        // a la jugadora concreta, y se pierde si es precisamente ella la que sale.
-        list[worstIdx] = { id: benchId, effective: benchRaw };
-      }
+      if (benchRaw > list[worstIdx].effective) list[worstIdx] = { id: benchId, effective: benchRaw };
     }
-    list.forEach((s) => { total += s.effective; });
+    list.forEach((s) => contributing.add(s.id));
   });
+  if (lineup.titularCoach) contributing.add(lineup.titularCoach);
+  return contributing;
+}
 
-  if (lineup.titularCoach) {
-    const coach = players.find((p) => p.id === lineup.titularCoach);
-    if (coach) total += calcPlayerPoints(jornada.stats?.[lineup.titularCoach], coach.position, resolveCoachWin(jornada, coach.team));
-  }
+function computeTeamJornadaPoints(jornada, teamName, currentLineup, players) {
+  const contributing = resolveContributingPlayerIds(jornada, teamName, currentLineup, players);
+  if (!contributing) return 0;
+  const snapshot = jornada.lineups && jornada.lineups[teamName];
+  const lineup = snapshot || (hasJornadaEffectivelyStarted(jornada) ? null : currentLineup);
+  const captainId = lineup.captainId;
+  let total = 0;
+  contributing.forEach((id) => {
+    const player = players.find((p) => p.id === id);
+    if (!player) return;
+    if (player.position === "DT") {
+      total += calcPlayerPoints(jornada.stats?.[id], player.position, resolveCoachWin(jornada, player.team));
+    } else {
+      const raw = calcPlayerPoints(jornada.stats?.[id], player.position);
+      total += id === captainId ? raw * 2 : raw;
+    }
+  });
   return total;
 }
 
@@ -828,15 +836,26 @@ const realStandingsService = {
   compute(jornadas) {
     const table = {}; // team -> { wins, losses, pf, pc, played }
     const headToHead = {}; // "TeamA|TeamB" -> { aWins, bWins, aPts, bPts }
-    const ensure = (name) => { if (!table[name]) table[name] = { team: name, wins: 0, losses: 0, pf: 0, pc: 0, played: 0 }; };
+    // "DESCANSA" no es un equipo real (es el hueco de quien no juega esa
+    // jornada porque la liga tiene un número impar de equipos) — nunca se le
+    // crea fila propia.
+    const ensure = (name) => { if (name && name !== "DESCANSA" && !table[name]) table[name] = { team: name, wins: 0, losses: 0, pf: 0, pc: 0, played: 0 }; };
 
     (jornadas || []).forEach((j) => {
       (j.partidos || []).forEach((p) => {
+        // Se asegura la fila de CUALQUIER equipo real que aparezca en el
+        // calendario, juegue o descanse esa jornada concreta — así, con un
+        // número impar de equipos (cada jornada descansa uno distinto),
+        // nadie desaparece de la clasificación solo porque su primer
+        // partido de verdad todavía no haya llegado.
+        if (p.local !== "DESCANSA") ensure(p.local);
+        if (p.visitante !== "DESCANSA") ensure(p.visitante);
+
         const winner = tripleFantasyService.matchWinner(p);
-        if (!winner) return;
+        if (!winner) return; // empate (o el propio descanso, que se marca así): no cuenta como PJ/V/D/+-
+        if (p.local === "DESCANSA" || p.visitante === "DESCANSA") return; // por si acaso, un descanso nunca suma partido jugado
         const lf = Number(p.marcadorLocal), vf = Number(p.marcadorVisitante);
         if (Number.isNaN(lf) || Number.isNaN(vf)) return;
-        ensure(p.local); ensure(p.visitante);
         table[p.local].played++; table[p.visitante].played++;
         table[p.local].pf += lf; table[p.local].pc += vf;
         table[p.visitante].pf += vf; table[p.visitante].pc += lf;
@@ -2539,6 +2558,44 @@ function SectionTitle({ children, right }) {
   );
 }
 
+// Estado en vivo de una jornada: cuenta atrás en las últimas 24h antes de que
+// empiece, "EN JUEGO" (en verde) desde que arranca, y "ACABADA" en cuanto
+// todos sus partidos ya tienen marcador puesto. Por debajo de 24h para
+// empezar no se muestra nada (no hace falta adelantar tanto).
+function JornadaStatusPill({ jornada }) {
+  const [now, setNow] = useState(() => nowMs());
+  useEffect(() => { const t = setInterval(() => setNow(nowMs()), 1000); return () => clearInterval(t); }, []);
+  if (!jornada) return null;
+
+  const partidos = jornada.partidos || [];
+  const allFinished = partidos.length > 0 && partidos.every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
+  if (allFinished) {
+    return (
+      <span className="fl-mono text-[10px] font-bold px-2.5 py-1 rounded-full" style={{ background: `${C.muted}22`, color: C.muted }}>ACABADA</span>
+    );
+  }
+
+  const started = hasJornadaEffectivelyStarted(jornada);
+  if (started) {
+    return (
+      <span className="fl-mono text-[10px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5" style={{ background: `${C.positive}22`, color: C.positive }}>
+        <span className="fl-pulse" style={{ width: 6, height: 6, borderRadius: 999, background: C.positive, display: "inline-block" }} />
+        EN JUEGO
+      </span>
+    );
+  }
+
+  const start = computeJornadaStartTime(jornada);
+  if (!start) return null;
+  const remaining = start.getTime() - now;
+  if (remaining > 24 * 3600 * 1000 || remaining <= 0) return null; // solo se muestra dentro de las últimas 24h
+  return (
+    <span className="fl-mono text-[10px] font-semibold px-2.5 py-1 rounded-full" style={{ background: `${C.gold}18`, color: C.gold }}>
+      Empieza en {fmtHMS(remaining)}
+    </span>
+  );
+}
+
 /* =============================================================================
    ONBOARDING
    ========================================================================== */
@@ -2811,7 +2868,14 @@ export default function App() {
         const writes = [];
         const activityByLeague = {}; // leagueId -> [entradas del historial a añadir]
         Object.values(allTeams).forEach((t) => {
-          const ownedIds = teamService.squadIds(t).filter((id) => idealSet.has(id));
+          // Solo cobra quien de verdad puntuó esa jornada (quinteto completo,
+          // sin deuda) Y a quien, además, esa jugadora concreta del 5 ideal le
+          // haya contado realmente para su puntuación — ya sea de titular o
+          // habiendo entrado desde el banquillo. Tenerla fichada sin que
+          // llegara a puntuar no vale.
+          const contributing = resolveContributingPlayerIds(jornada, t.name, t.lineup, freshPlayers);
+          if (!contributing) return;
+          const ownedIds = [...contributing].filter((id) => idealSet.has(id));
           if (ownedIds.length === 0) return;
           const nextT = { ...t, budgetSpent: (t.budgetSpent || 0) - IDEAL_FIVE_REWARD };
           writes.push(writeTeam(t.leagueId, t.name, nextT));
@@ -2852,6 +2916,21 @@ export default function App() {
         const allTeams = (await readAllTeamsGlobal()) || {};
         const lineups = { ...(jornada.lineups || {}) };
         let changed = false;
+
+        // En cuanto la jornada arranca, cualquier partido contra "DESCANSA"
+        // (el hueco de quien no juega esa jornada, porque la liga tiene un
+        // número impar de equipos) se da por finalizado solo, con empate
+        // técnico — nadie tiene que rellenar un marcador para un partido que
+        // no existe de verdad.
+        let partidos = jornada.partidos || [];
+        let partidosChanged = false;
+        partidos = partidos.map((p) => {
+          const isDescanso = p.local === "DESCANSA" || p.visitante === "DESCANSA";
+          const sinMarcador = p.marcadorLocal === "" || p.marcadorLocal == null || p.marcadorVisitante === "" || p.marcadorVisitante == null;
+          if (isDescanso && sinMarcador) { partidosChanged = true; return { ...p, marcadorLocal: 0, marcadorVisitante: 0 }; }
+          return p;
+        });
+
         Object.values(allTeams).forEach((t) => {
           const key = `${t.leagueId}::${t.name}`;
           if (lineups[key] || !t.lineup) return;
@@ -2864,11 +2943,11 @@ export default function App() {
           lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
           changed = true;
         });
-        if (changed) {
-          const res = await writeJornada({ ...jornada, lineups });
+        if (changed || partidosChanged) {
+          const res = await writeJornada({ ...jornada, lineups, partidos });
           if (res.ok) {
             anyChanged = true;
-            nextJ.push({ ...jornada, lineups });
+            nextJ.push({ ...jornada, lineups, partidos });
           } else {
             console.error("checkLineupLock: no se pudo guardar la jornada", jornada.id, res.error);
             nextJ.push(jornada); // no se guardó de verdad: no lo damos por bloqueado en pantalla
@@ -3553,7 +3632,13 @@ export default function App() {
         }
       }
 
-      const staleWindow = !marketNext || marketNext.closesAt !== window_.closesAt || needsResolution;
+      // "Solo puede cambiar una vez al día": comparamos por DÍA NATURAL de
+      // cierre, no por el milisegundo exacto de "closesAt". Comparar el
+      // milisegundo exacto es fràgil: cualquier mínima diferencia de cálculo
+      // entre dos ciclos (redondeos, el reloj de pruebas recalculando "ahora"
+      // en cada tick...) hacía que el mercado se considerase "caducado" y se
+      // regenerase con jugadoras nuevas varias veces en el mismo día.
+      const staleWindow = !marketNext || toDateStr(new Date(marketNext.closesAt)) !== toDateStr(new Date(window_.closesAt)) || needsResolution;
       if (staleWindow) {
         const assetIds = marketService.buildAssets(playersNext, teamsNext, MARKET_ASSET_COUNT);
         marketNext = { id: uid("mk"), opensAt: window_.opensAt, closesAt: window_.closesAt, assetIds, resolved: false };
@@ -5388,7 +5473,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       )}
 
       <div>
-        <SectionTitle>Jornada {currentJornadaNumber}</SectionTitle>
+        <SectionTitle right={<JornadaStatusPill jornada={lastJornada} />}>Jornada {currentJornadaNumber}</SectionTitle>
         {jornadas.length === 0 && (
           <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
         )}
@@ -5811,12 +5896,13 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
   const values = points.map(p => p.value);
   const max = Math.max(...values, 1), min = Math.min(...values, 0);
   const range = Math.max(max - min, 1);
-  const w = 300, h = 120;
-  const pathD = points.length > 0 ? points.map((p, i) => {
-    const x = points.length > 1 ? (i / (points.length - 1)) * w : w / 2;
-    const y = h - ((p.value - min) / range) * h;
-    return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
-  }).join(" ") : "";
+  const w = 300, h = 120, padY = 16; // margen vertical para que los picos no se corten contra el borde
+  const yFor = (v) => padY + (h - 2 * padY) - ((v - min) / range) * (h - 2 * padY);
+  const xFor = (i) => points.length > 1 ? (i / (points.length - 1)) * w : w / 2;
+  const pathD = points.length > 1
+    ? points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.value).toFixed(1)}`).join(" ")
+    : ""; // con un solo punto no hay línea que trazar: se dibuja un punto suelto más abajo, no un path vacío
+  const areaD = points.length > 1 ? `${pathD} L ${xFor(points.length - 1).toFixed(1)} ${h - padY} L ${xFor(0).toFixed(1)} ${h - padY} Z` : "";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -5831,9 +5917,21 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
           <>
             <div className="fl-mono text-2xl font-bold mb-1" style={{ color: C.white }}>{fmtCredits(values[values.length - 1])}</div>
             <div className="fl-row p-4">
-              <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
-                <path d={pathD} fill="none" stroke={C.principal} strokeWidth={2} />
-              </svg>
+              <div className="relative">
+                {/* Valores de referencia (máximo y mínimo) a la izquierda del gráfico */}
+                <div className="absolute left-0 top-0 fl-mono text-[9px]" style={{ color: C.muted }}>{fmtCredits(max)}</div>
+                <div className="absolute left-0 bottom-0 fl-mono text-[9px]" style={{ color: C.muted }}>{fmtCredits(min)}</div>
+                <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
+                  {/* líneas de referencia discretas arriba/abajo */}
+                  <line x1={0} y1={padY} x2={w} y2={padY} stroke={C.line} strokeWidth={1} strokeDasharray="3 3" />
+                  <line x1={0} y1={h - padY} x2={w} y2={h - padY} stroke={C.line} strokeWidth={1} strokeDasharray="3 3" />
+                  {areaD && <path d={areaD} fill={C.principal} opacity={0.12} stroke="none" />}
+                  {pathD && <path d={pathD} fill="none" stroke={C.principal} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />}
+                  {points.map((p, i) => (
+                    <circle key={i} cx={xFor(i)} cy={yFor(p.value)} r={points.length === 1 ? 4 : 3} fill={C.principal} />
+                  ))}
+                </svg>
+              </div>
               <div className="flex items-center justify-between mt-2">
                 <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[0]?.date}</span>
                 <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[points.length - 1]?.date}</span>
@@ -8668,6 +8766,10 @@ function ActividadFeed({ activity, players }) {
         } else if (a.type === "oferta") {
           text = <>
             <span style={{ color: C.baby }}>{a.sellerName}</span> le ha vendido a <span style={{ color: C.baby }}>{a.buyerName}</span> <span className="font-medium">{asset?.name || "una jugadora"}</span> por {fmtCredits(a.amount)} (oferta aceptada)
+          </>;
+        } else if (a.type === "ideal_five") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha ganado <span className="font-medium">{fmtCredits(a.amount)}</span> por tener jugadoras en el 5 ideal de la {a.jornadaName}
           </>;
         } else if (a.type === "playoff_start") {
           text = <>🏆 ¡Empiezan los <span style={{ color: C.gold, fontWeight: 700 }}>playoffs</span>! Clasificados: {(a.qualifiers || []).join(", ")}</>;
