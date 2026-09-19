@@ -4245,7 +4245,7 @@ export default function App() {
       {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "calendario" && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
@@ -4500,7 +4500,8 @@ function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose })
 
 // "5 ideal": por jornada concreta, o el "mejor 5 ideal global" (acumulado de
 // toda la temporada: la mejor jugadora de cada posición por puntos totales).
-function IdealFiveGlobalScreen({ onClose, jornadas, players }) {
+// Mismo campo de baloncesto que el resto de pantallas de "5 ideal" de la app.
+function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
   const [mode, setMode] = useState("global"); // "global" | id de jornada
   const startedJ = useMemo(() => startedJornadas(playoffService.regularJornadas(jornadas)), [jornadas]);
 
@@ -4512,25 +4513,40 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players }) {
       totals[p.id] = startedJ.reduce((s, j) => s + calcPlayerPoints(j.stats?.[p.id], p.position), 0);
     });
     const byPos = { BASE: [], ALERO: [], PIVOT: [] };
-    players.forEach((p) => { if (byPos[p.position]) byPos[p.position].push({ player: p, total: totals[p.id] || 0 }); });
-    Object.values(byPos).forEach((list) => list.sort((a, b) => b.total - a.total));
-    return [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)];
+    players.forEach((p) => { if (byPos[p.position]) byPos[p.position].push({ id: p.id, pts: totals[p.id] || 0 }); });
+    Object.values(byPos).forEach((list) => list.sort((a, b) => b.pts - a.pts));
+    return {
+      playerIds: [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)].map((x) => x.id),
+      total: [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)].reduce((s, x) => s + x.pts, 0),
+      pointsById: totals,
+    };
   }, [players, startedJ]);
 
-  const jornadaIdeal = useMemo(() => {
-    if (mode === "global") return null;
-    const jornada = startedJ.find((j) => j.id === mode);
-    if (!jornada) return null;
-    return idealFiveService.compute(jornada, players);
-  }, [mode, startedJ, players]);
+  const jornada = mode === "global" ? null : startedJ.find((j) => j.id === mode);
+  const ideal = mode === "global" ? globalBest : (jornada ? idealFiveService.compute(jornada, players) : null);
 
-  const jornadaIdealPlayers = jornadaIdeal ? jornadaIdeal.playerIds.map((id) => players.find((p) => p.id === id)).filter(Boolean) : [];
+  const findPlayer = (id) => players.find((p) => p.id === id) || null;
+  const pointsFor = (id) => {
+    if (mode === "global") return globalBest.pointsById[id] || 0;
+    const p = findPlayer(id);
+    if (!p || !jornada) return 0;
+    const stats = jornada.stats?.[id];
+    return stats ? calcPointsBreakdown(stats, p.position).total : 0;
+  };
+  const byPos = (posKey) => (ideal?.playerIds || []).filter((id) => findPlayer(id)?.position === posKey);
+  const rows = [
+    { pos: POSITIONS[2], ids: byPos("PIVOT") },
+    { pos: POSITIONS[1], ids: byPos("ALERO") },
+    { pos: POSITIONS[0], ids: byPos("BASE") },
+  ];
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
       <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
-        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>5 ideal</div>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6 flex items-center justify-center gap-1.5" style={{ color: C.white }}>
+          <Star size={15} fill={C.gold} color={C.gold} /> 5 ideal
+        </div>
       </div>
       <div className="px-3 pt-3 pb-1 flex gap-2 overflow-x-auto fl-scrollbar">
         <button onClick={() => setMode("global")} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
@@ -4544,36 +4560,38 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players }) {
           </button>
         ))}
       </div>
-      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-3">
-        {mode === "global" ? (
-          <div className="space-y-2">
-            {globalBest.map(({ player, total }) => (
-              <div key={player.id} className="fl-row flex items-center gap-3 px-3 py-2.5">
-                <PositionBadge posKey={player.position} size="sm" />
-                <PlayerPhoto url={player.photo} size={34} rounded={8} />
-                <div className="flex-1 min-w-0">
-                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
-                  <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{player.team}</div>
-                </div>
-                <span className="fl-mono text-sm font-bold" style={{ color: C.gold }}>{total}</span>
-              </div>
-            ))}
-            {globalBest.length === 0 && <EmptyState title="Sin datos todavía" text="En cuanto haya jornadas jugadas, aquí verás el mejor 5 ideal acumulado." />}
-          </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        {!ideal ? (
+          <EmptyState compact title="Todavía sin datos suficientes" text="En cuanto haya suficientes estadísticas cargadas, aparecerá aquí el 5 ideal." />
         ) : (
-          <div className="space-y-2">
-            {jornadaIdealPlayers.map((player) => (
-              <div key={player.id} className="fl-row flex items-center gap-3 px-3 py-2.5">
-                <PositionBadge posKey={player.position} size="sm" />
-                <PlayerPhoto url={player.photo} size={34} rounded={8} />
-                <div className="flex-1 min-w-0">
-                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
-                  <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{player.team}</div>
-                </div>
+          <>
+            <div className="rounded-2xl relative overflow-hidden" style={{ background: C.navy700, border: `2px solid ${C.gold}55`, boxShadow: `0 0 24px ${C.gold}22`, minHeight: 420 }}>
+              <BasketballCourt />
+              <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
+                {rows.map(({ pos, ids }) => (
+                  <div key={pos.key} className={`flex items-start flex-wrap ${pos.key === "ALERO" ? "justify-between px-1" : "justify-center gap-3"}`}>
+                    {ids.map((id) => {
+                      const p = findPlayer(id);
+                      return (
+                        <div key={id} className="flex flex-col items-center">
+                          <div className="relative">
+                            <CourtSlot player={p} size={70} teamCrests={teamCrests} />
+                            <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                              style={{ background: C.navy900, color: C.gold, border: `1px solid ${C.gold}` }}>
+                              {pointsFor(id)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
-            ))}
-            {jornadaIdealPlayers.length === 0 && <EmptyState title="Sin datos todavía" text="Esta jornada todavía no tiene suficientes estadísticas para calcular el 5 ideal." />}
-          </div>
+            </div>
+            <div className="fl-mono text-[10px] text-center mt-2.5" style={{ color: C.muted }}>
+              {mode === "global" ? `Acumulado de toda la temporada · ${ideal.total} puntos en total` : `Alineación: ${ideal.formation} · ${ideal.total} puntos en total`}
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -4749,7 +4767,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "calendario" && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
