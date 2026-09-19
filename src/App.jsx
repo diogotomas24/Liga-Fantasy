@@ -4,6 +4,7 @@ import {
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
+  Store, Calendar, Layers, Megaphone, HelpCircle, LifeBuoy,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -1799,6 +1800,21 @@ async function readLeaguesByIds(ids) {
   }
 }
 
+// Todas las ligas que existan en el juego (nombre + id), para poder mostrar
+// "Nombre de equipo (Nombre de liga)" en pantallas globales como el Ranking
+// o el 5 ideal, que cruzan datos de TODAS las ligas a la vez.
+async function readAllLeagueNames() {
+  try {
+    const { data, error } = await supabase.from("leagues").select("id,name");
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((l) => { map[l.id] = l.name; });
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 async function deleteLeagueRow(id) {
   try {
     const { error } = await supabase.from("leagues").delete().eq("id", id);
@@ -2783,6 +2799,13 @@ export default function App() {
   const [playoffState, setPlayoffState] = useState(playoffService.emptyState());
 
   const [tab, setTab] = useState("inicio");
+  const [showSideMenu, setShowSideMenu] = useState(false);
+  const [menuScreen, setMenuScreen] = useState(null); // "tienda" | "ranking" | "calendario" | "partidos" | "noticias" | "cinco_ideal" | "funcionamiento" | "soporte" | null
+  const openMenuScreen = useCallback((key) => {
+    setShowSideMenu(false);
+    if (key === "mis_ligas") { backToLeagues(); return; }
+    setMenuScreen(key);
+  }, []);
   const [saving, setSaving] = useState(false);
   const resolvingRef = useRef(false);
   // Favoritos: se guardan por persona (no compartidos), como una simple lista de ids.
@@ -3666,8 +3689,15 @@ export default function App() {
 
         // A quien tenga en favoritos alguna jugadora que acaba de salir en
         // este mercado nuevo, se le avisa — así se entera sin tener que
-        // estar mirando la lista entera cada vez.
-        if (assetIds.length > 0) {
+        // estar mirando la lista entera cada vez. Se guarda el día en que ya
+        // se avisó (por liga) para que, pase lo que pase con el resto de la
+        // lógica (una carrera entre dos pestañas o dispositivos abiertos a la
+        // vez, por ejemplo), este aviso salga como mucho UNA VEZ al día —
+        // nunca cada vez que se entra en el juego.
+        const favNotifiedDate = await readShared(leagueKey(leagueId, "favMarketNotifiedDate"), null);
+        const todayForNotif = toDateStr(new Date(window_.closesAt));
+        if (assetIds.length > 0 && favNotifiedDate !== todayForNotif) {
+          await writeShared(leagueKey(leagueId, "favMarketNotifiedDate"), todayForNotif);
           const favMap = await readFavoritesMap();
           assetIds.forEach((assetId) => {
             const asset = playersNext.find((p) => p.id === assetId);
@@ -4167,7 +4197,7 @@ export default function App() {
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
-      <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} activeLeagueId={activeLeagueId} />
+      <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} activeLeagueId={activeLeagueId} onOpenMenu={() => setShowSideMenu(true)} />
       <main className="px-4 fl-safe-bottom" style={{ minHeight: "70vh" }}>
         <div className="pt-3">
           {tab === "inicio" && (
@@ -4208,6 +4238,344 @@ export default function App() {
         </div>
       </main>
       <BottomNav tab={tab} setTab={setTab} isPlayoffMode={playoffState.phase !== "none"} />
+
+      {showSideMenu && <SideMenu profile={profile} onClose={() => setShowSideMenu(false)} onNavigate={openMenuScreen} />}
+      {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "calendario" && (
+        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
+      )}
+    </div>
+  );
+}
+
+/* =============================================================================
+   MENÚ LATERAL
+   ========================================================================== */
+function SideMenu({ profile, onClose, onNavigate }) {
+  const items = [
+    { key: "mis_ligas", icon: Trophy, label: "Mis ligas" },
+    { key: "tienda", icon: Store, label: "Tienda" },
+    { key: "ranking", icon: Crown, label: "Ranking" },
+    { key: "calendario", icon: Calendar, label: "Calendario" },
+    { key: "partidos", icon: Layers, label: "Partidos" },
+    { key: "noticias", icon: Megaphone, label: "Noticias" },
+    { key: "cinco_ideal", icon: Star, label: "5 ideal" },
+  ];
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="w-[78%] max-w-[320px] h-full flex flex-col fl-body" style={{ background: C.navy900, borderRight: `1px solid ${C.line}` }}>
+        <div className="flex items-center justify-between px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+          <div>
+            <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{profile?.name || "Perfil"}</div>
+            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Menú</div>
+          </div>
+          <button onClick={onClose} className="fl-tap p-1"><X size={20} color={C.muted} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto fl-scrollbar py-2">
+          {items.map((it) => (
+            <button key={it.key} onClick={() => onNavigate(it.key)} className="fl-tap w-full flex items-center gap-3 px-4 py-3.5 text-left" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+              <it.icon size={19} color={C.principal} />
+              <span className="fl-body text-sm font-medium" style={{ color: C.white }}>{it.label}</span>
+            </button>
+          ))}
+          <div style={{ height: 1, background: C.line, margin: "8px 0" }} />
+          <button onClick={() => onNavigate("funcionamiento")} className="fl-tap w-full flex items-center gap-3 px-4 py-3 text-left">
+            <HelpCircle size={17} color={C.muted} />
+            <span className="fl-body text-sm" style={{ color: C.muted }}>Cómo funciona</span>
+          </button>
+          <button onClick={() => onNavigate("soporte")} className="fl-tap w-full flex items-center gap-3 px-4 py-3 text-left">
+            <LifeBuoy size={17} color={C.muted} />
+            <span className="fl-body text-sm" style={{ color: C.muted }}>Soporte y ayuda</span>
+          </button>
+        </div>
+      </div>
+      <button className="flex-1" onClick={onClose} style={{ background: "rgba(0,0,0,0.55)" }} aria-label="Cerrar menú" />
+    </div>
+  );
+}
+
+// Placeholder genérico "Próximamente" — para las secciones que todavía no
+// tienen contenido definido (Tienda, Noticias, Cómo funciona, Soporte...).
+function ComingSoonScreen({ title, onClose, text }) {
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>{title}</div>
+      </div>
+      <div className="flex-1 flex items-center justify-center p-6">
+        <EmptyState title="Próximamente" text={text || "Todavía estamos preparando esta sección."} />
+      </div>
+    </div>
+  );
+}
+
+// Ranking GLOBAL: los 20 mejores equipos de TODO el juego (todas las ligas a
+// la vez), filtrable por jornada concreta, por el último mes, o total de
+// toda la temporada.
+function GlobalRankingScreen({ onClose, players, jornadas }) {
+  const [filter, setFilter] = useState("total"); // "total" | "mes" | id de jornada
+  const [allTeams, setAllTeams] = useState(null);
+  const [leagueNames, setLeagueNames] = useState({});
+  useEffect(() => {
+    (async () => {
+      const [t, l] = await Promise.all([readAllTeamsGlobal(), readAllLeagueNames()]);
+      setAllTeams(t); setLeagueNames(l);
+    })();
+  }, []);
+
+  const startedJ = useMemo(() => startedJornadas(playoffService.regularJornadas(jornadas)), [jornadas]);
+  const jornadaOptions = [...startedJ].reverse();
+
+  const relevantJornadas = useMemo(() => {
+    if (filter === "total") return startedJ;
+    if (filter === "mes") {
+      const cutoff = getEffectiveToday(); cutoff.setDate(cutoff.getDate() - 30);
+      return startedJ.filter((j) => { const d = jornadaDate(j); return d && d >= cutoff; });
+    }
+    return startedJ.filter((j) => j.id === filter);
+  }, [startedJ, filter]);
+
+  const rows = useMemo(() => {
+    if (!allTeams) return [];
+    return Object.values(allTeams).map((t) => {
+      const total = relevantJornadas.reduce((s, j) => s + computeTeamJornadaPoints(j, `${t.leagueId}::${t.name}`, t.lineup, players), 0);
+      return { name: t.name, leagueId: t.leagueId, leagueName: leagueNames[t.leagueId] || "Liga", total };
+    }).sort((a, b) => b.total - a.total).slice(0, 20);
+  }, [allTeams, relevantJornadas, players, leagueNames]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Ranking global</div>
+      </div>
+      <div className="px-4 pt-3 pb-1 flex gap-2 overflow-x-auto fl-scrollbar">
+        {[["total", "Total"], ["mes", "Último mes"]].map(([key, label]) => (
+          <button key={key} onClick={() => setFilter(key)} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
+            style={{ background: filter === key ? C.principal : C.navy800, color: filter === key ? C.white : C.muted, border: `1px solid ${filter === key ? C.principal : C.line}` }}>
+            {label}
+          </button>
+        ))}
+        {jornadaOptions.map((j) => (
+          <button key={j.id} onClick={() => setFilter(j.id)} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
+            style={{ background: filter === j.id ? C.principal : C.navy800, color: filter === j.id ? C.white : C.muted, border: `1px solid ${filter === j.id ? C.principal : C.line}` }}>
+            {j.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-3">
+        {allTeams === null ? <div className="flex justify-center py-10"><Loader2 className="animate-spin" color={C.baby} size={24} /></div> : rows.length === 0 ? (
+          <EmptyState title="Sin datos todavía" text="En cuanto haya puntos registrados para este filtro, aparecerán aquí los 20 mejores." />
+        ) : (
+          <div className="space-y-1.5">
+            {rows.map((r, i) => (
+              <div key={`${r.leagueId}::${r.name}`} className="fl-row flex items-center gap-3 px-3 py-2.5">
+                <span className="fl-mono text-xs font-bold flex items-center justify-center flex-shrink-0 rounded-full" style={{
+                  width: 26, height: 26, background: i < 3 ? `linear-gradient(135deg, ${C.principal}, ${C.gold})` : C.navy700, color: i < 3 ? C.white : C.muted,
+                }}>{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{r.name}</div>
+                  <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{r.leagueName}</div>
+                </div>
+                <span className="fl-mono text-sm font-bold flex-shrink-0" style={{ color: C.gold }}>{r.total}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// "Partidos": lista de partidos de una jornada (con su estado: FINALIZADO /
+// EN JUEGO / SIN EMPEZAR), y al entrar en uno, los puntos Fantasy de cada
+// jugadora de ese partido lado a lado.
+function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
+  const regularJ = useMemo(() => playoffService.regularJornadas(jornadas), [jornadas]);
+  const [idx, setIdx] = useState(() => {
+    const current = findCurrentJornada(regularJ);
+    const i = current ? regularJ.findIndex((j) => j.id === current.id) : regularJ.length - 1;
+    return Math.max(i, 0);
+  });
+  const jornada = regularJ[idx];
+  const [openPartido, setOpenPartido] = useState(null);
+
+  if (openPartido) {
+    return <PartidoPuntosScreen partido={openPartido} jornada={jornada} players={players} teamCrests={teamCrests} onClose={() => setOpenPartido(null)} />;
+  }
+
+  const partidos = jornada ? realBracketService.projectedPartidos(jornadas, jornada) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Partidos</div>
+      </div>
+      <div className="px-3 pt-3 pb-1 flex gap-2 overflow-x-auto fl-scrollbar">
+        {regularJ.map((j, i) => (
+          <button key={j.id} onClick={() => setIdx(i)} className="fl-tap flex-shrink-0 flex items-center justify-center fl-mono text-xs font-bold rounded-full"
+            style={{ width: 40, height: 40, background: i === idx ? C.positive : C.navy800, color: i === idx ? C.white : C.muted, border: `1px solid ${i === idx ? C.positive : C.line}` }}>
+            {jornadaNumberFromName(j.name) ? `J${jornadaNumberFromName(j.name)}` : j.name.slice(0, 3)}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-3 py-3 space-y-2.5">
+        {partidos.length === 0 ? (
+          <EmptyState title="Sin partidos" text="Todavía no hay partidos cargados para esta jornada." />
+        ) : partidos.map((p) => {
+          const played = p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null;
+          const started = hasJornadaEffectivelyStarted(jornada);
+          const estado = played ? "FINALIZADO" : started ? "EN JUEGO" : "SIN EMPEZAR";
+          return (
+            <button key={p.id} onClick={() => setOpenPartido(p)} className="fl-tap w-full fl-row p-3.5 text-left">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <TeamCrest name={p.local} photo={teamCrests?.[p.local]} size={26} />
+                  <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{p.local}</span>
+                </div>
+                <span className="fl-mono text-sm font-bold px-2" style={{ color: played ? C.white : C.muted }}>{played ? `${p.marcadorLocal} - ${p.marcadorVisitante}` : "vs"}</span>
+                <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
+                  <span className="fl-body text-xs font-medium truncate text-right" style={{ color: C.white }}>{p.visitante}</span>
+                  <TeamCrest name={p.visitante} photo={teamCrests?.[p.visitante]} size={26} />
+                </div>
+              </div>
+              <div className="text-center mt-2 fl-mono text-[9px] font-semibold" style={{ color: played ? C.muted : started ? C.positive : C.muted }}>{estado}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Detalle de un partido: alineaciones/puntos de cada jugadora de ambos
+// equipos, lado a lado (como una "comparativa" del partido).
+function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose }) {
+  const rosterFor = (teamName) => players.filter((p) => p.team === teamName && p.position !== "DT");
+  const localRoster = rosterFor(partido.local);
+  const visitanteRoster = rosterFor(partido.visitante);
+  const maxRows = Math.max(localRoster.length, visitanteRoster.length);
+  const played = partido.marcadorLocal !== "" && partido.marcadorLocal != null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Puntos del partido</div>
+      </div>
+      <div className="px-4 py-3 flex items-center justify-center gap-4" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+        <div className="flex flex-col items-center gap-1"><TeamCrest name={partido.local} photo={teamCrests?.[partido.local]} size={30} /><span className="fl-mono text-[10px]" style={{ color: C.muted }}>{partido.local}</span></div>
+        <span className="fl-mono text-lg font-bold" style={{ color: C.white }}>{played ? `${partido.marcadorLocal} - ${partido.marcadorVisitante}` : "vs"}</span>
+        <div className="flex flex-col items-center gap-1"><TeamCrest name={partido.visitante} photo={teamCrests?.[partido.visitante]} size={30} /><span className="fl-mono text-[10px]" style={{ color: C.muted }}>{partido.visitante}</span></div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar">
+        {Array.from({ length: maxRows }).map((_, i) => {
+          const lp = localRoster[i], vp = visitanteRoster[i];
+          const lPts = lp ? calcPlayerPoints(jornada?.stats?.[lp.id], lp.position) : null;
+          const vPts = vp ? calcPlayerPoints(jornada?.stats?.[vp.id], vp.position) : null;
+          return (
+            <div key={i} className="flex items-center px-3 py-2" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+              <span className="fl-mono text-sm font-bold text-center" style={{ width: 34, color: lPts == null ? C.muted : lPts >= 0 ? C.positive : C.negative }}>{lPts ?? "-"}</span>
+              <span className="fl-body text-xs flex-1 truncate" style={{ color: C.white }}>{lp?.name || ""}</span>
+              <span className="fl-mono text-[9px] px-2" style={{ color: C.muted }}>{POS_BY_KEY[lp?.position]?.short || ""}</span>
+              <span className="fl-mono text-[9px] px-2" style={{ color: C.muted }}>{POS_BY_KEY[vp?.position]?.short || ""}</span>
+              <span className="fl-body text-xs flex-1 truncate text-right" style={{ color: C.white }}>{vp?.name || ""}</span>
+              <span className="fl-mono text-sm font-bold text-center" style={{ width: 34, color: vPts == null ? C.muted : vPts >= 0 ? C.positive : C.negative }}>{vPts ?? "-"}</span>
+            </div>
+          );
+        })}
+        {maxRows === 0 && <EmptyState title="Sin plantillas cargadas" text="No hay jugadoras registradas para estos dos equipos todavía." />}
+      </div>
+    </div>
+  );
+}
+
+// "5 ideal": por jornada concreta, o el "mejor 5 ideal global" (acumulado de
+// toda la temporada: la mejor jugadora de cada posición por puntos totales).
+function IdealFiveGlobalScreen({ onClose, jornadas, players }) {
+  const [mode, setMode] = useState("global"); // "global" | id de jornada
+  const startedJ = useMemo(() => startedJornadas(playoffService.regularJornadas(jornadas)), [jornadas]);
+
+  const globalBest = useMemo(() => {
+    // Mejor jugadora de cada posición sumando TODOS los puntos de toda la
+    // temporada — el "mejor 5 ideal" de toda la liga hasta ahora.
+    const totals = {};
+    players.filter((p) => p.position !== "DT").forEach((p) => {
+      totals[p.id] = startedJ.reduce((s, j) => s + calcPlayerPoints(j.stats?.[p.id], p.position), 0);
+    });
+    const byPos = { BASE: [], ALERO: [], PIVOT: [] };
+    players.forEach((p) => { if (byPos[p.position]) byPos[p.position].push({ player: p, total: totals[p.id] || 0 }); });
+    Object.values(byPos).forEach((list) => list.sort((a, b) => b.total - a.total));
+    return [...byPos.BASE.slice(0, 2), ...byPos.ALERO.slice(0, 2), ...byPos.PIVOT.slice(0, 1)];
+  }, [players, startedJ]);
+
+  const jornadaIdeal = useMemo(() => {
+    if (mode === "global") return null;
+    const jornada = startedJ.find((j) => j.id === mode);
+    if (!jornada) return null;
+    return idealFiveService.compute(jornada, players);
+  }, [mode, startedJ, players]);
+
+  const jornadaIdealPlayers = jornadaIdeal ? jornadaIdeal.playerIds.map((id) => players.find((p) => p.id === id)).filter(Boolean) : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>5 ideal</div>
+      </div>
+      <div className="px-3 pt-3 pb-1 flex gap-2 overflow-x-auto fl-scrollbar">
+        <button onClick={() => setMode("global")} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
+          style={{ background: mode === "global" ? C.gold : C.navy800, color: mode === "global" ? C.ink : C.muted, border: `1px solid ${mode === "global" ? C.gold : C.line}` }}>
+          🏆 Mejor global
+        </button>
+        {[...startedJ].reverse().map((j) => (
+          <button key={j.id} onClick={() => setMode(j.id)} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
+            style={{ background: mode === j.id ? C.principal : C.navy800, color: mode === j.id ? C.white : C.muted, border: `1px solid ${mode === j.id ? C.principal : C.line}` }}>
+            {j.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-3">
+        {mode === "global" ? (
+          <div className="space-y-2">
+            {globalBest.map(({ player, total }) => (
+              <div key={player.id} className="fl-row flex items-center gap-3 px-3 py-2.5">
+                <PositionBadge posKey={player.position} size="sm" />
+                <PlayerPhoto url={player.photo} size={34} rounded={8} />
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                  <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{player.team}</div>
+                </div>
+                <span className="fl-mono text-sm font-bold" style={{ color: C.gold }}>{total}</span>
+              </div>
+            ))}
+            {globalBest.length === 0 && <EmptyState title="Sin datos todavía" text="En cuanto haya jornadas jugadas, aquí verás el mejor 5 ideal acumulado." />}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {jornadaIdealPlayers.map((player) => (
+              <div key={player.id} className="fl-row flex items-center gap-3 px-3 py-2.5">
+                <PositionBadge posKey={player.position} size="sm" />
+                <PlayerPhoto url={player.photo} size={34} rounded={8} />
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{player.name}</div>
+                  <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{player.team}</div>
+                </div>
+              </div>
+            ))}
+            {jornadaIdealPlayers.length === 0 && <EmptyState title="Sin datos todavía" text="Esta jornada todavía no tiene suficientes estadísticas para calcular el 5 ideal." />}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4225,6 +4593,9 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
   const [justCreated, setJustCreated] = useState(null); // liga recién creada, para mostrar su código
   const [showCalendar, setShowCalendar] = useState(false);
   const [adminLeague, setAdminLeague] = useState(null); // liga cuya administración está abierta
+  const [showSideMenu, setShowSideMenu] = useState(false);
+  const [menuScreen, setMenuScreen] = useState(null);
+  const openMenuScreen = (key) => { setShowSideMenu(false); if (key !== "mis_ligas") setMenuScreen(key); };
 
   const currentJornada = useMemo(() => findCurrentJornada(jornadas), [jornadas]);
   const currentJornadaNumber = currentJornada ? jornadas.findIndex(j => j.id === currentJornada.id) + 1 : 0;
@@ -4257,6 +4628,9 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
       <header className="px-4 pb-4 text-center relative" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
+        <button onClick={() => setShowSideMenu(true)} className="fl-tap absolute p-1" style={{ left: 16, top: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
+          <Menu size={20} color={C.white} />
+        </button>
         <div className="fl-mono text-sm tracking-[0.2em]" style={{ color: C.principal }}>COPA ARAGÓN</div>
         <h1 className="fl-display text-2xl uppercase mt-0.5" style={{ color: C.white }}>Mis Ligas</h1>
         <div className="flex items-center justify-center gap-2 mt-1.5">
@@ -4367,6 +4741,18 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {adminLeague && (
         <LeagueAdminScreen league={adminLeague} profile={profile} onKick={onKick} onDeleteLeague={onDeleteLeague}
           onClose={() => setAdminLeague(null)} />
+      )}
+
+      {showSideMenu && <SideMenu profile={profile} onClose={() => setShowSideMenu(false)} onNavigate={openMenuScreen} />}
+      {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "calendario" && (
+        <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
       )}
     </div>
   );
@@ -4480,7 +4866,7 @@ function LeagueAdminScreen({ league, profile, onKick, onDeleteLeague, onClose })
 /* =============================================================================
    NAVEGACIÓN
    ========================================================================== */
-function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId }) {
+function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId, onOpenMenu }) {
   // "checking" evita parpadear al estado equivocado mientras se comprueba el permiso real.
   const [notifState, setNotifState] = useState("checking");
   const [busy, setBusy] = useState(false);
@@ -4545,11 +4931,14 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
         <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile.name} {saving && "· guardando…"}</span>
       </div>
       <div className="flex items-end justify-between mt-1">
-        <div className="flex items-baseline gap-2 min-w-0">
-          <h1 className="fl-display text-2xl uppercase flex-shrink-0" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
-            Fabtasy
-          </h1>
-          <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <button onClick={onOpenMenu} className="fl-tap flex-shrink-0 p-1 -ml-1"><Menu size={20} color={C.white} /></button>
+          <div className="flex items-baseline gap-2 min-w-0">
+            <h1 className="fl-display text-2xl uppercase flex-shrink-0" style={{ background: `linear-gradient(90deg, ${C.principal}, ${C.baby})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>
+              Fabtasy
+            </h1>
+            <span className="fl-mono text-[10px] tracking-[0.15em] truncate" style={{ color: C.muted }}>{activeLeague?.name?.toUpperCase() || "GRUPO A2 · ARAGÓN"}</span>
+          </div>
         </div>
         <button onClick={toggleNotifications} disabled={notifDisabled} title={notifLabel}
           className="fl-tap flex items-center justify-center flex-shrink-0 disabled:opacity-50"
