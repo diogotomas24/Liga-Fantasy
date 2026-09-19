@@ -4242,7 +4242,7 @@ export default function App() {
       {showSideMenu && <SideMenu profile={profile} onClose={() => setShowSideMenu(false)} onNavigate={openMenuScreen} />}
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
@@ -4598,9 +4598,116 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
   );
 }
 
-/* =============================================================================
-   MIS LIGAS
-   ========================================================================== */
+// "Cómo funciona": guía explicativa de toda la app, en acordeón (para no
+// abrumar con todo el texto de golpe), en el orden lógico del propio ciclo
+// del juego: cómo arrancas, el ciclo semanal, los modos especiales
+// (Triple Fantasy, playoffs), tu equipo, y por último el mercado.
+function FuncionamientoScreen({ onClose }) {
+  const SECTIONS = [
+    {
+      icon: "🏀", color: C.principal, title: "Cómo empiezan las plantillas",
+      body: [
+        `Cada mánager arranca con ${fmtCredits(BUDGET_TOTAL * 1000000)} y la plantilla vacía.`,
+        `Puedes fichar hasta ${MAX_SQUAD_JUGADORAS} jugadoras + ${MAX_COACHES} entrenadora/or (${MAX_SQUAD_JUGADORAS + MAX_COACHES} fichas en total) a través del mercado.`,
+        "No hay reparto inicial ni sorteo: todo el mundo empieza de cero y compite por las mismas jugadoras desde el primer día.",
+      ],
+    },
+    {
+      icon: "📅", color: C.baby, title: "Jornada a jornada",
+      body: [
+        "Cada semana hay una jornada de partidos reales. Antes de que empiece el primero, guarda tu alineación titular.",
+        "En cuanto arranca, se bloquea — ya no se puede tocar hasta la siguiente jornada.",
+        "Cuando se cargan las estadísticas reales, tu equipo puntúa según a quién pusiste de titular (o quién entró desde el banquillo).",
+        "Al cerrar la jornada, el mercado se resuelve y se abre uno nuevo con jugadoras frescas.",
+      ],
+    },
+    {
+      icon: "🎯", color: "#22C55E", title: "Triple Fantasy",
+      body: [
+        `Quiniela semanal aparte, con dinero de mentira: por ${fmtCredits(TRIPLE_ENTRY_FEE * 1000000)}, aciertas quién gana cada partido de la jornada más quién será la MVP.`,
+        "Con 5 de 7 aciertos o más, hay premio — hasta 5.000.000 €, o 6.000.000 € si la clavas entera con la MVP incluida.",
+        "No afecta a tu plantilla ni a tu presupuesto real: es un juego aparte, solo por diversión (y algo de dinero extra).",
+      ],
+    },
+    {
+      icon: "🏆", color: "#C026D3", title: "Los playoffs",
+      body: [
+        "Al acabar la liga regular, las 8 mejores clasificadas pasan a playoffs. El resto se queda como espectador.",
+        "Aquí se olvida el mercado: cada ronda haces una lista de preferencia y, sin dinero de por medio, se reparten jugadoras de los equipos reales que sigan vivos.",
+        "Cuartos se juega a doble jornada (ida y vuelta) y pasan las 4 mejores. Semis y la Final son a partido único.",
+      ],
+    },
+    {
+      icon: "🧑‍🤝‍🧑", color: C.gold, title: "Tu equipo: alineación, capitana y banquillo",
+      body: [
+        "Eliges formación (2-2-1, 1-3-1, 1-2-2 o 2-1-2 — siempre 5 titulares) y una capitana, que duplica sus puntos esa jornada.",
+        "Si una titular no juega, la mejor jugadora de su misma posición en el banquillo entra sola a sustituirla — pero solo si puntúa más que ella.",
+        "Ojo: si no completas las 5 titulares, esa jornada no puntúas nada, aunque tengas banquillo de sobra.",
+      ],
+    },
+    {
+      icon: "⭐", color: C.gold, title: "El 5 ideal",
+      body: [
+        "Cada jornada, la app calcula las 5 jugadoras (2 bases, 2 aleros, 1 pívot) que más puntos han hecho, encajando en una alineación válida.",
+        `Si tienes alguna de esas 5 y de verdad te ha puntuado esa jornada (de titular o entrando desde el banquillo), cobras ${fmtCredits(IDEAL_FIVE_REWARD)} automáticamente.`,
+        "También puedes consultar el 5 ideal de cualquier jornada pasada, o el mejor 5 ideal acumulado de toda la temporada, desde el menú.",
+      ],
+    },
+    {
+      icon: "🧮", color: C.baby, title: "Cómo se puntúa (Swish)",
+      body: [
+        "Cada estadística real de la jugadora suma o resta puntos Fantasy: minutos jugados, puntos anotados, asistencias, triples (con más valor para las pívots), rebotes, tapones...",
+        "Restan las pérdidas, los tiros libres fallados y las faltas.",
+        "La valoración final del partido también cuenta como puntos extra — pero si es 0 o negativa, no suma nada.",
+      ],
+    },
+    {
+      icon: "🛒", color: C.negative, title: "El mercado: pujas, ofertas y cláusulas",
+      body: [
+        "Pujas: cada día hay un lote de jugadoras en subasta. Puja lo que quieras — gana quien más ofrezca cuando cierre.",
+        "Ofertas directas: puedes ofrecer dinero por una jugadora que ya tiene dueña/o; decide si la acepta o la rechaza.",
+        "Cláusula: toda jugadora fichada tiene una cláusula de salida — págala entera y te la llevas sin pedir permiso.",
+        "Puedes subir tu propia cláusula pagando de tu bolsillo: cada euro que metas la sube el doble (pagar 1.000.000 € la sube 2.000.000 €).",
+      ],
+    },
+  ];
+  const [openIdx, setOpenIdx] = useState(0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Cómo funciona</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-4 space-y-2.5">
+        {SECTIONS.map((s, i) => {
+          const open = openIdx === i;
+          return (
+            <div key={i} className="rounded-2xl overflow-hidden" style={{ background: C.navy800, border: `1px solid ${open ? s.color + "66" : C.line}` }}>
+              <button onClick={() => setOpenIdx(open ? -1 : i)} className="fl-tap w-full flex items-center gap-3 p-3.5 text-left">
+                <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ width: 38, height: 38, background: `${s.color}22` }}>
+                  <span style={{ fontSize: 18 }}>{s.icon}</span>
+                </div>
+                <span className="fl-body text-sm font-semibold flex-1" style={{ color: C.white }}>{s.title}</span>
+                <ChevronDown size={18} color={C.muted} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+              {open && (
+                <div className="px-4 pb-4 pt-0.5 space-y-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                  {s.body.map((line, j) => (
+                    <div key={j} className="flex items-start gap-2 mt-3">
+                      <span className="flex-shrink-0" style={{ marginTop: 5, width: 4, height: 4, borderRadius: 999, background: s.color }} />
+                      <p className="fl-body text-xs" style={{ color: "#B8C4DC" }}>{line}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague, onSignOut, players }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
@@ -4764,7 +4871,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {showSideMenu && <SideMenu profile={profile} onClose={() => setShowSideMenu(false)} onNavigate={openMenuScreen} />}
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "funcionamiento" && <ComingSoonScreen title="Cómo funciona" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
