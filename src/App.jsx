@@ -770,7 +770,7 @@ const idealFiveService = {
 // y todo el conjunto se amortigua si la jugadora ya es muy cara (>85M), para
 // que las caras no se disparen tanto en euros como las baratas.
 const MARKET_BRAKE_THRESHOLD = 85; // millones: a partir de aquí empieza a frenar
-const WEEK_WEIGHTS = [1.0, 1.1, 1.2, 1.3, 1.4, 1.4]; // día 0..5 desde su último partido, subiendo cada día; día 6+ se queda en 1.4
+const WEEK_WEIGHTS = [0.5, 1.0, 0.6, 0.35, 0.15, 0.05]; // día 0 (el propio partido) modesto, día 1 el PICO, y decreciendo de verdad hasta casi plano; día 6+ se queda en 0.05 (casi apagado)
 
 function marketBrakeFactor(priceM) {
   if (!priceM || priceM <= MARKET_BRAKE_THRESHOLD) return 1;
@@ -1290,16 +1290,23 @@ const marketPricingService = {
     return null;
   },
 
-  // El empuje "grande", una sola vez, el día de su partido.
-  computeBigPush({ stats, leagueAvgPoints, teamRank, totalTeams, opponentWinPct, won, isMvpPartido, minutesJump, isConsistentGood }) {
+  // El empuje "grande", una sola vez, el día de su partido. Todos los
+  // factores son simétricos a propósito (lo bueno empuja para arriba tanto
+  // como lo malo empuja para abajo) — antes varios de ellos (posición en la
+  // tabla, subida de minutos, consistencia) solo existían en positivo, sin
+  // ninguna contrapartida negativa, así que el mercado subía mucho más de lo
+  // que bajaba de forma estructural, no solo por casualidad.
+  computeBigPush({ stats, leagueAvgPoints, teamRank, totalTeams, opponentWinPct, won, isMvpPartido, minutesJump, minutesDrop, isConsistentGood, isConsistentBad }) {
     const puntosFactor = ((stats.puntos || 0) - leagueAvgPoints) * 0.0010;
     let resultadoFactor = 0;
     if (won === true) resultadoFactor = 0.0025 * (1 + (opponentWinPct - 0.5));
     else if (won === false) resultadoFactor = -0.0025 * (1 + (0.5 - opponentWinPct));
-    const posicionFactor = totalTeams > 0 ? ((totalTeams - teamRank) / totalTeams) * 0.0025 : 0;
+    // Centrado en la mitad de la tabla: por encima empuja para arriba, por
+    // debajo empuja para abajo (antes iba de 0 a +0.0025, siempre positivo).
+    const posicionFactor = totalTeams > 0 ? (((totalTeams - teamRank) / totalTeams) - 0.5) * 2 * 0.0025 : 0;
     const mvpPartidoFactor = isMvpPartido ? 0.005 : 0;
-    const minutosFactor = minutesJump ? 0.0015 : 0;
-    const consistenciaFactor = isConsistentGood ? 0.003 : 0;
+    const minutosFactor = minutesJump ? 0.0015 : (minutesDrop ? -0.0015 : 0);
+    const consistenciaFactor = isConsistentGood ? 0.003 : (isConsistentBad ? -0.003 : 0);
     return puntosFactor + resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor;
   },
 
@@ -1352,14 +1359,16 @@ const marketPricingService = {
       const leagueAvg = marketPricingService.leagueAveragePoints(jornada, ctx.players);
       const avgMin = minutesHistory.length ? minutesHistory.reduce((a, b) => a + b, 0) / minutesHistory.length : (stats.minutos || 0);
       const minutesJump = (stats.minutos || 0) - avgMin >= 8;
+      const minutesDrop = avgMin - (stats.minutos || 0) >= 8;
       const recentPts = [...pointsHistory, stats.puntos || 0].slice(-4);
       const avgRecent = recentPts.reduce((a, b) => a + b, 0) / recentPts.length;
       const variance = recentPts.reduce((a, b) => a + Math.pow(b - avgRecent, 2), 0) / recentPts.length;
       const isConsistentGood = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent > leagueAvg;
+      const isConsistentBad = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent < leagueAvg;
 
       let base = marketPricingService.computeBigPush({
         stats, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
-        opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, isConsistentGood,
+        opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, minutesDrop, isConsistentGood, isConsistentBad,
       });
 
       const sameSignAsBefore = (base >= 0 && cycleBase >= 0) || (base < 0 && cycleBase < 0);
@@ -3051,12 +3060,23 @@ export default function App() {
   // completa, el bono de "MVP de toda la jornada".
   const checkDailyMarketPricing = useCallback(async () => {
     try {
+      // El "día de hoy" para esta comprobación tiene que salir del MISMO
+      // reloj que usa el resto de la app (el que tiquea solo, real o
+      // simulado) — antes se leía la fecha simulada guardada tal cual, que se
+      // queda fija en el momento en que se fijó y no avanza con el tiempo
+      // real transcurrido desde entonces. Esa desincronización entre esta
+      // función y syncMarket/checkPlayoffProgress (que sí usan el reloj en
+      // vivo) era la causa real de que precios y mercado fueran cada uno
+      // "a su bola".
       const realTodayStr = toDateStr(new Date());
-      let simDate = await readShared("marketSimDate", null);
-      // Si la fecha simulada ya quedó atrás (la real la ha alcanzado o pasado), se
-      // desactiva sola el modo pruebas, para no quedarse encallado en el pasado.
-      if (simDate && simDate <= realTodayStr) { simDate = null; await deleteShared("marketSimDate"); await deleteShared("marketSimTime"); await deleteShared("marketSimAnchorRealMs"); setSimulatedToday(null); }
-      const todayStr = simDate || realTodayStr;
+      const simDateStored = await readShared("marketSimDate", null);
+      // Si la fecha simulada ya quedó atrás de verdad (la real la ha
+      // alcanzado o pasado), se desactiva sola el modo pruebas.
+      if (simDateStored && simDateStored <= realTodayStr) {
+        await deleteShared("marketSimDate"); await deleteShared("marketSimTime"); await deleteShared("marketSimAnchorRealMs");
+        setSimulatedToday(null);
+      }
+      const todayStr = toDateStr(getEffectiveToday());
       const lastRun = await readShared("marketPricingLastRun", "");
       if (lastRun === todayStr) return;
 
@@ -5614,31 +5634,74 @@ function PlayoffIntroScreen({ qualified, onClose }) {
     );
   }
 
+  // Estética "playoffs": fondo oscuro con un resplandor radial de la marca,
+  // rayos de luz en la esquina y tarjetas con borde de color a la izquierda +
+  // insignia a juego + una etiqueta a la derecha — mucho más vivo para
+  // celebrar la clasificación que una lista plana.
+  const CARDS = [
+    { emoji: "🎯", title: "8 clasificados", text: "Los mejores de la liga regular compiten por el título. El resto pasa a ser espectador.", color: C.principal, badge: "8", badgeLabel: "CLASIFICADOS" },
+    { emoji: "🃏", title: "Draft nuevo, cero dinero", text: "Se olvida el mercado: cada ronda eliges una lista de preferencias, y cada día se reparten jugadoras de los equipos reales que sigan vivos — gratis, sin presupuesto.", color: C.gold, badge: "📋", badgeLabel: "DRAFT" },
+    { emoji: "✂️", title: "Cuartos → Semis → Final", text: "Cuartos se juega a doble jornada y pasan los 4 mejores. Semis a una jornada, pasan 2. La final, a una jornada, decide a la campeona/ón.", color: "#C026D3", badge: "🏆", badgeLabel: "PLAYOFFS" },
+    { emoji: "🚫", title: "Sin mercado ni ofertas", text: "Durante toda la fase, nada de subastas, cláusulas ni ofertas entre usuarios — el equipo que sale del draft es el que hay.", color: C.negative, badge: "⛔", badgeLabel: "SIN MERCADO" },
+  ];
   return (
-    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
-      <div className="flex-1 overflow-y-auto fl-scrollbar p-5" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
-        <div className="text-center mb-5"><span style={{ fontSize: 56 }}>🏆</span></div>
-        <div className="fl-display text-xl uppercase text-center mb-1" style={{ color: C.white }}>¡Te has clasificado!</div>
-        <div className="fl-body text-sm text-center mb-6" style={{ color: C.muted }}>Ahora empiezan los playoffs — así funcionan:</div>
-        <div className="space-y-4">
-          {[
-            ["🎯", "8 clasificados", "Los mejores de la liga regular compiten por el título. El resto pasa a ser espectador."],
-            ["🃏", "Draft nuevo, cero dinero", "Se olvida el mercado: cada ronda eliges una lista de preferencias, y cada día se reparten jugadoras de los equipos reales que sigan vivos — gratis, sin presupuesto."],
-            ["✂️", "Cuartos → Semis → Final", "Cuartos se juega a doble jornada y pasan los 4 mejores. Semis a una jornada, pasan 2. La final, a una jornada, decide a la campeona/ón."],
-            ["🚫", "Sin mercado ni ofertas", "Durante toda la fase, nada de subastas, cláusulas ni ofertas entre usuarios — el equipo que sale del draft es el que hay."],
-          ].map(([emoji, title, text], i) => (
-            <div key={i} className="fl-row p-3.5 flex items-start gap-3">
-              <span style={{ fontSize: 24 }}>{emoji}</span>
-              <div>
-                <div className="fl-body text-sm font-semibold mb-0.5" style={{ color: C.white }}>{title}</div>
-                <div className="fl-body text-xs" style={{ color: C.muted }}>{text}</div>
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: "#08040C", overflow: "hidden" }}>
+      {/* Fondo: resplandor radial de marca + rayos de luz en la esquina */}
+      <div className="absolute inset-0 pointer-events-none" style={{
+        background: `radial-gradient(ellipse 140% 60% at 50% -10%, ${C.principal}33 0%, transparent 60%), radial-gradient(ellipse 100% 40% at 100% 0%, ${C.gold}22 0%, transparent 55%)`,
+      }} />
+      <div className="absolute inset-0 pointer-events-none" style={{
+        background: `repeating-linear-gradient(115deg, ${C.principal}14 0px, ${C.principal}14 2px, transparent 2px, transparent 40px)`,
+        maskImage: "radial-gradient(ellipse 70% 50% at 85% 5%, black 0%, transparent 70%)",
+        WebkitMaskImage: "radial-gradient(ellipse 70% 50% at 85% 5%, black 0%, transparent 70%)",
+      }} />
+
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-5 relative" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)" }}>
+        <div className="text-center mb-4">
+          <span style={{ fontSize: 64, filter: `drop-shadow(0 0 18px ${C.gold}aa)` }}>🏆</span>
+        </div>
+        <div className="fl-display text-2xl uppercase text-center mb-2" style={{
+          background: `linear-gradient(90deg, ${C.principal}, ${C.gold})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+        }}>¡Te has clasificado!</div>
+        <div className="fl-body text-sm text-center mb-6" style={{ color: "#A5B4D8" }}>Ahora empiezan los playoffs — así funcionan:</div>
+
+        <div className="space-y-3.5">
+          {CARDS.map((c, i) => (
+            <div key={i} className="flex items-stretch rounded-2xl overflow-hidden" style={{
+              background: `linear-gradient(120deg, ${c.color}22, ${C.navy900} 60%)`,
+              border: `1px solid ${c.color}55`,
+              boxShadow: `0 0 20px ${c.color}22`,
+            }}>
+              <div style={{ width: 5, background: `linear-gradient(${c.color}, ${c.color}88)` }} />
+              <div className="flex items-center gap-3 p-3.5 flex-1">
+                <div className="flex items-center justify-center rounded-full flex-shrink-0" style={{ width: 44, height: 44, background: `${c.color}26`, boxShadow: `0 0 14px ${c.color}44` }}>
+                  <span style={{ fontSize: 20 }}>{c.emoji}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-semibold mb-0.5" style={{ color: C.white }}>{c.title}</div>
+                  <div className="fl-body text-xs" style={{ color: "#A5B4D8" }}>{c.text}</div>
+                </div>
+                <div className="flex-shrink-0 flex items-center gap-2.5 pl-1" style={{ borderLeft: `1px solid ${c.color}33` }}>
+                  <div className="text-center px-1.5">
+                    <div style={{ fontSize: 22, lineHeight: 1 }}>{c.badge}</div>
+                    <div className="fl-mono uppercase mt-1" style={{ fontSize: 8, color: c.color, letterSpacing: 0.5 }}>{c.badgeLabel}</div>
+                  </div>
+                </div>
               </div>
             </div>
           ))}
         </div>
+
+        <div className="flex items-center gap-3 mt-6 px-6">
+          <div className="flex-1" style={{ height: 1, background: `linear-gradient(90deg, transparent, ${C.principal}88)` }} />
+          <Star size={16} color={C.gold} fill={C.gold} />
+          <div className="flex-1" style={{ height: 1, background: `linear-gradient(90deg, ${C.gold}88, transparent)` }} />
+        </div>
       </div>
-      <div className="p-4">
-        <button onClick={onClose} className="fl-tap w-full rounded-md py-3 text-sm font-semibold" style={{ background: C.gold, color: C.ink }}>
+      <div className="p-4 relative">
+        <button onClick={onClose} className="fl-tap w-full rounded-full py-3.5 text-sm font-bold uppercase tracking-wide" style={{
+          background: `linear-gradient(90deg, ${C.principal}, ${C.gold})`, color: C.white, boxShadow: `0 4px 20px ${C.principal}55`,
+        }}>
           ¡Vamos allá!
         </button>
       </div>
