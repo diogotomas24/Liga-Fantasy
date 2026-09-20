@@ -771,7 +771,8 @@ const idealFiveService = {
 // y todo el conjunto se amortigua si la jugadora ya es muy cara (>85M), para
 // que las caras no se disparen tanto en euros como las baratas.
 const MARKET_BRAKE_THRESHOLD = 85; // millones: a partir de aquí empieza a frenar
-const WEEK_WEIGHTS = [0.5, 1.0, 0.6, 0.35, 0.15, 0.05]; // día 0 (el propio partido) modesto, día 1 el PICO, y decreciendo de verdad hasta casi plano; día 6+ se queda en 0.05 (casi apagado)
+const WEEK_WEIGHTS = [0.5, 1.0, 0.7, 0.5, 0.35, 0.25]; // día 0 (el propio partido) modesto, día 1 el PICO, y decreciendo con suavidad
+const WEEK_PLATEAU = 0.2; // a partir del día 6 se queda AQUÍ de forma sostenida (no en 0): si no hay partido nuevo cerca, el impulso sigue empujando varios días más en vez de apagarse de golpe — así una buena racha sin rivales cerca puede seguir subiendo un buen rato antes de estabilizarse
 
 function marketBrakeFactor(priceM) {
   if (!priceM || priceM <= MARKET_BRAKE_THRESHOLD) return 1;
@@ -1318,11 +1319,14 @@ const marketPricingService = {
     return Math.min(1.25, 1 + 0.05 * streakCount);
   },
 
-  // Cuánto pesa hoy el empuje base fijado el día de su último partido.
+  // Cuánto pesa hoy el empuje base fijado el día de su último partido: baja
+  // con suavidad los primeros días y luego se queda en un plateau sostenido
+  // (WEEK_PLATEAU) mientras no llegue un partido nuevo que fije un empuje
+  // distinto — ni se apaga de golpe, ni crece sin límite como pasaba antes.
   weightForDay(daysSinceCycleStart) {
     if (daysSinceCycleStart < 0) return 0;
-    const idx = Math.min(daysSinceCycleStart, WEEK_WEIGHTS.length - 1);
-    return WEEK_WEIGHTS[idx];
+    if (daysSinceCycleStart < WEEK_WEIGHTS.length) return WEEK_WEIGHTS[daysSinceCycleStart];
+    return WEEK_PLATEAU;
   },
 
   // Los empujones pequeños que se recalculan todos los días.
@@ -1371,6 +1375,11 @@ const marketPricingService = {
         stats, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
         opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, minutesDrop, isConsistentGood, isConsistentBad,
       });
+      // Sube rápido, baja algo más despacio: un partido malo suelto no debe
+      // pesar tanto como pesaría uno igual de bueno — pero si se encadenan
+      // varios partidos malos seguidos, la racha (más abajo) sigue
+      // amplificando el golpe con normalidad, así que de verdad baja.
+      if (base < 0) base *= 0.65;
 
       const sameSignAsBefore = (base >= 0 && cycleBase >= 0) || (base < 0 && cycleBase < 0);
       streakCount = sameSignAsBefore ? streakCount + 1 : 1;
@@ -1812,6 +1821,25 @@ async function readAllLeagueNames() {
     return map;
   } catch {
     return {};
+  }
+}
+
+// Envía un ticket de Soporte a la tabla "support_tickets". Todavía no hay
+// correo de destino configurado para reenviarlos automáticamente, así que de
+// momento quedan guardados aquí para poder revisarlos a mano — en cuanto
+// haya un email de soporte, se puede añadir el reenvío sin tocar el
+// formulario.
+async function submitSupportTicket(ticket) {
+  try {
+    const { error } = await supabase.from("support_tickets").insert({
+      id: uid("tkt"), created_at: new Date().toISOString(), status: "open",
+      user_name: ticket.userName, email: ticket.email, category: ticket.category,
+      league_id: ticket.leagueId || null, message: ticket.message, image_data: ticket.imageData || null,
+    });
+    if (error) throw error;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 }
 
@@ -4243,7 +4271,7 @@ export default function App() {
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "soporte" && <SoporteScreen profile={profile} leagues={myLeagues} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
@@ -4549,14 +4577,25 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
         </div>
       </div>
       <div className="px-3 pt-3 pb-1 flex gap-2 overflow-x-auto fl-scrollbar">
-        <button onClick={() => setMode("global")} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
-          style={{ background: mode === "global" ? C.gold : C.navy800, color: mode === "global" ? C.ink : C.muted, border: `1px solid ${mode === "global" ? C.gold : C.line}` }}>
-          🏆 Mejor global
+        <button onClick={() => setMode("global")} className="fl-tap flex-shrink-0 rounded-full flex items-center justify-center fl-mono text-xs font-semibold"
+          style={{
+            width: 42, height: 42,
+            background: mode === "global" ? C.gold : C.navy700,
+            color: mode === "global" ? C.ink : C.muted,
+            border: `1px solid ${mode === "global" ? C.gold : C.line}`,
+          }}>
+          🏆
         </button>
-        {[...startedJ].reverse().map((j) => (
-          <button key={j.id} onClick={() => setMode(j.id)} className="fl-tap flex-shrink-0 rounded-full px-3 py-1.5 fl-mono text-[11px] font-semibold"
-            style={{ background: mode === j.id ? C.principal : C.navy800, color: mode === j.id ? C.white : C.muted, border: `1px solid ${mode === j.id ? C.principal : C.line}` }}>
-            {j.name}
+        {startedJ.map((j, i) => (
+          <button key={j.id} onClick={() => setMode(j.id)}
+            className="fl-tap flex-shrink-0 rounded-full flex items-center justify-center fl-mono text-xs font-semibold"
+            style={{
+              width: 42, height: 42,
+              background: mode === j.id ? C.positive : C.navy700,
+              color: mode === j.id ? C.navy900 : C.muted,
+              border: `1px solid ${mode === j.id ? C.positive : C.line}`,
+            }}>
+            J{i + 1}
           </button>
         ))}
       </div>
@@ -4704,6 +4743,150 @@ function FuncionamientoScreen({ onClose }) {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// Formulario de Soporte: categoría desplegable, correo, liga (opcional),
+// mensaje (500 caracteres) e imagen adjunta. Sin correo de destino
+// configurado todavía, así que de momento el ticket se guarda en Supabase
+// para poder revisarlo a mano — en cuanto haya un email de soporte, se
+// puede reenviar sin tocar este formulario.
+function SoporteScreen({ onClose, profile, leagues }) {
+  const CATEGORIAS = [
+    "Blindar jugador", "Denunciar tramposo/a", "Dudas del juego / funcionamiento general",
+    "Estadísticas y puntuaciones de jugadoras", "Problemas con divisiones/clasificación",
+    "Problemas con puntos o dinero", "Problemas de acceso", "Problemas de mercado y fichajes",
+    "Problemas con playoffs o draft", "Quiero darme de baja", "Sugerencias", "Otros problemas",
+  ];
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [category, setCategory] = useState(null);
+  const [leagueOpen, setLeagueOpen] = useState(false);
+  const [leagueId, setLeagueId] = useState(null);
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [imageData, setImageData] = useState(null);
+  const [imageName, setImageName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+
+  const onPickImage = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) { setError("La imagen pesa demasiado (máximo 3 MB)."); return; }
+    setError("");
+    const reader = new FileReader();
+    reader.onload = () => { setImageData(reader.result); setImageName(file.name); };
+    reader.readAsDataURL(file);
+  };
+
+  const submit = async () => {
+    if (!category) { setError("Elige una categoría."); return; }
+    if (!email.trim()) { setError("El correo es obligatorio."); return; }
+    if (!message.trim()) { setError("Escribe un mensaje."); return; }
+    setBusy(true); setError("");
+    const res = await submitSupportTicket({
+      userName: profile?.name || "?", email: email.trim(), category, leagueId, message: message.trim(), imageData,
+    });
+    setBusy(false);
+    if (!res.ok) { setError("No se ha podido enviar. Inténtalo de nuevo en un momento."); return; }
+    setSent(true);
+  };
+
+  if (sent) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+          <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+          <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Soporte</div>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="text-center">
+            <CircleCheck size={40} color={C.positive} style={{ margin: "0 auto 12px" }} />
+            <div className="fl-body text-sm font-semibold mb-1.5" style={{ color: C.white }}>¡Solicitud enviada!</div>
+            <div className="fl-body text-xs" style={{ color: C.muted, maxWidth: 260 }}>Te responderemos por email en cuanto podamos.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Soporte</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-4 space-y-3">
+        <p className="fl-body text-sm" style={{ color: "#B8C4DC" }}>Utiliza este formulario para indicarnos tu problema. Te responderemos vía email lo antes posible.</p>
+
+        <div className="relative">
+          <button onClick={() => { setCategoryOpen((v) => !v); setLeagueOpen(false); }} className="fl-tap w-full flex items-center justify-between rounded-xl px-3.5 py-3"
+            style={{ background: categoryOpen ? C.principal : C.navy800, border: `1px solid ${categoryOpen ? C.principal : C.line}` }}>
+            <span className="fl-body text-sm font-semibold" style={{ color: category ? C.white : C.muted }}>{category || "Elige una categoría"}</span>
+            <ChevronDown size={17} color={categoryOpen ? C.white : C.muted} style={{ transform: categoryOpen ? "rotate(180deg)" : "none" }} />
+          </button>
+          {categoryOpen && (
+            <div className="mt-1 rounded-xl overflow-hidden fl-scrollbar" style={{ background: C.white, maxHeight: 260, overflowY: "auto" }}>
+              {CATEGORIAS.map((c) => (
+                <button key={c} onClick={() => { setCategory(c); setCategoryOpen(false); }} className="fl-tap w-full text-left px-3.5 py-3"
+                  style={{ color: C.ink, borderBottom: "1px solid #eee" }}>
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Correo*" type="email"
+          className="w-full fl-body text-sm rounded-xl px-3.5 py-3 outline-none" style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }} />
+
+        {leagues && leagues.length > 0 && (
+          <div className="relative">
+            <button onClick={() => { setLeagueOpen((v) => !v); setCategoryOpen(false); }} className="fl-tap w-full flex items-center justify-between rounded-xl px-3.5 py-3"
+              style={{ background: leagueOpen ? C.principal : C.navy800, border: `1px solid ${leagueOpen ? C.principal : C.line}` }}>
+              <span className="fl-body text-sm font-semibold" style={{ color: leagueId ? C.white : C.muted }}>
+                {leagueId ? (leagues.find((l) => l.id === leagueId)?.name || "Liga") : "Elige la liga (opcional)"}
+              </span>
+              <ChevronDown size={17} color={leagueOpen ? C.white : C.muted} style={{ transform: leagueOpen ? "rotate(180deg)" : "none" }} />
+            </button>
+            {leagueOpen && (
+              <div className="mt-1 rounded-xl overflow-hidden fl-scrollbar" style={{ background: C.white, maxHeight: 220, overflowY: "auto" }}>
+                {leagues.map((l) => (
+                  <button key={l.id} onClick={() => { setLeagueId(l.id); setLeagueOpen(false); }} className="fl-tap w-full text-left px-3.5 py-3"
+                    style={{ color: C.ink, borderBottom: "1px solid #eee" }}>
+                    {l.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div>
+          <textarea value={message} onChange={(e) => setMessage(e.target.value.slice(0, 500))} placeholder="Mensaje*" rows={5}
+            className="w-full fl-body text-sm rounded-xl px-3.5 py-3 outline-none resize-none" style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }} />
+          <div className="fl-mono text-[10px] mt-1 text-right" style={{ color: C.muted }}>{message.length}/500 caracteres máx.</div>
+        </div>
+
+        <div>
+          <div className="fl-body text-sm font-semibold mb-2" style={{ color: C.white }}>Sube una imagen</div>
+          <label className="fl-tap inline-flex items-center gap-2 rounded-lg px-4 py-2.5 cursor-pointer" style={{ background: C.navy700, border: `1px solid ${C.line}` }}>
+            <ImageOff size={15} color={C.muted} style={{ display: imageName ? "none" : "block" }} />
+            {imageName && <CircleCheck size={15} color={C.positive} />}
+            <span className="fl-mono text-[11px] font-bold uppercase" style={{ color: C.white }}>{imageName || "Seleccionar archivo"}</span>
+            <input type="file" accept="image/*" onChange={onPickImage} style={{ display: "none" }} />
+          </label>
+          <p className="fl-body text-xs mt-2" style={{ color: C.muted }}>Ayúdanos a entender mejor tu problema añadiendo una imagen.</p>
+        </div>
+
+        {error && <div className="fl-mono text-xs" style={{ color: C.negative }}>{error}</div>}
+
+        <button onClick={submit} disabled={busy} className="fl-tap w-full rounded-xl py-3.5 text-sm font-bold disabled:opacity-50" style={{ background: C.negative, color: C.white }}>
+          {busy ? <Loader2 size={16} className="animate-spin mx-auto" /> : "Enviar"}
+        </button>
       </div>
     </div>
   );
@@ -4872,7 +5055,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "soporte" && <ComingSoonScreen title="Soporte y ayuda" onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "soporte" && <SoporteScreen profile={profile} leagues={leagues} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
