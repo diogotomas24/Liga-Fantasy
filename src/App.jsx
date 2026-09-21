@@ -4556,6 +4556,23 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
 
 // Detalle de un partido: alineaciones/puntos de cada jugadora de ambos
 // equipos, lado a lado (como una "comparativa" del partido).
+// Color del cuadrado de puntos: rojo si es negativo, naranja de 0 a 7, y
+// rosa (con un resplandor suave) de 8 para arriba — igual que en la app de
+// referencia.
+function pointsSquareStyle(pts) {
+  if (pts == null) return { background: C.navy700, color: C.muted, boxShadow: "none" };
+  if (pts < 0) return { background: C.negative, color: C.white, boxShadow: "none" };
+  if (pts <= 7) return { background: C.baby, color: C.white, boxShadow: "none" };
+  return { background: C.principal, color: C.white, boxShadow: `0 0 12px ${C.principal}88` };
+}
+function PointsSquare({ pts }) {
+  return (
+    <span className="fl-mono text-sm font-bold flex items-center justify-center flex-shrink-0" style={{ width: 40, height: 36, borderRadius: 8, ...pointsSquareStyle(pts) }}>
+      {pts ?? "-"}
+    </span>
+  );
+}
+
 function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose }) {
   const rosterFor = (teamName) => players.filter((p) => p.team === teamName && p.position !== "DT");
   const localRoster = rosterFor(partido.local);
@@ -4580,13 +4597,15 @@ function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose })
           const lPts = lp ? calcPlayerPoints(jornada?.stats?.[lp.id], lp.position) : null;
           const vPts = vp ? calcPlayerPoints(jornada?.stats?.[vp.id], vp.position) : null;
           return (
-            <div key={i} className="flex items-center px-3 py-2" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
-              <span className="fl-mono text-sm font-bold text-center" style={{ width: 34, color: lPts == null ? C.muted : lPts >= 0 ? C.positive : C.negative }}>{lPts ?? "-"}</span>
-              <span className="fl-body text-xs flex-1 truncate" style={{ color: C.white }}>{lp?.name || ""}</span>
-              <span className="fl-mono text-[9px] px-2" style={{ color: C.muted }}>{POS_BY_KEY[lp?.position]?.short || ""}</span>
-              <span className="fl-mono text-[9px] px-2" style={{ color: C.muted }}>{POS_BY_KEY[vp?.position]?.short || ""}</span>
-              <span className="fl-body text-xs flex-1 truncate text-right" style={{ color: C.white }}>{vp?.name || ""}</span>
-              <span className="fl-mono text-sm font-bold text-center" style={{ width: 34, color: vPts == null ? C.muted : vPts >= 0 ? C.positive : C.negative }}>{vPts ?? "-"}</span>
+            <div key={i} className="flex items-center px-2.5 py-2 gap-1.5" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+              <PlayerPhoto url={lp?.photo} size={38} rounded={999} />
+              {lp && <PositionBadge posKey={lp.position} size="sm" />}
+              <span className="fl-body text-[11px] flex-1 min-w-0 truncate" style={{ color: C.white }}>{lp?.name || ""}</span>
+              <PointsSquare pts={lPts} />
+              <PointsSquare pts={vPts} />
+              <span className="fl-body text-[11px] flex-1 min-w-0 truncate text-right" style={{ color: C.white }}>{vp?.name || ""}</span>
+              {vp && <PositionBadge posKey={vp.position} size="sm" />}
+              <PlayerPhoto url={vp?.photo} size={38} rounded={999} />
             </div>
           );
         })}
