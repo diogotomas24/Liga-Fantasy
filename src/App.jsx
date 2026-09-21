@@ -791,6 +791,14 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 
+// El paso de una ronda de playoffs a la siguiente (cuartos->semis,
+// semis->final) solo se hace efectivo en LUNES, nunca antes — aunque el
+// resultado ya se sepa de sobra con días de antelación. Así hay margen para
+// revisar puntos/plantillas de la ronda que acaba de cerrarse (en Ranking,
+// Equipo...) antes de que la app pase página, igual que el draft diario
+// arranca siempre en lunes.
+function isMonday(date) { return date.getDay() === 1; }
+
 // "Reloj" del modo pruebas: si hay una fecha/hora simulada activa, TODO el
 // sistema de fechas/horas de la app (qué jornada toca, si ya ha empezado, si
 // el mercado está abierto, cuándo avisar de notificaciones, cláusulas y
@@ -3299,7 +3307,16 @@ export default function App() {
       // (mismo criterio que en liga regular), se congela la alineación EN VIVO
       // de ese momento para cada clasificada/o, tal como haya jugado esa
       // jornada concreta (ida y vuelta de cuartos se bloquean por separado).
+      // OJO: a diferencia de temporada regular (donde cada equipo YA nace con
+      // una alineación por defecto, aunque esté vacía), en playoffs la
+      // alineación en vivo no existe como tal hasta que se guarda por primera
+      // vez — así que si alguien nunca llegó a guardar nada, hay que
+      // bloquearle igualmente con una alineación vacía EN ESE MOMENTO, no
+      // dejar el bloqueo "abierto" esperando: si no, guardar algo más tarde
+      // (después de que la jornada ya hubiera empezado) se colaría igual y
+      // puntuaría, que es justo lo que no puede pasar.
       if (state.phase !== "none" && state.phase !== "finished") {
+        const emptyLineup = { formation: "2-2-1", starters: [], bench: { BASE: null, ALERO: null, PIVOT: null }, titularCoach: null, captainId: null };
         (["CUARTOS_IDA", "CUARTOS_VUELTA", "SEMIS", "FINAL"]).forEach((tag) => {
           const j = playoffService.findRoundJornadas(freshJornadas, tag)[0];
           if (!j || !hasJornadaEffectivelyStarted(j)) return;
@@ -3309,9 +3326,9 @@ export default function App() {
           let lockChanged = false;
           const nextLocked = { ...already };
           (state.qualifiers || []).forEach((u) => {
-            if (nextLocked[u]) return; // ya congelada esta jornada para esta persona
-            const live = liveLineups[u];
-            if (live) { nextLocked[u] = live; lockChanged = true; }
+            if (nextLocked[u]) return; // ya congelada esta jornada para esta persona (con o sin alineación real)
+            nextLocked[u] = liveLineups[u] || emptyLineup;
+            lockChanged = true;
           });
           if (lockChanged) {
             state = { ...state, lockedLineups: { ...state.lockedLineups, [tag]: nextLocked } };
@@ -3375,25 +3392,27 @@ export default function App() {
         changed = true;
       }
 
-      // 3) Fin de ronda: con resultado real ya cargado, se calcula quién pasa.
-      if (state.phase === "cuartos_draft" && playoffService.roundHasResults(freshJornadas, "CUARTOS")) {
+      // 3) Fin de ronda: con resultado real ya cargado, se calcula quién pasa
+      // — pero el cambio de ronda solo se hace efectivo en lunes (isMonday),
+      // nunca antes, aunque el resultado ya esté decidido de sobra.
+      if (state.phase === "cuartos_draft" && playoffService.roundHasResults(freshJornadas, "CUARTOS") && isMonday(getEffectiveToday())) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
           const liveLineup = (state.lineups.CUARTOS || {})[u] || null;
           pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "CUARTOS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(4, state.qualifiers.length));
-        state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser } };
+        state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser }, prevRoundQualifiers: state.qualifiers };
         changed = true;
         await logActivity({ type: "playoff_advance", round: "CUARTOS", advancing });
-      } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS")) {
+      } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS") && isMonday(getEffectiveToday())) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
           const liveLineup = (state.lineups.SEMIS || {})[u] || null;
           pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "SEMIS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(2, state.qualifiers.length));
-        state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser } };
+        state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser }, prevRoundQualifiers: state.qualifiers };
         changed = true;
         await logActivity({ type: "playoff_advance", round: "SEMIS", advancing });
       } else if (state.phase === "final_draft") {
@@ -5982,6 +6001,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
   const [showAllMovers, setShowAllMovers] = useState(false);
   const [showClasificacion, setShowClasificacion] = useState(false);
   const [showPlayoffIntro, setShowPlayoffIntro] = useState(false);
+  const [showRoundIntro, setShowRoundIntro] = useState(false);
   const standings = useMemo(() => rankingService.computeStandings(teams, players, playoffService.regularJornadas(jornadas), leagueId), [teams, players, jornadas, leagueId]);
   const myRow = standings.find(r => r.name === profile.name);
   const lastJornada = findCurrentJornada(jornadas);
@@ -6000,6 +6020,22 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       if (!seen) { setShowPlayoffIntro(true); await writePersonal(seenKey, true); }
     })();
   }, [isPlayoffMode, leagueId]);
+
+  // La primera vez que se entra el lunes en que se ha pasado de ronda (ya
+  // sea a semis o a la final), a quien estuviera jugando la ronda anterior
+  // se le enseña si ha pasado o si se ha quedado fuera — una única vez por
+  // ronda. A quien no estuviera en la ronda anterior (nunca llegó a jugarla)
+  // no se le muestra nada.
+  useEffect(() => {
+    if (!isPlayoffMode || !leagueId) return;
+    if (playoffState.round !== "SEMIS" && playoffState.round !== "FINAL") return;
+    if (!(playoffState.prevRoundQualifiers || []).includes(profile.name)) return;
+    (async () => {
+      const seenKey = `roundIntroSeen_${leagueId}_${playoffState.round}`;
+      const seen = await readPersonal(seenKey, false);
+      if (!seen) { setShowRoundIntro(true); await writePersonal(seenKey, true); }
+    })();
+  }, [isPlayoffMode, leagueId, playoffState.round, playoffState.prevRoundQualifiers, profile.name]);
 
   // Top de puntos por posición (Base/Alero/Pívot/Entrenadora-or), solo de
   // jugadoras de los equipos reales que siguen en playoffs — la base de
@@ -6322,6 +6358,13 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           onClose={() => setShowPlayoffIntro(false)}
         />
       )}
+      {showRoundIntro && (
+        <RoundAdvanceIntroScreen
+          round={playoffState.round}
+          advanced={!!playoffState?.qualifiers?.includes(profile.name)}
+          onClose={() => setShowRoundIntro(false)}
+        />
+      )}
     </div>
   );
 }
@@ -6436,6 +6479,57 @@ function PlayoffIntroScreen({ qualified, onClose }) {
           <div className="flex-1" style={{ height: 1, background: `linear-gradient(90deg, transparent, ${C.principal}88)` }} />
           <Star size={16} color={C.gold} fill={C.gold} />
           <div className="flex-1" style={{ height: 1, background: `linear-gradient(90deg, ${C.gold}88, transparent)` }} />
+        </div>
+      </div>
+      <div className="p-4 relative">
+        <button onClick={onClose} className="fl-tap w-full rounded-full py-3.5 text-sm font-bold uppercase tracking-wide" style={{
+          background: `linear-gradient(90deg, ${C.principal}, ${C.gold})`, color: C.white, boxShadow: `0 4px 20px ${C.principal}55`,
+        }}>
+          ¡Vamos allá!
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Se ve una única vez, el primer lunes en que se hace efectivo el cambio de
+// ronda (cuartos->semis, semis->final), a quien estuviera jugando la ronda
+// que acaba de cerrarse: si ha pasado, o si se ha quedado eliminada/o.
+function RoundAdvanceIntroScreen({ round, advanced, onClose }) {
+  const roundLabel = { SEMIS: "Semifinales", FINAL: "la Final" }[round] || round;
+  if (!advanced) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: "#08040C" }}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <span style={{ fontSize: 56 }}>👋</span>
+          <div className="fl-display text-xl uppercase mt-4 mb-2" style={{ color: C.white }}>Eliminada/o</div>
+          <div className="fl-body text-sm mb-1" style={{ color: "#A5B4D8", maxWidth: 280 }}>
+            Sorry, no ha sido posible pasar a {roundLabel} — tu equipo ha llegado hasta aquí.
+          </div>
+          <div className="fl-body text-sm" style={{ color: "#A5B4D8", maxWidth: 280 }}>
+            El año que viene seguro que vas a más. 💪
+          </div>
+        </div>
+        <div className="p-4">
+          <button onClick={onClose} className="fl-tap w-full rounded-full py-3 text-sm font-semibold" style={{ background: C.gold, color: C.ink }}>
+            Entendido
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: "#08040C", overflow: "hidden" }}>
+      <div className="absolute inset-0 pointer-events-none" style={{
+        background: `radial-gradient(ellipse 140% 60% at 50% -10%, ${C.principal}33 0%, transparent 60%), radial-gradient(ellipse 100% 40% at 100% 0%, ${C.gold}22 0%, transparent 55%)`,
+      }} />
+      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center relative">
+        <span style={{ fontSize: 64, filter: `drop-shadow(0 0 18px ${C.gold}aa)` }}>🏆</span>
+        <div className="fl-display text-2xl uppercase mt-4 mb-2" style={{
+          background: `linear-gradient(90deg, ${C.principal}, ${C.gold})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+        }}>¡Has pasado a {roundLabel}!</div>
+        <div className="fl-body text-sm" style={{ color: "#A5B4D8", maxWidth: 280 }}>
+          {round === "FINAL" ? "Estás a un solo partido de ser campeona/campeón. Suerte." : "Sigues vivo en el cuadro — a por la siguiente ronda."}
         </div>
       </div>
       <div className="p-4 relative">
