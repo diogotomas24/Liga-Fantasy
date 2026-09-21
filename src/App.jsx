@@ -1059,6 +1059,23 @@ const playoffService = {
     return picks;
   },
 
+  // Puntos de un usuario en UNA jornada de playoffs concreta (ida, vuelta,
+  // semis o final por separado) — usa su alineación ya congelada si la
+  // jornada ya empezó, o la alineación en vivo como previsión si todavía no.
+  computeSingleJornadaPoints(j, lockedLineups, userName, players, liveLineup) {
+    const locked = (lockedLineups[j.playoffRound] || {})[userName];
+    const lineup = locked || (hasJornadaEffectivelyStarted(j) ? null : liveLineup);
+    if (!lineup) return 0;
+    const ids = [...(lineup.starters || [])];
+    if (lineup.titularCoach) ids.push(lineup.titularCoach);
+    return ids.reduce((s, id) => {
+      const player = players.find((p) => p.id === id);
+      if (!player) return s;
+      const pts = player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total : calcPlayerPoints(j.stats?.[id], player.position);
+      return s + (id === lineup.captainId ? pts * 2 : pts);
+    }, 0);
+  },
+
   // Puntos de un usuario en una ronda de playoffs. Usa la alineación YA
   // CONGELADA de cada jornada concreta (una para ida, otra para vuelta en
   // cuartos) — igual que en liga regular, una vez empezada esa jornada ya no
@@ -1066,19 +1083,7 @@ const playoffService = {
   // previsión.
   computeRoundPoints(jornadas, round, lockedLineups, userName, players, liveLineup) {
     const js = playoffService.jornadasForRound(jornadas, round);
-    return js.reduce((sum, j) => {
-      const locked = (lockedLineups[j.playoffRound] || {})[userName];
-      const lineup = locked || (hasJornadaEffectivelyStarted(j) ? null : liveLineup);
-      if (!lineup) return sum;
-      const ids = [...(lineup.starters || [])];
-      if (lineup.titularCoach) ids.push(lineup.titularCoach);
-      return sum + ids.reduce((s, id) => {
-        const player = players.find((p) => p.id === id);
-        if (!player) return s;
-        const pts = player.position === "DT" ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total : calcPlayerPoints(j.stats?.[id], player.position);
-        return s + (id === lineup.captainId ? pts * 2 : pts);
-      }, 0);
-    }, 0);
+    return js.reduce((sum, j) => sum + playoffService.computeSingleJornadaPoints(j, lockedLineups, userName, players, liveLineup), 0);
   },
 
   // Corte de una ronda: ordena por puntos (desempate: mejor puesto en la
@@ -2615,12 +2620,16 @@ function SectionTitle({ children, right }) {
 // empiece, "EN JUEGO" (en verde) desde que arranca, y "ACABADA" en cuanto
 // todos sus partidos ya tienen marcador puesto. Por debajo de 24h para
 // empezar no se muestra nada (no hace falta adelantar tanto).
-function JornadaStatusPill({ jornada }) {
+function JornadaStatusPill({ jornada, jornadas }) {
   const [now, setNow] = useState(() => nowMs());
   useEffect(() => { const t = setInterval(() => setNow(nowMs()), 1000); return () => clearInterval(t); }, []);
   if (!jornada) return null;
 
-  const partidos = jornada.partidos || [];
+  // En jugadas de playoffs los partidos pueden venir "proyectados" del
+  // cuadro (equipos ya conocidos por la clasificación, aunque el marcador
+  // todavía no se haya escrito a mano en la jornada en sí) — se usa esa
+  // versión para saber si ya está todo acabado, igual que en Calendario.
+  const partidos = jornadas ? realBracketService.projectedPartidos(jornadas, jornada) : (jornada.partidos || []);
   const allFinished = partidos.length > 0 && partidos.every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
   if (allFinished) {
     return (
@@ -2639,9 +2648,17 @@ function JornadaStatusPill({ jornada }) {
   }
 
   const start = computeJornadaStartTime(jornada);
-  if (!start) return null;
+  // Sin fecha todavía (típico de una jornada de playoffs recién creada, antes
+  // de que se le ponga fecha a sus partidos) o a más de 24h vista: se
+  // muestra igualmente un estado, en vez de no mostrar nada.
+  if (!start) {
+    return <span className="fl-mono text-[10px] font-semibold px-2.5 py-1 rounded-full" style={{ background: `${C.muted}18`, color: C.muted }}>SIN EMPEZAR</span>;
+  }
   const remaining = start.getTime() - now;
-  if (remaining > 24 * 3600 * 1000 || remaining <= 0) return null; // solo se muestra dentro de las últimas 24h
+  if (remaining > 24 * 3600 * 1000) {
+    return <span className="fl-mono text-[10px] font-semibold px-2.5 py-1 rounded-full" style={{ background: `${C.muted}18`, color: C.muted }}>SIN EMPEZAR</span>;
+  }
+  if (remaining <= 0) return null; // ya debería haber arrancado pero hasJornadaEffectivelyStarted todavía no lo confirma: se deja sin pastilla un instante, en vez de mostrar una cuenta atrás negativa
   return (
     <span className="fl-mono text-[10px] font-semibold px-2.5 py-1 rounded-full" style={{ background: `${C.gold}18`, color: C.gold }}>
       Empieza en {fmtHMS(remaining)}
@@ -5566,11 +5583,15 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
 // Calendario completo: pantalla a pantalla completa con una jornada por pestaña
 // (J1, J2…) y sus partidos agrupados por fecha, al estilo del calendario oficial.
 function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players }) {
-  const fallbackIdx = useMemo(() => {
-    const current = findCurrentJornada(jornadas);
-    return current ? jornadas.findIndex((j) => j.id === current.id) : Math.max(jornadas.length - 1, 0);
-  }, [jornadas]);
+  // Sin useMemo a propósito: es un cálculo barato (un par de recorridos del
+  // array de jornadas) y así se recalcula SIEMPRE con el array tal cual está
+  // en este render, sin arriesgarse a quedarse con un índice obsoleto de un
+  // render anterior si "jornadas" cambia de contenido sin cambiar de
+  // referencia (por ejemplo, al añadirse una jornada nueva de playoffs).
+  const current = findCurrentJornada(jornadas);
+  const fallbackIdx = current ? jornadas.findIndex((j) => j.id === current.id) : Math.max(jornadas.length - 1, 0);
   const [idx, setIdx] = useState(initialIndex ?? fallbackIdx);
+  useEffect(() => { setIdx(initialIndex ?? fallbackIdx); }, [jornadas.length]); // si cambia el número de jornadas disponibles, se vuelve a situar en la actual
   const jornada = jornadas[idx];
   const partidos = useMemo(() => realBracketService.projectedPartidos(jornadas, jornada), [jornadas, jornada]);
   const grouped = useMemo(() => groupPartidosByFecha(partidos), [partidos]);
@@ -6190,7 +6211,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
       )}
 
       <div>
-        <SectionTitle right={<JornadaStatusPill jornada={lastJornada} />}>Jornada {currentJornadaNumber}</SectionTitle>
+        <SectionTitle right={<JornadaStatusPill jornada={lastJornada} jornadas={jornadas} />}>Jornada {currentJornadaNumber}</SectionTitle>
         {jornadas.length === 0 && (
           <EmptyState title="Temporada por empezar" text="Cuando se registre la primera jornada verás aquí tu puntuación." />
         )}
@@ -6794,6 +6815,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
               lineup: (playoffState.lineups[playoffState.round] || {})[viewingTeam] || null,
               points: (playoffRows.find((r) => r.name === viewingTeam) || {}).pts || 0,
               roundJornadas: playoffService.jornadasForRound(jornadas, playoffState.round),
+              lockedLineups: playoffState.lockedLineups,
             }}
             onClose={() => setViewingTeam(null)} />
         )}
@@ -6873,8 +6895,10 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
   const allSquad = [...jugadoras, ...coaches];
   const startersSet = new Set(lineup.starters || []);
   const benchIds = new Set(Object.values(lineup.bench || {}).filter(Boolean));
-  const jornadasIniciadas = startedJornadas(jornadas);
-  const history = jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${ownerName}`, lineup, players) }));
+  const jornadasIniciadas = playoffView ? playoffView.roundJornadas : startedJornadas(jornadas);
+  const history = playoffView
+    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeSingleJornadaPoints(j, playoffView.lockedLineups || {}, ownerName, players, lineup) }))
+    : jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${ownerName}`, lineup, players) }));
   const totalPts = playoffView ? (playoffView.points || 0) : history.reduce((s, h) => s + h.pts, 0);
 
   return (
@@ -6932,67 +6956,9 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
         )}
 
         {sub === "puntos" && (
-          playoffView ? (
-            <div className="space-y-2">
-              <div className="fl-row p-4 text-center mb-1">
-                <Trophy size={24} color={C.gold} style={{ margin: "0 auto 6px" }} />
-                <div className="fl-mono text-3xl font-bold" style={{ color: C.gold }}>{totalPts}</div>
-                <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>puntos en esta ronda de playoffs</div>
-              </div>
-              {allSquad.length === 0 ? (
-                <EmptyState title="Sin plantilla todavía" text="Se irá completando según avance el draft de esta ronda." />
-              ) : (
-                <>
-                  {(lineup.starters || []).length === 0 && !lineup.titularCoach ? (
-                    <div className="fl-row p-4 text-center">
-                      <span className="fl-body text-xs" style={{ color: C.muted }}>Todavía no ha guardado una alineación en esta ronda.</span>
-                    </div>
-                  ) : (
-                    <>
-                      {(lineup.starters || []).map((id) => {
-                        const p = players.find((x) => x.id === id);
-                        if (!p) return null;
-                        const raw = playoffView.roundJornadas.reduce((s, j) => s + calcPlayerPoints(j.stats?.[id], p.position), 0);
-                        const isCaptain = id === lineup.captainId;
-                        return (
-                          <button key={id} onClick={() => setDetailPlayerId(id)} className="fl-tap fl-row w-full flex items-center justify-between px-3 py-2.5 text-left">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <PlayerPhoto url={p.photo} size={32} rounded={8} />
-                              <div className="min-w-0">
-                                <div className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{p.name}{isCaptain ? " (C)" : ""}</div>
-                                <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{p.team}</div>
-                              </div>
-                            </div>
-                            <span className="fl-mono text-sm font-bold flex-shrink-0" style={{ color: C.gold }}>{isCaptain ? raw * 2 : raw}</span>
-                          </button>
-                        );
-                      })}
-                      {lineup.titularCoach && (() => {
-                        const coach = players.find((x) => x.id === lineup.titularCoach);
-                        if (!coach) return null;
-                        const pts = playoffView.roundJornadas.reduce((s, j) => s + calcCoachPoints(null, resolveCoachWin(j, coach.team)).total, 0);
-                        return (
-                          <button onClick={() => setDetailPlayerId(coach.id)} className="fl-tap fl-row w-full flex items-center justify-between px-3 py-2.5 text-left">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <PlayerPhoto url={coach.photo} size={32} rounded={8} />
-                              <div className="min-w-0">
-                                <div className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{coach.name} (DT)</div>
-                                <div className="fl-mono text-[9px] truncate" style={{ color: C.muted }}>{coach.team}</div>
-                              </div>
-                            </div>
-                            <span className="fl-mono text-sm font-bold flex-shrink-0" style={{ color: C.gold }}>{pts}</span>
-                          </button>
-                        );
-                      })()}
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          ) : (
-            <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
-              players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)} />
-          )
+          <PuntosJornadaView jornadas={jornadasIniciadas} history={history} leagueId={leagueId} teamName={ownerName}
+            players={players} lineup={lineup} teamCrests={teamCrests} onOpenPlayer={(p) => setDetailPlayerId(p.id)}
+            playoffLockedLineups={playoffView ? playoffView.lockedLineups : null} />
         )}
       </div>
 
@@ -7572,7 +7538,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
   const reserva = allSquad.filter(p => !startersSet.has(p.id) && !benchIds.has(p.id) && p.id !== lineup.titularCoach);
   const jornadasIniciadas = isPlayoffMode ? playoffService.jornadasForRound(jornadas, playoffState.round) : startedJornadas(jornadas);
   const history = isPlayoffMode
-    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeRoundPoints(jornadas, playoffState.round, playoffState.lockedLineups, teamName, players, lineup) }))
+    ? jornadasIniciadas.map((j) => ({ id: j.id, name: j.name, pts: playoffService.computeSingleJornadaPoints(j, playoffState.lockedLineups, teamName, players, lineup) }))
     : jornadasIniciadas.map(j => ({ id: j.id, name: j.name, pts: computeTeamJornadaPoints(j, `${leagueId}::${teamName}`, lineup, players) }));
 
   const valorPlantilla = isPlayoffMode
