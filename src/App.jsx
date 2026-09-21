@@ -4253,7 +4253,13 @@ export default function App() {
   if (activeLeagueId === null) {
     return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} onSignOut={signOut} players={players} />;
   }
-  if (!market) return <Loading />;
+  // En playoffs no hay mercado (por diseño), así que no tiene sentido
+  // esperar a que "market" se rellene para poder entrar — con el freno que
+  // le pusimos a syncMarket para que no siga rotando en segundo plano
+  // durante playoffs, "market" se queda en null para siempre en esa fase, y
+  // sin este permiso especial la app se quedaba colgada en la pantalla de
+  // carga nada más entrar en la liga.
+  if (!market && playoffState.phase === "none") return <Loading />;
 
   return (
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
