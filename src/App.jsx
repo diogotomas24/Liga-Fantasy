@@ -3281,7 +3281,14 @@ export default function App() {
           const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
           const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
           if (qualifiers.length > 0) {
-            state = { ...playoffService.emptyState(), phase: "cuartos_draft", round: "CUARTOS", qualifiers, draftDay: 0 };
+            // "lastAllocationDate: todayStr" (no null) a propósito: si se
+            // dejara en null, el bloque de reparto diario de más abajo vería
+            // "todavía no se ha repartido hoy" y procesaría el día 1 en esta
+            // misma pasada, ANTES de que nadie llegara a ver ni construir su
+            // lista — el día 17 pasaría a "Día 2 de 5" sin que hubiera dado
+            // tiempo a nada. Marcando hoy como "ya repartido", el primer
+            // reparto de verdad se hace mañana, consumiendo la lista de hoy.
+            state = { ...playoffService.emptyState(), phase: "cuartos_draft", round: "CUARTOS", qualifiers, draftDay: 0, lastAllocationDate: todayStr };
             changed = true;
             await logActivity({ type: "playoff_start", qualifiers });
           }
@@ -3376,7 +3383,7 @@ export default function App() {
           pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "CUARTOS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(4, state.qualifiers.length));
-        state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser } };
+        state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser } };
         changed = true;
         await logActivity({ type: "playoff_advance", round: "CUARTOS", advancing });
       } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS")) {
@@ -3386,7 +3393,7 @@ export default function App() {
           pointsByUser[u] = playoffService.computeRoundPoints(freshJornadas, "SEMIS", state.lockedLineups, u, freshPlayers, liveLineup);
         });
         const advancing = playoffService.cutTop(state.qualifiers, pointsByUser, Math.min(2, state.qualifiers.length));
-        state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: null, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser } };
+        state = { ...state, phase: "final_draft", round: "FINAL", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, SEMIS: pointsByUser } };
         changed = true;
         await logActivity({ type: "playoff_advance", round: "SEMIS", advancing });
       } else if (state.phase === "final_draft") {
@@ -3654,6 +3661,15 @@ export default function App() {
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
   const syncMarket = useCallback(async (leagueId, resetHour) => {
     if (!leagueId || resolvingRef.current) return;
+    // En playoffs no hay mercado (se pasa a draft, sin dinero de por medio) —
+    // sin este freno, el motor de mercado seguía rotando en segundo plano
+    // aunque no se viera en pantalla, y de ahí salían avisos de favoritos
+    // ("tu jugadora está en el mercado") que no tenían ningún sentido
+    // mientras se está en playoffs. Se lee fresco de Supabase (no del estado
+    // en memoria) porque esta función tiene las dependencias vacías a
+    // propósito y no puede fiarse de un "playoffState" quizás desactualizado.
+    const freshPlayoffPhase = (await readShared(leagueKey(leagueId, "playoffState"), null))?.phase || "none";
+    if (freshPlayoffPhase !== "none") return;
     resolvingRef.current = true;
     try {
       const [freshPlayers, freshTeamsOrNull, freshMarket, freshBids, freshHistory, freshActivity, freshOffers, freshTriple, freshJornadas] = await Promise.all([
