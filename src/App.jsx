@@ -3394,7 +3394,19 @@ export default function App() {
 
       // 3) Fin de ronda: con resultado real ya cargado, se calcula quién pasa
       // — pero el cambio de ronda solo se hace efectivo en lunes (isMonday),
-      // nunca antes, aunque el resultado ya esté decidido de sobra.
+      // nunca antes, aunque el resultado ya esté decidido de sobra. De semis
+      // a la final el hueco es mucho más corto (un solo partido a un día):
+      // basta con que haya pasado un día desde el partido de semis, sin
+      // esperar forzosamente a que caiga en lunes.
+      const semisJ = playoffService.findRoundJornadas(freshJornadas, "SEMIS")[0];
+      const semisD = semisJ ? jornadaDate(semisJ) : null;
+      let oneDayAfterSemis = false;
+      if (semisD) {
+        const cutoff = new Date(semisD);
+        cutoff.setDate(cutoff.getDate() + 1);
+        cutoff.setHours(0, 0, 0, 0);
+        oneDayAfterSemis = getEffectiveToday() >= cutoff;
+      }
       if (state.phase === "cuartos_draft" && playoffService.roundHasResults(freshJornadas, "CUARTOS") && isMonday(getEffectiveToday())) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
@@ -3405,7 +3417,7 @@ export default function App() {
         state = { ...state, phase: "semis_draft", round: "SEMIS", qualifiers: advancing, draftDay: 0, lastAllocationDate: todayStr, pointsByRound: { ...state.pointsByRound, CUARTOS: pointsByUser }, prevRoundQualifiers: state.qualifiers };
         changed = true;
         await logActivity({ type: "playoff_advance", round: "CUARTOS", advancing });
-      } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS") && isMonday(getEffectiveToday())) {
+      } else if (state.phase === "semis_draft" && playoffService.roundHasResults(freshJornadas, "SEMIS") && oneDayAfterSemis) {
         const pointsByUser = {};
         state.qualifiers.forEach((u) => {
           const liveLineup = (state.lineups.SEMIS || {})[u] || null;
