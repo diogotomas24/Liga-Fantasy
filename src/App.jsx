@@ -1785,10 +1785,22 @@ async function readFavoritesMap() {
   }
 }
 async function addFavoriteGlobal(playerId, userName) {
-  try { await supabase.from("favorites").upsert({ player_id: playerId, user_name: userName }); } catch {}
+  try {
+    const { error } = await supabase.from("favorites").upsert({ player_id: playerId, user_name: userName }, { onConflict: "player_id,user_name" });
+    if (error) throw error;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 async function removeFavoriteGlobal(playerId, userName) {
-  try { await supabase.from("favorites").delete().eq("player_id", playerId).eq("user_name", userName); } catch {}
+  try {
+    const { error } = await supabase.from("favorites").delete().eq("player_id", playerId).eq("user_name", userName);
+    if (error) throw error;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 /* -----------------------------------------------------------------------
@@ -2272,8 +2284,35 @@ function GlobalStyle() {
 /* =============================================================================
    ÁTOMOS DE UI
    ========================================================================== */
+// Pantalla de carga con nuestro propio logo (baloncesto + degradado de
+// marca), en vez de un simple círculo genérico girando — mismo espíritu que
+// la pantalla de referencia: fondo oscuro, formas muy sutiles, logo y
+// nombre centrados.
 function Loading() {
-  return <div className="min-h-screen flex items-center justify-center" style={{ background: C.navy900 }}><Loader2 className="animate-spin" color={C.baby} size={28} /></div>;
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden" style={{ background: C.navy900 }}>
+      <div className="absolute rounded-full" style={{ width: 360, height: 360, top: -130, left: -150, background: C.navy800, opacity: 0.5 }} />
+      <div className="absolute" style={{ width: 280, height: 280, bottom: -110, right: -120, background: C.navy800, opacity: 0.5, borderRadius: 48, transform: "rotate(18deg)" }} />
+      <div className="relative flex flex-col items-center">
+        <svg width="76" height="76" viewBox="0 0 72 72" className="fl-pulse" style={{ filter: `drop-shadow(0 0 16px ${C.principal}aa)` }}>
+          <defs>
+            <linearGradient id="loadingGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={C.principal} />
+              <stop offset="100%" stopColor={C.gold} />
+            </linearGradient>
+          </defs>
+          <circle cx="36" cy="36" r="32" fill="none" stroke="url(#loadingGrad)" strokeWidth="3.5" />
+          <path d="M36 4 V68 M4 36 H68 M11 13 C 24 26, 24 46, 11 59 M61 13 C 48 26, 48 46, 61 59"
+            fill="none" stroke="url(#loadingGrad)" strokeWidth="2.5" strokeLinecap="round" />
+        </svg>
+        <div className="fl-display text-2xl uppercase mt-4" style={{
+          background: `linear-gradient(90deg, ${C.principal}, ${C.gold})`, WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+        }}>
+          Fabtasy
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function PositionBadge({ posKey, size = "sm" }) {
@@ -2473,7 +2512,7 @@ function findCurrentJornada(jornadas) {
 // Estado de la cláusula de una jugadora, visible para toda la liga: en ROJO
 // mientras está bloqueada (con los días que faltan, o la cuenta atrás
 // HH:MM:SS cuando queda menos de un día), y en VERDE en cuanto se abre.
-function ClauseBadge({ entry, size = "sm" }) {
+function ClauseBadge({ entry, size = "sm", basePrice = 0 }) {
   const [now, setNow] = useState(getEffectiveToday().getTime());
   const locked = teamService.isClauseLocked(entry);
   useEffect(() => {
@@ -2483,9 +2522,12 @@ function ClauseBadge({ entry, size = "sm" }) {
   }, [locked]);
   const textSize = size === "sm" ? "text-[10px]" : "text-[11px]";
   if (!locked) {
+    // Abierta: en vez de decir "Abierta" a secas, se enseña directamente el
+    // importe de la cláusula (un poco más grande que el resto del badge),
+    // que es el dato que de verdad importa una vez se puede pagar.
     return (
-      <span className={`fl-mono ${textSize} font-semibold flex items-center gap-1`} style={{ color: C.positive }}>
-        <Lock size={size === "sm" ? 9 : 11} /> Abierta
+      <span className={`fl-mono ${size === "sm" ? "text-xs" : "text-sm"} font-bold flex items-center gap-1`} style={{ color: C.positive }}>
+        <Lock size={size === "sm" ? 10 : 12} /> {fmtCredits((entry && entry.clause) || basePrice || 0)}
       </span>
     );
   }
@@ -2880,15 +2922,24 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const resolvingRef = useRef(false);
   // Favoritos: se guardan por persona (no compartidos), como una simple lista de ids.
-  const toggleFavorito = useCallback((playerId) => {
-    setFavoritos(prev => {
-      const isFav = prev.includes(playerId);
-      const next = isFav ? prev.filter(id => id !== playerId) : [...prev, playerId];
-      writePersonal("favoritos", next);
-      if (profile) { if (isFav) removeFavoriteGlobal(playerId, profile.name); else addFavoriteGlobal(playerId, profile.name); }
-      return next;
-    });
-  }, [profile]);
+  const toggleFavorito = useCallback(async (playerId) => {
+    if (!profile) return;
+    const wasFav = favoritos.includes(playerId);
+    const next = wasFav ? favoritos.filter(id => id !== playerId) : [...favoritos, playerId];
+    setFavoritos(next);
+    writePersonal("favoritos", next);
+    const res = wasFav ? await removeFavoriteGlobal(playerId, profile.name) : await addFavoriteGlobal(playerId, profile.name);
+    if (!res.ok) {
+      // No se pudo guardar de verdad en la tabla compartida (la que usan las
+      // notificaciones) — se deshace el cambio visual para que la estrella
+      // nunca mienta sobre el estado real. Antes, si esto fallaba en
+      // silencio, la estrella se veía "quitada" en tu pantalla pero la fila
+      // seguía en la base de datos, así que te seguían llegando avisos de
+      // una jugadora que creías haber desmarcado.
+      setFavoritos(favoritos);
+      writePersonal("favoritos", favoritos);
+    }
+  }, [profile, favoritos]);
 
   // Aplica el movimiento de valor de mercado y sube las cláusulas afectadas
   // para cualquier jornada que ya tenga estadísticas cargadas en Supabase y
@@ -4574,14 +4625,14 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
 
 // Detalle de un partido: alineaciones/puntos de cada jugadora de ambos
 // equipos, lado a lado (como una "comparativa" del partido).
-// Color del cuadrado de puntos: rojo si es negativo, naranja de 0 a 7, y
-// rosa (con un resplandor suave) de 8 para arriba — igual que en la app de
-// referencia.
+// Color del cuadrado de puntos: rojo (vivo) si es negativo, naranja de 0 a
+// 6, y verde (el mismo verde que ya se usa para "positivo" en toda la app)
+// de 7 para arriba, con un resplandor suave.
 function pointsSquareStyle(pts) {
   if (pts == null) return { background: C.navy700, color: C.muted, boxShadow: "none" };
-  if (pts < 0) return { background: C.negative, color: C.white, boxShadow: "none" };
-  if (pts <= 7) return { background: C.baby, color: C.white, boxShadow: "none" };
-  return { background: C.principal, color: C.white, boxShadow: `0 0 12px ${C.principal}88` };
+  if (pts < 0) return { background: "#E8342E", color: C.white, boxShadow: "none" };
+  if (pts <= 6) return { background: C.baby, color: C.white, boxShadow: "none" };
+  return { background: C.positive, color: C.ink, boxShadow: `0 0 12px ${C.positive}88` };
 }
 function PointsSquare({ pts }) {
   return (
@@ -7111,7 +7162,7 @@ function RivalTeamScreen({ ownerName, team, players, jornadas, leagueId, teamCre
                   {!playoffView && (
                     <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
                       <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                      <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>
+                      <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} basePrice={p.basePrice} /></div>
                     </div>
                   )}
                 </button>
@@ -7537,7 +7588,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
             <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>MEDIA: {media.toFixed(1)}</div>
             {isOwned && entry && (
               <div className="flex items-center justify-end gap-1.5 mt-1">
-                <ClauseBadge entry={entry} />
+                <ClauseBadge entry={entry} basePrice={player.basePrice} />
                 <span className="fl-mono text-[10px] font-semibold" style={{ color: C.gold }}>{fmtCredits(entry.clause || player.basePrice || 0)}</span>
               </div>
             )}
@@ -7545,7 +7596,7 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
               <div className="mt-1">
                 <div className="fl-mono text-[9px]" style={{ color: C.muted }}>De {ownerInfo.ownerName}</div>
                 <div className="flex items-center justify-end gap-1.5 mt-0.5">
-                  <ClauseBadge entry={ownerInfo.ownerEntry} />
+                  <ClauseBadge entry={ownerInfo.ownerEntry} basePrice={player.basePrice} />
                 </div>
               </div>
             )}
@@ -7765,7 +7816,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
                 </div>
                 <div className="text-right flex-shrink-0" style={{ minWidth: 84 }}>
                   <div className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(p.basePrice || 0)}</div>
-                  {!isPlayoffMode && <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} /></div>}
+                  {!isPlayoffMode && <div className="flex justify-end mt-1"><ClauseBadge entry={entry || {}} basePrice={p.basePrice} /></div>}
                 </div>
               </button>
             );
@@ -8989,7 +9040,7 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
                     </div>
                     <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{player.team}</div>
                     <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>De {owner}</div>
-                    <div className="mt-1.5"><ClauseBadge entry={entry} /></div>
+                    <div className="mt-1.5"><ClauseBadge entry={entry} basePrice={player.basePrice} /></div>
                   </div>
                 </button>
                 {isMine ? (
@@ -9044,7 +9095,7 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
                     </button>
                     <PositionBadge posKey={player.position} />
                     <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                      <ClauseBadge entry={entry} />
+                      <ClauseBadge entry={entry} basePrice={player.basePrice} />
                       {!locked && (
                         <button onClick={() => onSelectClause(name, player, entry)}
                           className="fl-tap flex items-center gap-1 fl-mono text-[11px] font-semibold rounded-md px-2 py-1"
