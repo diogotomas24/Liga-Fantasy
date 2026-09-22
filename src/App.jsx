@@ -39,6 +39,13 @@ const C = {
    DOMINIO
    ========================================================================== */
 const BUDGET_TOTAL = 100; // millones (créditos Fantasy)
+
+// ⚠️ PON AQUÍ TU CLIENT ID DE GOOGLE para activar "Google One Tap" (login sin
+// salir de la app, sin el aviso feo de supabase.co). Termina en
+// ".apps.googleusercontent.com". Instrucciones de cómo conseguirlo, en el
+// mensaje donde se entregó este cambio. Mientras esto no esté relleno, se
+// sigue usando el botón de Google de toda la vida (el que redirige fuera).
+const GOOGLE_CLIENT_ID = "";
 const MARKET_ASSET_COUNT = 8;
 const MAX_COACHES = 1;
 const MAX_SQUAD_JUGADORAS = 12; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
@@ -1678,7 +1685,9 @@ async function signInAccount(email, password) {
 async function signOutAccount() {
   try { await supabase.auth.signOut(); } catch {}
 }
-// Abre el flujo de Google (redirige fuera de la app y vuelve solo).
+// Abre el flujo de Google (redirige fuera de la app y vuelve solo). Se usa
+// solo como respaldo si GOOGLE_CLIENT_ID todavía no está configurado — con
+// él puesto, se usa Google One Tap (más abajo) en su lugar.
 async function signInWithGoogle() {
   try {
     const { error } = await supabase.auth.signInWithOAuth({
@@ -1690,6 +1699,35 @@ async function signInWithGoogle() {
   } catch {
     return { ok: false, error: "No se pudo abrir el inicio de sesión con Google." };
   }
+}
+
+// --- Google One Tap: login sin salir de la app, sin pasar por una página
+// intermedia de Google (así no aparece el aviso confuso del dominio técnico
+// de Supabase) ---
+let googleScriptPromise = null;
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (googleScriptPromise) return googleScriptPromise;
+  googleScriptPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.async = true; s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("No se pudo cargar el script de Google"));
+    document.head.appendChild(s);
+  });
+  return googleScriptPromise;
+}
+// Un "nonce" (número aleatorio de un solo uso) exigido por Supabase para
+// verificar que el token de Google es de verdad de este intento de login
+// concreto, y no uno robado/reutilizado. Google necesita la versión
+// "hasheada" (SHA-256); Supabase necesita la original, sin hashear.
+async function generateGoogleNonce() {
+  const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+  const encoded = new TextEncoder().encode(nonce);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const hashedNonce = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return { nonce, hashedNonce };
 }
 // Al abrir la app: si ya hay una sesión activa (se recuerda sola entre
 // visitas, incluida la de Google tras volver de la redirección), recupera el
@@ -2760,7 +2798,7 @@ function JornadaStatusPill({ jornada, jornadas }) {
 /* =============================================================================
    ONBOARDING
    ========================================================================== */
-function Onboarding({ onEnter, onGoogle }) {
+function Onboarding({ onEnter, onGoogle, onGoogleOneTapSuccess }) {
   const [mode, setMode] = useState("login"); // "login" | "signup"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -2769,6 +2807,49 @@ function Onboarding({ onEnter, onGoogle }) {
   const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmMsg, setConfirmMsg] = useState("");
+  const googleBtnRef = useRef(null);
+  const oneTapReady = !!GOOGLE_CLIENT_ID;
+
+  // Google One Tap: en cuanto carga la pantalla, se prepara el botón oficial
+  // de Google (con su propio estilo) y se lanza el aviso flotante — todo
+  // dentro de la propia app, sin redirigir a ningún sitio, así que nunca
+  // aparece el aviso confuso del dominio técnico de Supabase.
+  useEffect(() => {
+    if (!oneTapReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadGoogleIdentityScript();
+        if (cancelled || !window.google?.accounts?.id) return;
+        const { nonce, hashedNonce } = await generateGoogleNonce();
+        if (cancelled) return;
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: async (response) => {
+            setError(""); setGoogleBusy(true);
+            try {
+              const { error: authError } = await supabase.auth.signInWithIdToken({ provider: "google", token: response.credential, nonce });
+              if (authError) throw authError;
+              await onGoogleOneTapSuccess();
+            } catch {
+              setError("No se pudo iniciar sesión con Google.");
+            }
+            setGoogleBusy(false);
+          },
+          nonce: hashedNonce,
+          use_fedcm_for_prompt: true,
+        });
+        if (googleBtnRef.current) {
+          window.google.accounts.id.renderButton(googleBtnRef.current, { theme: "outline", size: "large", width: 320, text: "continue_with" });
+        }
+        window.google.accounts.id.prompt();
+      } catch {
+        // Sin conexión al script de Google o similar: el resto del login
+        // (email/contraseña) sigue funcionando con normalidad.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [oneTapReady, onGoogleOneTapSuccess]);
 
   const submit = async () => {
     setError(""); setConfirmMsg("");
@@ -2804,13 +2885,23 @@ function Onboarding({ onEnter, onGoogle }) {
           <h1 className="fl-display text-3xl uppercase mt-1" style={{ color: C.white }}>Fabtasy Liga<br />Copa Aragón</h1>
         </div>
         <div className="fl-card p-5">
-          <button disabled={googleBusy} onClick={submitGoogle}
-            className="fl-body w-full mb-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
-            style={{ background: C.white, color: C.ink, border: "1.5px solid rgba(11,27,51,0.2)" }}>
-            {googleBusy ? <Loader2 className="animate-spin" size={16} /> : (
-              <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.8 32.6 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" /><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.5 18.9 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4c-7.7 0-14.4 4.4-17.7 10.7z" /><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.4 26.7 36 24 36c-5.3 0-9.7-3.4-11.3-8.1l-6.5 5C9.5 39.5 16.2 44 24 44z" /><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l6.2 5.2C40.8 36 44 30.8 44 24c0-1.3-.1-2.7-.4-3.5z" /></svg>
-            )} Continuar con Google
-          </button>
+          {oneTapReady ? (
+            <div className="mb-4 flex justify-center">
+              {googleBusy ? (
+                <div className="w-full flex items-center justify-center py-2.5"><Loader2 className="animate-spin" size={18} color={C.ink} /></div>
+              ) : (
+                <div ref={googleBtnRef} style={{ width: 320, maxWidth: "100%" }} />
+              )}
+            </div>
+          ) : (
+            <button disabled={googleBusy} onClick={submitGoogle}
+              className="fl-body w-full mb-4 rounded-md py-2.5 text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+              style={{ background: C.white, color: C.ink, border: "1.5px solid rgba(11,27,51,0.2)" }}>
+              {googleBusy ? <Loader2 className="animate-spin" size={16} /> : (
+                <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.8 32.6 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" /><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.5 18.9 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.1 6.1 29.3 4 24 4c-7.7 0-14.4 4.4-17.7 10.7z" /><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.4 26.7 36 24 36c-5.3 0-9.7-3.4-11.3-8.1l-6.5 5C9.5 39.5 16.2 44 24 44z" /><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l6.2 5.2C40.8 36 44 30.8 44 24c0-1.3-.1-2.7-.4-3.5z" /></svg>
+              )} Continuar con Google
+            </button>
+          )}
           <div className="flex items-center gap-2 mb-4">
             <div className="flex-1 h-px" style={{ background: "rgba(11,27,51,0.15)" }} />
             <span className="fl-mono text-[10px]" style={{ color: C.mutedInk }}>O CON EMAIL</span>
@@ -3773,6 +3864,21 @@ export default function App() {
     return await signInWithGoogle(); // si va bien, la página redirige fuera; el resto se resuelve solo al volver.
   }, []);
 
+  // Tras un login con Google One Tap (no hay recarga de página de por
+  // medio, así que hay que resolver el nombre a mano aquí — con el login
+  // redirigido de siempre, esto se resuelve solo en la carga inicial).
+  const handleGoogleOneTapSuccess = useCallback(async () => {
+    const sess = await getSessionProfile();
+    if (sess.hasSession && sess.name) {
+      const prof = { name: sess.name };
+      await writePersonal("profile", prof);
+      setProfile(prof);
+    } else if (sess.hasSession && !sess.name) {
+      setPendingUser({ userId: sess.userId });
+      setProfile(null);
+    }
+  }, []);
+
   const completeGoogleName = useCallback(async (name) => {
     const res = await chooseNameForSession(pendingUser.userId, name);
     if (!res.ok) return res;
@@ -4385,7 +4491,7 @@ export default function App() {
 
   if (profile === undefined) return <Loading />;
   if (pendingUser) return <ChooseNameScreen onSubmit={completeGoogleName} onSignOut={signOut} />;
-  if (profile === null) return <Onboarding onEnter={completeOnboarding} onGoogle={handleGoogleLogin} />;
+  if (profile === null) return <Onboarding onEnter={completeOnboarding} onGoogle={handleGoogleLogin} onGoogleOneTapSuccess={handleGoogleOneTapSuccess} />;
   if (activeLeagueId === undefined) return <Loading />;
   if (activeLeagueId === null) {
     return <MisLigasScreen leagues={myLeagues} onSelect={selectLeague} onCreate={createLeague} onJoin={joinLeagueByCode} jornadas={jornadas} teamCrests={teamCrests} profile={profile} onKick={kickMember} onDeleteLeague={deleteLeague} onSignOut={signOut} players={players} />;
