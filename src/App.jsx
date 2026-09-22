@@ -4,7 +4,7 @@ import {
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
-  Store, Calendar, Layers, Megaphone, HelpCircle, LifeBuoy,
+  Store, Calendar, Layers, Megaphone, HelpCircle, LifeBuoy, Share2,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
 
@@ -1847,6 +1847,21 @@ async function findLeagueByCode(code) {
   } catch {
     return null;
   }
+}
+
+// Enlace para invitar a una liga: mismo código de siempre, pero metido en un
+// link para que quien lo abra pueda unirse directamente (ver el efecto que
+// lee "?join=" al cargar la app). Usa el compartir nativo del móvil si hay
+// (WhatsApp, mensajes...); si no, lo copia al portapapeles.
+async function shareLeagueInvite(league) {
+  const url = `${window.location.origin}${window.location.pathname}?join=${encodeURIComponent(league.invite_code)}`;
+  const text = `¡Únete a mi liga "${league.name}" en Fabtasy!`;
+  if (navigator.share) {
+    try { await navigator.share({ title: "Fabtasy", text, url }); return { ok: true, shared: true }; }
+    catch { return { ok: false }; } // cancelado por la persona: no es un error de verdad
+  }
+  try { await navigator.clipboard.writeText(url); return { ok: true, copied: true }; }
+  catch { return { ok: false }; }
 }
 
 async function readLeaguesByIds(ids) {
@@ -3734,6 +3749,20 @@ export default function App() {
     return { ok: true, league };
   }, [selectLeague]);
 
+  // Enlace de invitación (?join=CÓDIGO en la URL): en cuanto se sabe quién
+  // eres (perfil ya cargado, con nombre puesto), se intenta unir sola/o a
+  // esa liga — la misma lógica que escribir el código a mano. Se limpia el
+  // parámetro de la URL de inmediato, tanto si funciona como si no, para que
+  // recargar la página no reintente el mismo enlace una y otra vez.
+  useEffect(() => {
+    if (!profile) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("join");
+    if (!code) return;
+    window.history.replaceState({}, "", window.location.origin + window.location.pathname);
+    joinLeagueByCode(code);
+  }, [profile, joinLeagueByCode]);
+
   const completeOnboarding = useCallback(async (name) => {
     const prof = { name };
     await writePersonal("profile", prof);
@@ -5059,6 +5088,7 @@ function SoporteScreen({ onClose, profile, leagues }) {
 }
 function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCrests, profile, onKick, onDeleteLeague, onSignOut, players }) {
   const [showCreate, setShowCreate] = useState(false);
+  const [shareMsg, setShareMsg] = useState("");
   const [showJoin, setShowJoin] = useState(false);
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -5132,6 +5162,11 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
                 <div className="fl-body text-sm font-medium mb-1" style={{ color: C.white }}>¡Liga "{justCreated.name}" creada!</div>
                 <div className="fl-body text-xs mb-2" style={{ color: C.muted }}>Comparte este código con tus amigos para que se unan:</div>
                 <div className="fl-mono text-2xl font-bold tracking-[0.3em] py-2" style={{ color: C.principal }}>{justCreated.invite_code}</div>
+                <button onClick={async () => { const r = await shareLeagueInvite(justCreated); if (r.copied) { setShareMsg("Enlace copiado"); setTimeout(() => setShareMsg(""), 2000); } }}
+                  className="fl-tap w-full mt-1 rounded-md py-2 text-sm font-semibold flex items-center justify-center gap-1.5" style={{ background: "transparent", border: `1.5px solid ${C.principal}`, color: C.principal }}>
+                  <Share2 size={15} /> Compartir enlace para unirse
+                </button>
+                {shareMsg && <div className="fl-mono text-[10px] mt-1.5" style={{ color: C.positive }}>{shareMsg}</div>}
                 <button onClick={() => { setShowCreate(false); setJustCreated(null); setName(""); }}
                   className="fl-tap w-full mt-2 rounded-md py-2 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>
                   Entendido
@@ -5176,6 +5211,10 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
                   <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{l.name}</div>
                   <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>Código {l.invite_code}</div>
                 </button>
+                <button onClick={async () => { const r = await shareLeagueInvite(l); if (r.copied) { setShareMsg(`Enlace de "${l.name}" copiado`); setTimeout(() => setShareMsg(""), 2000); } }}
+                  className="fl-tap p-1.5" title="Compartir enlace para unirse">
+                  <Share2 size={16} color={C.muted} />
+                </button>
                 {l.created_by === profile?.name && (
                   <button onClick={() => setAdminLeague(l)} className="fl-tap p-1.5 -mr-1" title="Administrar liga">
                     <MoreVertical size={16} color={C.muted} />
@@ -5186,6 +5225,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
             ))}
           </div>
         )}
+        {shareMsg && <div className="fl-mono text-[10px] text-center mb-3" style={{ color: C.positive }}>{shareMsg}</div>}
 
         {currentJornada && (
           <div>
