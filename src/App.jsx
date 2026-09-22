@@ -1312,16 +1312,25 @@ const marketPricingService = {
   // ninguna contrapartida negativa, así que el mercado subía mucho más de lo
   // que bajaba de forma estructural, no solo por casualidad.
   computeBigPush({ stats, leagueAvgPoints, teamRank, totalTeams, opponentWinPct, won, isMvpPartido, minutesJump, minutesDrop, isConsistentGood, isConsistentBad }) {
-    const puntosFactor = ((stats.puntos || 0) - leagueAvgPoints) * 0.0010;
+    // El rendimiento de la jugadora (en puntos Fantasy/Swish, frente a la
+    // media de la jornada) tiene que ser SIEMPRE la señal dominante — antes
+    // los "extras" (posición del equipo, MVP, minutos, consistencia) podían
+    // sumar más que la propia diferencia de puntos, así que una jugadora
+    // discreta con la suerte a favor en esos extras acababa subiendo más
+    // que otra que había hecho un partidazo de verdad. Ahora los puntos
+    // pesan más del doble que antes, y cada extra pesa bastante menos, para
+    // que ninguna combinación de extras pueda invertir una diferencia clara
+    // de rendimiento.
+    const puntosFactor = ((stats.puntos || 0) - leagueAvgPoints) * 0.0022;
     let resultadoFactor = 0;
-    if (won === true) resultadoFactor = 0.0025 * (1 + (opponentWinPct - 0.5));
-    else if (won === false) resultadoFactor = -0.0025 * (1 + (0.5 - opponentWinPct));
+    if (won === true) resultadoFactor = 0.0012 * (1 + (opponentWinPct - 0.5));
+    else if (won === false) resultadoFactor = -0.0012 * (1 + (0.5 - opponentWinPct));
     // Centrado en la mitad de la tabla: por encima empuja para arriba, por
     // debajo empuja para abajo (antes iba de 0 a +0.0025, siempre positivo).
-    const posicionFactor = totalTeams > 0 ? (((totalTeams - teamRank) / totalTeams) - 0.5) * 2 * 0.0025 : 0;
-    const mvpPartidoFactor = isMvpPartido ? 0.005 : 0;
-    const minutosFactor = minutesJump ? 0.0015 : (minutesDrop ? -0.0015 : 0);
-    const consistenciaFactor = isConsistentGood ? 0.003 : (isConsistentBad ? -0.003 : 0);
+    const posicionFactor = totalTeams > 0 ? (((totalTeams - teamRank) / totalTeams) - 0.5) * 2 * 0.0010 : 0;
+    const mvpPartidoFactor = isMvpPartido ? 0.0025 : 0;
+    const minutosFactor = minutesJump ? 0.0008 : (minutesDrop ? -0.0008 : 0);
+    const consistenciaFactor = isConsistentGood ? 0.0015 : (isConsistentBad ? -0.0015 : 0);
     return puntosFactor + resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor;
   },
 
@@ -1375,17 +1384,26 @@ const marketPricingService = {
       const standing = ctx.standings[player.team] || { rank: ctx.totalTeams, winPct: 0.5 };
       const oppStanding = ctx.standings[opponent] || { winPct: 0.5 };
       const leagueAvg = marketPricingService.leagueAveragePoints(jornada, ctx.players);
+      // OJO: todo esto se mide en puntos FANTASY (Swish) — los mismos que ve
+      // el usuario en cada jornada — y no en "puntos anotados" reales del
+      // partido. Antes se comparaban puntos anotados contra una media que sí
+      // estaba en Swish (leagueAveragePoints usa calcPointsBreakdown), así
+      // que se estaban comparando dos cosas distintas: una jugadora con
+      // pocos puntos anotados pero un partidazo en asistencias/rebotes/
+      // tapones podía moverse "al revés" de lo que su puntuación Fantasy
+      // real merecía.
+      const swishPts = calcPointsBreakdown(stats, player.position).total;
       const avgMin = minutesHistory.length ? minutesHistory.reduce((a, b) => a + b, 0) / minutesHistory.length : (stats.minutos || 0);
       const minutesJump = (stats.minutos || 0) - avgMin >= 8;
       const minutesDrop = avgMin - (stats.minutos || 0) >= 8;
-      const recentPts = [...pointsHistory, stats.puntos || 0].slice(-4);
+      const recentPts = [...pointsHistory, swishPts].slice(-4);
       const avgRecent = recentPts.reduce((a, b) => a + b, 0) / recentPts.length;
       const variance = recentPts.reduce((a, b) => a + Math.pow(b - avgRecent, 2), 0) / recentPts.length;
       const isConsistentGood = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent > leagueAvg;
       const isConsistentBad = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent < leagueAvg;
 
       let base = marketPricingService.computeBigPush({
-        stats, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
+        stats: { ...stats, puntos: swishPts }, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
         opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, minutesDrop, isConsistentGood, isConsistentBad,
       });
       // Sube rápido, baja algo más despacio: un partido malo suelto no debe
@@ -1400,7 +1418,7 @@ const marketPricingService = {
 
       cycleStartDate = ctx.todayStr;
       cycleBase = base;
-      pointsHistory = [...pointsHistory, stats.puntos || 0].slice(-5);
+      pointsHistory = [...pointsHistory, swishPts].slice(-5);
       minutesHistory = [...minutesHistory, stats.minutos || 0].slice(-4);
     }
 
