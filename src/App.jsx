@@ -365,11 +365,19 @@ const teamService = {
   // protegida (nadie de fuera puede comprar su cláusula, aunque su propia persona
   // dueña sí puede subirla pagando). Pasado ese plazo, cualquiera puede pagar la
   // cláusula (un importe guardado, no recalculado) y llevársela.
+  // Blindaje: "acquiredAt" nunca se trata como si fuera POSTERIOR al momento
+  // actual, aunque el dato guardado lo esté (por ejemplo, si se fichó con el
+  // reloj de pruebas adelantado y luego ese reloj se reinició o retrocedió
+  // para seguir probando). Sin este límite, la cuenta atrás podía salir
+  // inflada muy por encima de los 14 días de verdad.
+  clauseAcquiredAt(entry) {
+    return Math.min(entry?.acquiredAt || 0, getEffectiveToday().getTime());
+  },
   isClauseLocked(entry) {
-    return getEffectiveToday().getTime() < (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
+    return getEffectiveToday().getTime() < teamService.clauseAcquiredAt(entry) + CLAUSE_LOCK_MS;
   },
   clauseUnlockAt(entry) {
-    return (entry?.acquiredAt || 0) + CLAUSE_LOCK_MS;
+    return teamService.clauseAcquiredAt(entry) + CLAUSE_LOCK_MS;
   },
   addAsset(team, asset, pricePaid) {
     return { ...team, squad: [...(team.squad || []), { id: asset.id, pricePaid, clause: pricePaid, acquiredAt: getEffectiveToday().getTime() }], budgetSpent: (team.budgetSpent || 0) + pricePaid };
