@@ -8096,8 +8096,8 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                               </span>
                             )}
                             {isOut && (
-                              <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold pointer-events-none"
-                                style={{ width: 18, height: 18, background: C.negative, color: C.white }}>↓</span>
+                              <span className="absolute rounded-full flex items-center justify-center fl-mono font-bold pointer-events-none"
+                                style={{ bottom: -10, left: -10, width: 26, height: 26, fontSize: 14, background: C.negative, color: C.white, boxShadow: `0 0 10px ${C.negative}bb`, border: `2px solid ${C.navy700}` }}>↓</span>
                             )}
                           </div>
                         </div>
@@ -8111,14 +8111,16 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
           <div className="mb-3">
             <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>BANQUILLO</div>
-            <div className="fl-row flex items-center justify-around gap-2 py-4 px-2">
+            <div className="fl-row flex items-center justify-around gap-4 py-4 px-2">
               {POSITIONS.map(pos => {
                 const id = bench[pos.key];
                 const p = id ? findPlayer(id) : null;
                 const isIn = id && swappedInIds.has(id);
                 return (
                   <div key={pos.key} className="relative">
-                    <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
+                    <div style={isIn ? { filter: `drop-shadow(0 0 10px ${C.positive}aa)` } : undefined}>
+                      <CourtSlot player={p} size={54} label={pos.label} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
+                    </div>
                     {p && (
                       <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                         style={{ background: C.navy900, color: isIn ? C.gold : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isIn ? C.gold : C.line}` }}>
@@ -8126,8 +8128,8 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       </span>
                     )}
                     {isIn && (
-                      <span className="absolute -bottom-1.5 -left-1.5 rounded-full flex items-center justify-center fl-mono text-[10px] font-bold pointer-events-none"
-                        style={{ width: 18, height: 18, background: C.positive, color: C.white }}>↑</span>
+                      <span className="absolute rounded-full flex items-center justify-center fl-mono font-bold pointer-events-none"
+                        style={{ bottom: -10, left: -10, width: 26, height: 26, fontSize: 14, background: C.positive, color: C.white, boxShadow: `0 0 10px ${C.positive}bb`, border: `2px solid ${C.navy700}` }}>↑</span>
                     )}
                   </div>
                 );
