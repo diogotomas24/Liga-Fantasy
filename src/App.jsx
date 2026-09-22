@@ -45,7 +45,7 @@ const BUDGET_TOTAL = 100; // millones (créditos Fantasy)
 // ".apps.googleusercontent.com". Instrucciones de cómo conseguirlo, en el
 // mensaje donde se entregó este cambio. Mientras esto no esté relleno, se
 // sigue usando el botón de Google de toda la vida (el que redirige fuera).
-const GOOGLE_CLIENT_ID = "";
+const GOOGLE_CLIENT_ID = "511146874418-4t9earv2bbu9c4gr7klh65jin725p00h.apps.googleusercontent.com";
 const MARKET_ASSET_COUNT = 8;
 const MAX_COACHES = 1;
 const MAX_SQUAD_JUGADORAS = 12; // plantilla máxima; solo 5 titulares + 3 banquillo son alineables
