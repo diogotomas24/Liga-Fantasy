@@ -2759,6 +2759,25 @@ function findCurrentJornada(jornadas) {
   return lastStarted;
 }
 
+// Jornada EN JUEGO ahora mismo (ya ha empezado y todavía no ha pasado el día
+// siguiente a su último partido), o null si no hay ninguna en juego.
+function findLiveJornada(jornadas) {
+  const list = jornadas || [];
+  const today = getEffectiveToday();
+  today.setHours(0, 0, 0, 0);
+  for (let i = list.length - 1; i >= 0; i--) {
+    const j = list[i];
+    if (!hasJornadaEffectivelyStarted(j)) continue;
+    const end = jornadaEndDate(j);
+    if (!end) return j;
+    const dayAfterEnd = new Date(end);
+    dayAfterEnd.setDate(dayAfterEnd.getDate() + 1);
+    dayAfterEnd.setHours(0, 0, 0, 0);
+    return today < dayAfterEnd ? j : null; // la última empezada: en juego o ya acabada
+  }
+  return null;
+}
+
 // Estado de la cláusula de una jugadora, visible para toda la liga: en ROJO
 // mientras está bloqueada (con los días que faltan, o la cuenta atrás
 // HH:MM:SS cuando queda menos de un día), y en VERDE en cuanto se abre.
@@ -7315,14 +7334,23 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
    CLASIFICACIÓN
    ========================================================================== */
 function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo, playoffState, favoritos, onToggleFavorite }) {
-  const [filterJornadaId, setFilterJornadaId] = useState(null); // null = "Total"
+  // undefined = automático: durante una jornada en juego se ve ESA jornada (con
+  // sus puntos en vivo); cuando acaba, la General hasta que empiece la
+  // siguiente. Si la persona elige algo a mano, se respeta su elección.
+  const [manualJornadaId, setManualJornadaId] = useState(undefined);
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
   const isPlayoffMode = playoffState && playoffState.phase !== "none";
   const jornadasIniciadas = startedJornadas(playoffService.regularJornadas(jornadas));
+  const liveJornada = findLiveJornada(playoffService.regularJornadas(jornadas));
+  const filterJornadaId = manualJornadaId !== undefined ? manualJornadaId
+    : (liveJornada && jornadasIniciadas.some((j) => j.id === liveJornada.id) ? liveJornada.id : null);
+  const setFilterJornadaId = setManualJornadaId;
   const rows = useMemo(() => rankingService.computeStandings(teams, players, jornadasIniciadas, leagueId, filterJornadaId), [teams, players, jornadasIniciadas, leagueId, filterJornadaId]);
-  const options = [{ id: null, label: "Total" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name }))];
-  const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "Total";
+  const options = [{ id: null, label: "General" }, ...[...jornadasIniciadas].reverse().map(j => ({ id: j.id, label: j.name, live: liveJornada?.id === j.id }))];
+  const currentLabel = options.find(o => o.id === filterJornadaId)?.label || "General";
+  const myRowNow = rows.find((r) => r.name === me);
+  const isLiveSelected = filterJornadaId != null && liveJornada?.id === filterJornadaId;
 
   // Filas de la clasificación de PLAYOFFS: activos en la ronda actual (con
   // puntos en vivo) + eliminados de rondas anteriores (transparentes, con el
@@ -7412,20 +7440,27 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
   return (
     <div>
       {jornadasIniciadas.length > 0 && (
-        <div className="relative mb-3" style={{ width: 150 }}>
+        <div className="relative mb-3 inline-block" style={{ minWidth: 150 }}>
           <button onClick={() => setOpen(o => !o)}
-            className="fl-tap w-full flex items-center justify-between gap-1.5 fl-body text-sm font-semibold rounded-md px-3 py-2"
+            className="fl-tap w-full flex items-center justify-between gap-2 fl-body text-sm font-semibold rounded-md px-3 py-2"
             style={{ background: C.baby, color: C.ink }}>
-            {currentLabel}
+            <span className="flex items-center gap-1.5 whitespace-nowrap">
+              {isLiveSelected && <span className="rounded-full animate-pulse" style={{ width: 7, height: 7, background: C.negative }} />}
+              {currentLabel}
+              {filterJornadaId != null && myRowNow && (
+                <span className="fl-mono text-xs font-bold rounded px-1.5 py-0.5" style={{ background: "rgba(10,15,26,0.18)" }}>{myRowNow.total} pts</span>
+              )}
+            </span>
             {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
           </button>
           {open && (
             <div className="absolute z-10 top-full left-0 mt-1 rounded-md overflow-hidden fl-pop" style={{ background: C.white, border: `1px solid ${C.line}`, minWidth: 150 }}>
               {options.map(o => (
                 <button key={o.id ?? "total"} onClick={() => { setFilterJornadaId(o.id); setOpen(false); }}
-                  className="fl-tap w-full text-left px-3 py-2 fl-body text-sm"
+                  className="fl-tap w-full text-left px-3 py-2 fl-body text-sm flex items-center gap-1.5"
                   style={{ color: C.ink, background: o.id === filterJornadaId ? C.babySoft : "transparent" }}>
                   {o.label}
+                  {o.live && <span className="fl-mono text-[9px] font-bold px-1 rounded" style={{ background: C.negative, color: C.white }}>EN JUEGO</span>}
                 </button>
               ))}
             </div>
