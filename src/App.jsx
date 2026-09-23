@@ -807,14 +807,14 @@ const WEEK_PLATEAU = 0.2; // a partir del día 6 se queda AQUÍ de forma sosteni
 //   ≤ 4  → partido MALO (baja)      5–7 → NORMAL (casi no se mueve)      ≥ 8 → BUENO (sube)
 const BAD_MAX_PTS = 4;
 const GOOD_MIN_PTS = 8;
-const GOOD_BASE = 0.012;             // partido bueno justo en 8 pts: +1,2% de empuje base
-const GOOD_PER_PT = 0.004;           // +0,4% por cada punto por encima de 8
-const BAD_BASE = -0.015;             // partido malo justo en 4 pts: -1,5% de empuje base
-const BAD_PER_PT = 0.005;            // -0,5% por cada punto por debajo de 4 (0 pts → -3,5%)
+const GOOD_BASE = 0.010;             // partido bueno justo en 8 pts: +1,0% de empuje base
+const GOOD_PER_PT = 0.002;           // +0,2% por cada punto por encima de 8
+const BAD_BASE = -0.010;             // partido malo justo en 4 pts: -1,0% de empuje base
+const BAD_PER_PT = 0.0025;           // -0,25% por cada punto por debajo de 4
 const BIG_GAME_PTS = 18;             // partidazo (≥18 pts) → empujón extra
-const BIG_GAME_BONUS = 0.012;
+const BIG_GAME_BONUS = 0.006;
 const VERY_BAD_PTS = 0;              // 0 o negativos → golpe extra
-const VERY_BAD_PENALTY = -0.01;
+const VERY_BAD_PENALTY = -0.005;
 // --- Entrenadoras/es ---
 // Se mueven por el RESULTADO de su equipo (el día del partido, de golpe) y,
 // cada día, por la demanda/hype del mercado igual que las jugadoras.
@@ -834,16 +834,20 @@ function gameCategory(pts) {
   if (pts <= BAD_MAX_PTS) return -1;
   return 0;
 }
-const DNP_PUSH = -0.035;             // su equipo jugó y ella no (sin estadística, no jugó o 0 minutos)
-const DOWN_MULT = 1.2;               // las bajadas pesan un 20% MÁS que una subida equivalente (antes pesaban un 35% menos)
-const BACK_TO_BACK_MULT = 1.4;       // 2 partidos buenos (o malos) seguidos → ×1,4 ...
-const BACK_TO_BACK_EXTRA = 0.01;     // ... y +1% extra en el mismo sentido
-const DAILY_MOVE_CAP = 0.13;         // tope de movimiento en un solo día: ±13%
+const DNP_PUSH = -0.02;              // su equipo jugó y ella no (sin estadística, no jugó o 0 minutos) = partido malo
+const DOWN_MULT = 1.1;               // las bajadas pesan un 10% más que una subida equivalente
+// TENDENCIA (se arrastra de un partido al siguiente):
+const TREND_CARRY = 0.55;            // mismo sentido (bueno→bueno / malo→malo): se suma el 55% del empuje anterior → sigue y acelera
+const TREND_KEEP_NORMAL = 0.45;      // partido normal: mantiene el 45% del empuje anterior → sigue en la misma dirección, pero menos
+const REVERSAL_GAME = 0.35;          // cambio de tendencia (malo→bueno / bueno→malo): solo cuenta el 35% del partido nuevo...
+const REVERSAL_PREV = 0.5;           // ...más el 50% del empuje anterior → sube poco o baja muy poco, y la tendencia cambia
+const WEEK_MOVE_SOFTCAP = 2.7;       // millones: el movimiento de un ciclo (≈ una semana) se suaviza hacia ±2,7 M como mucho
+const DAILY_MOVE_CAP = 0.08;         // tope de seguridad en un solo día: ±8%
 
-// Cuánto más duro es el golpe cuando baja una jugadora cara (hasta ×1,5).
+// Cuánto más duro es el golpe cuando baja una jugadora cara (hasta ×1,35).
 function expensiveDropFactor(priceM, avgPrice) {
   if (!avgPrice || !priceM || priceM <= avgPrice) return 1;
-  return 1 + Math.min(0.5, ((priceM - avgPrice) / avgPrice) * 0.35);
+  return 1 + Math.min(0.35, ((priceM - avgPrice) / avgPrice) * 0.3);
 }
 
 function daysBetweenDates(a, b) {
@@ -1477,7 +1481,7 @@ const marketPricingService = {
   // Los empujones pequeños que se recalculan todos los días.
   computeDailySmallFactors({ bidsForHer, totalTeams, opponentsAvgWinPct, lowMinutes, favoritesForHer }) {
     const demandConfidence = Math.min(1, bidsForHer / Math.max(1, 3 * totalTeams));
-    const demanda = demandConfidence * 0.012;
+    const demanda = demandConfidence * 0.006;
     let rivales = 0;
     if (opponentsAvgWinPct != null) {
       const diff = 0.5 - opponentsAvgWinPct;
@@ -1485,7 +1489,7 @@ const marketPricingService = {
     }
     const inactividad = lowMinutes ? -0.006 : 0; // no está jugando: goteo a la baja diario (antes -0,2%)
     const hypeConfidence = Math.min(1, favoritesForHer / Math.max(1, 0.5 * totalTeams));
-    const hype = hypeConfidence * 0.006;
+    const hype = hypeConfidence * 0.003;
     return demanda + rivales + inactividad + hype;
   },
 
@@ -1541,7 +1545,28 @@ const marketPricingService = {
     const cycle = player.marketCycle || {};
     if (cycle.lastPricedDate === ctx.todayStr) return null;
 
-    let { cycleStartDate = null, cycleBase = 0, streakCount = 0, pointsHistory = [], minutesHistory = [], lastDiff = null } = cycle;
+    let { cycleStartDate = null, cycleBase = 0, streakCount = 0, pointsHistory = [], minutesHistory = [], lastDiff = null, trend = null } = cycle;
+    if (trend == null) trend = Math.sign(cycleBase || 0); // datos antiguos: la tendencia es el signo del último empuje
+    // Combina el partido de hoy con la tendencia que traía:
+    //   bueno→bueno / malo→malo: sigue y acelera · normal: sigue igual pero menos
+    //   malo→bueno / bueno→malo: se mueve poco y la tendencia CAMBIA
+    const applyTrend = (gameBase, cat) => {
+      // Un partido bueno siempre empuja hacia arriba y uno malo hacia abajo,
+      // aunque los extras (resultado, tabla...) tiren en contra.
+      if (cat === 1) gameBase = Math.max(gameBase, 0.002);
+      else if (cat === -1) gameBase = Math.min(gameBase, -0.002);
+      let b;
+      if (cat === 0) b = TREND_KEEP_NORMAL * cycleBase + gameBase;
+      else if (trend === 0 || cat === trend) b = gameBase + TREND_CARRY * (cycleBase * cat > 0 ? cycleBase : 0);
+      else b = REVERSAL_GAME * gameBase + REVERSAL_PREV * cycleBase;
+      if (cat !== 0) trend = cat;
+      streakCount = cat === 0 ? streakCount : (Math.sign(cycleBase) === cat ? streakCount + 1 : 1);
+      // Regulado: el movimiento de todo el ciclo se suaviza hacia ±WEEK_MOVE_SOFTCAP millones.
+      const weekSum = WEEK_WEIGHTS.reduce((a, w) => a + w, 0) + WEEK_PLATEAU;
+      const euros = b * weekSum * priceNow;
+      const soft = WEEK_MOVE_SOFTCAP * Math.tanh(euros / WEEK_MOVE_SOFTCAP);
+      return priceNow > 0 ? soft / (weekSum * priceNow) : 0;
+    };
     const priceNow = player.basePrice || 1;
 
     const played = marketPricingService.findMatchOnDate(player, ctx.jornadas, ctx.todayStr);
@@ -1550,10 +1575,7 @@ const marketPricingService = {
     const teamMatch = !played ? marketPricingService.findTeamMatchOnDate(player, ctx.jornadas, ctx.todayStr) : null;
     const dnp = (played && (!played.stats.jugo && !(played.stats.minutos > 0))) || (!played && !!teamMatch);
     if (dnp) {
-      let base = DNP_PUSH * expensiveDropFactor(priceNow, ctx.avgPrice);
-      const wasBad = cycleBase < 0;
-      streakCount = wasBad ? streakCount + 1 : 1;
-      base *= marketPricingService.streakMultiplier(streakCount);
+      const base = applyTrend(DNP_PUSH * expensiveDropFactor(priceNow, ctx.avgPrice), -1);
       cycleStartDate = ctx.todayStr;
       cycleBase = base;
       lastDiff = -1; // cuenta como partido malo
@@ -1593,19 +1615,9 @@ const marketPricingService = {
       // todavía más si la jugadora es cara: si vale mucho y lo hace mal, cae fuerte.
       if (base < 0) base *= DOWN_MULT * expensiveDropFactor(priceNow, ctx.avgPrice);
 
-      // Racha por CATEGORÍA de partido (bueno ≥8 / malo ≤4). Un partido
-      // normal (5-7) corta la racha.
+      // Tendencia por CATEGORÍA de partido (bueno ≥8 / normal 5-7 / malo ≤4).
       const cat = gameCategory(swishPts);
-      const prevCat = lastDiff != null ? Math.sign(lastDiff) : Math.sign(cycleBase);
-      if (cat === 0) {
-        streakCount = 0;
-      } else {
-        streakCount = cat === prevCat ? streakCount + 1 : 1;
-        base *= marketPricingService.streakMultiplier(streakCount);
-        // Dos partidos BUENOS seguidos → subida fuerte. Dos MALOS → bajada fuerte.
-        if (cat === 1 && prevCat === 1 && base > 0) base = base * BACK_TO_BACK_MULT + BACK_TO_BACK_EXTRA;
-        else if (cat === -1 && prevCat === -1 && base < 0) base = base * BACK_TO_BACK_MULT - BACK_TO_BACK_EXTRA;
-      }
+      base = applyTrend(base, cat);
       lastDiff = cat;
 
       cycleStartDate = ctx.todayStr;
@@ -1627,7 +1639,7 @@ const marketPricingService = {
     let totalPush = weeklyPush + smallPush;
     totalPush = Math.max(-DAILY_MOVE_CAP, Math.min(DAILY_MOVE_CAP, totalPush));
 
-    const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastDiff, lastPricedDate: ctx.todayStr };
+    const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastDiff, trend, lastPricedDate: ctx.todayStr };
     // Si hoy no ha pasado nada de verdad (sin jornada, sin demanda, sin nada
     // que empuje el precio), no tocamos basePrice/prevBasePrice/historial —
     // así se conserva el último movimiento real (para el Top subidas/bajadas
