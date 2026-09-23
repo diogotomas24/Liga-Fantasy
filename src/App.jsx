@@ -835,7 +835,7 @@ function gameCategory(pts) {
   return 0;
 }
 const DNP_PUSH = -0.02;              // su equipo jugó y ella no (sin estadística, no jugó o 0 minutos) = partido malo
-const DOWN_MULT = 1.1;               // las bajadas pesan un 10% más que una subida equivalente
+const DOWN_MULT = 1.5;               // las bajadas pesan un 50% más que una subida equivalente (un pelín más agresivas)
 // TENDENCIA (se arrastra de un partido al siguiente):
 const TREND_CARRY = 0.7;             // mismo sentido (bueno→bueno / malo→malo): se suma el 70% del empuje anterior → sigue y acelera bastante
 const TREND_KEEP_NORMAL = 0.45;      // partido normal: mantiene el 45% del empuje anterior → sigue en la misma dirección, pero menos
@@ -2329,12 +2329,73 @@ async function readJornadas() {
         stats: statsByJornada[j.id] || {},
         lineups: j.lineups || {},
         mvpPlayerId: j.mvp_player_id || null,
-        playoffRound: j.playoff_round || null, // null | CUARTOS_IDA | CUARTOS_VUELTA | SEMIS | FINAL
+        // null | CUARTOS_IDA | CUARTOS_VUELTA | SEMIS | FINAL. Si en Supabase no
+        // está puesto, j90/j91/j92/j93 se tratan como cuartos ida, cuartos
+        // vuelta, semis y final.
+        playoffRound: j.playoff_round || defaultPlayoffRoundFor(j.id),
       }))
       .sort((a, b) => jornadaNumberFromName(a.name) - jornadaNumberFromName(b.name));
   } catch {
     return [];
   }
+}
+
+// Jornadas de playoffs ya creadas en Supabase (se juegan después de la J26).
+const PLAYOFF_JORNADA_IDS = { j90: "CUARTOS_IDA", j91: "CUARTOS_VUELTA", j92: "SEMIS", j93: "FINAL" };
+function defaultPlayoffRoundFor(id) {
+  return PLAYOFF_JORNADA_IDS[id] || null;
+}
+
+// Escribe en Supabase los cruces REALES de playoffs en las jornadas de
+// playoffs que ya existen (j90 cuartos ida, j91 vuelta, j92 semis, j93 final): cuartos en cuanto acaba la liga regular (1º-8º, 2º-7º,
+// 3º-6º, 4º-5º; la ida la juega en casa la peor clasificada y la vuelta la
+// mejor), semis en cuanto se deciden los cuartos y final en cuanto se
+// deciden las semis. Mantiene fecha y hora de cada fila; solo cambia los
+// equipos. Nunca toca un partido que ya tenga marcador. Devuelve true si
+// ha escrito algo.
+async function syncRealBracketToDb(jornadas) {
+  try {
+    if (!playoffService.regularSeasonFinished(jornadas)) return false;
+    const bracket = realBracketService.buildBracket(jornadas);
+    if (!bracket.ready) return false;
+    const hasScore = (p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null;
+    const plan = [];
+    const ida = jornadas.find((j) => j.playoffRound === "CUARTOS_IDA");
+    const vuelta = jornadas.find((j) => j.playoffRound === "CUARTOS_VUELTA");
+    const semis = jornadas.find((j) => j.playoffRound === "SEMIS");
+    const fin = jornadas.find((j) => j.playoffRound === "FINAL");
+    if (ida) plan.push([ida, bracket.cuartos.map((m) => [m.teamB, m.teamA])]);
+    if (vuelta) plan.push([vuelta, bracket.cuartos.map((m) => [m.teamA, m.teamB])]);
+    if (semis && bracket.semis.every((m) => m.teamA && m.teamB)) plan.push([semis, bracket.semis.map((m) => [m.teamA, m.teamB])]);
+    if (fin && bracket.final.teamA && bracket.final.teamB) plan.push([fin, [[bracket.final.teamA, bracket.final.teamB]]]);
+
+    let wrote = false;
+    for (const [jornada, pairs] of plan) {
+      const rows = jornada.partidos || [];
+      const baseFecha = rows.find((r) => r.fecha)?.fecha || null;
+      const baseHora = rows.find((r) => r.hora)?.hora || null;
+      for (let i = 0; i < pairs.length; i++) {
+        const [local, visitante] = pairs[i];
+        const row = rows[i];
+        if (row) {
+          if (hasScore(row)) continue;
+          if (row.local === local && row.visitante === visitante) continue;
+          const { error } = await supabase.from("partidos").update({ local, visitante }).eq("id", row.id).eq("jornada_id", jornada.id);
+          if (!error) wrote = true;
+        } else {
+          const { error } = await supabase.from("partidos").insert({ id: `${jornada.id}_m${i + 1}`, jornada_id: jornada.id, local, visitante, fecha: baseFecha, hora: baseHora });
+          if (!error) wrote = true;
+        }
+      }
+      // Filas de plantilla que sobran (p. ej. 7 partidos cuando en cuartos son 4), sin marcador: fuera.
+      for (const extra of rows.slice(pairs.length)) {
+        if (hasScore(extra)) continue;
+        const { error } = await supabase.from("partidos").delete().eq("id", extra.id).eq("jornada_id", jornada.id);
+        if (!error) wrote = true;
+      }
+    }
+    return wrote;
+  } catch { return false; }
 }
 
 // Guarda una jornada completa: cabecera + partidos (se reemplazan todos, es
@@ -3420,6 +3481,10 @@ export default function App() {
       for (const jornada of freshJ) {
         if (awarded.includes(jornada.id)) continue;
         if (!jornada.stats || Object.keys(jornada.stats).length < 5) continue;
+        // Solo cuando la jornada está COMPLETA (todos los marcadores puestos):
+        // antes se pagaba en cuanto había 5 estadísticas cargadas, con la
+        // jornada a medias, y el 5 ideal podía salir mal (y ya no se corregía).
+        if (!tripleFantasyService.isJornadaReady(jornada)) continue;
         const ideal = idealFiveService.compute(jornada, freshPlayers);
         if (!ideal) continue;
         const idealSet = new Set(ideal.playerIds);
@@ -3712,7 +3777,13 @@ export default function App() {
   const checkPlayoffProgress = useCallback(async () => {
     if (!activeLeagueId) return;
     try {
-      const [freshJornadas, freshPlayers, teamsMap] = await Promise.all([readJornadas(), readPlayers(), readAllTeams(activeLeagueId)]);
+      let [freshJornadas, freshPlayers, teamsMap] = await Promise.all([readJornadas(), readPlayers(), readAllTeams(activeLeagueId)]);
+      // Cruces reales de playoffs → se escriben en las jornadas de playoffs
+      // que ya existen en la base de datos (J27/J28...), según la clasificación.
+      if (await syncRealBracketToDb(freshJornadas)) {
+        freshJornadas = await readJornadas();
+        setJornadas((prev) => mergeJornadasPreservingLineups(freshJornadas, prev));
+      }
       let state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
       const todayStr = toDateStr(getEffectiveToday());
       let changed = false;
