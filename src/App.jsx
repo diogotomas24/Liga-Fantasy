@@ -4171,7 +4171,7 @@ export default function App() {
   // de un job programado en servidor; la resolución de la subasta y el descuento del
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
   const syncMarket = useCallback(async (leagueId, resetHour) => {
-    if (!leagueId || !resetHour || resolvingRef.current) return;
+    if (!leagueId || resetHour == null || resolvingRef.current) return;
     // En playoffs no hay mercado (se pasa a draft, sin dinero de por medio) —
     // sin este freno, el motor de mercado seguía rotando en segundo plano
     // aunque no se viera en pantalla, y de ahí salían avisos de favoritos
@@ -4201,7 +4201,22 @@ export default function App() {
       }
       const freshTeams = freshTeamsOrNull;
       const now = nowMs();
-      const window_ = marketService.computeWindow(resetHour, now);
+      // HORA FIJA DEL MERCADO DE ESTA LIGA, guardada en la propia liga la
+      // primera vez y ya nunca cambia: la hora a la que se creó la liga. Si la
+      // fila de la liga no trae fecha de creación, se usa la del primer equipo
+      // que entró (quien la creó) y, en último caso, la hora actual.
+      let leagueHour = await readShared(leagueKey(leagueId, "marketHour"), null);
+      if (!leagueHour || !/^\d{2}:\d{2}$/.test(leagueHour)) {
+        let hour = resetHour;
+        if (!hour) {
+          const teamTimes = Object.values(freshTeams).map((t) => t && t.createdAt).filter((v) => typeof v === "number" && v > 0);
+          const base = teamTimes.length ? new Date(Math.min(...teamTimes)) : new Date(now);
+          hour = base.toTimeString().slice(0, 5);
+        }
+        leagueHour = hour;
+        await writeShared(leagueKey(leagueId, "marketHour"), leagueHour);
+      }
+      const window_ = marketService.computeWindow(leagueHour, now);
 
       let teamsNext = freshTeams, bidsNext = freshBids, playersNext = freshPlayers, historyNext = freshHistory, activityNext = freshActivity;
       let marketNext = freshMarket;
@@ -4370,8 +4385,10 @@ export default function App() {
   // null y el mercado NO se genera: antes se usaba "08:00" de relleno en ese
   // instante y el primer mercado se quedaba con esa hora equivocada.
   const leagueCreatedDate = activeLeague ? parseLeagueCreatedAt(activeLeague.created_at) : null;
+  // "" = la liga no trae fecha de creación: syncMarket la saca de otro sitio
+  // (y la guarda para siempre en la propia liga). Nunca "08:00" de relleno.
   const marketResetHour = activeLeague
-    ? (leagueCreatedDate ? leagueCreatedDate.toTimeString().slice(0, 5) : "08:00")
+    ? (leagueCreatedDate ? leagueCreatedDate.toTimeString().slice(0, 5) : "")
     : null;
 
   // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
