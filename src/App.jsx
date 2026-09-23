@@ -962,9 +962,32 @@ const playoffService = {
     if (regular.length === 0) return false;
     const last = [...regular].sort((a, b) => jornadaNumberFromName(b.name) - jornadaNumberFromName(a.name))[0];
     const partidos = last.partidos || [];
-    return partidos.length > 0 && partidos.every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
+    return partidos.length > 0 && partidos.every((p) => isDescansoPartido(p) || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null));
   },
   findRoundJornadas(jornadas, playoffRound) { return (jornadas || []).filter((j) => j.playoffRound === playoffRound); },
+  // Jornadas que tiene sentido poder ver/navegar AHORA MISMO en Calendario y
+  // similares. Las de liga regular, siempre (el calendario completo se
+  // conoce desde el principio). Las de playoffs solo cuando ya toca: cuartos
+  // no aparecen hasta que la liga regular ha acabado de verdad, semis no
+  // hasta que cuartos estén decididos, y la final no hasta que semis lo
+  // estén — aunque la fila ya exista en la base de datos de antemano (por
+  // ejemplo, si se cargó con antelación para pruebas), no se enseña hasta
+  // que se sabe de verdad quién juega.
+  visibleJornadas(jornadas) {
+    const list = jornadas || [];
+    const regularDone = playoffService.regularSeasonFinished(list);
+    const bracket = realBracketService.buildBracket(list);
+    const cuartosDecided = bracket.ready && bracket.cuartos.every((m) => !!m.winner);
+    const semisDecided = cuartosDecided && bracket.semis.every((m) => !!m.winner);
+    return list.filter((j) => {
+      const fase = jornadaFase(j);
+      if (fase === "regular") return true;
+      if (fase === "cuartos") return regularDone;
+      if (fase === "semis") return regularDone && cuartosDecided;
+      if (fase === "final") return regularDone && semisDecided;
+      return true;
+    });
+  },
 
   // Jornada(s) que definen una ronda (cuartos son 2, semis y final 1 sola).
   jornadasForRound(jornadas, round) {
@@ -1005,7 +1028,7 @@ const playoffService = {
   roundHasResults(jornadas, round) {
     const js = playoffService.jornadasForRound(jornadas, round);
     if (js.length === 0) return false;
-    return js.every((j) => (j.partidos || []).length > 0 && (j.partidos || []).every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null));
+    return js.every((j) => (j.partidos || []).length > 0 && (j.partidos || []).every((p) => isDescansoPartido(p) || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null)));
   },
 
   // Reparto de un día de cuartos/semis: 2 vueltas, en el orden de
@@ -1134,6 +1157,13 @@ function jornadaFase(j) {
 }
 function jornadaLeg(j) {
   return j?.playoffRound === "CUARTOS_VUELTA" ? 2 : 1;
+}
+// "DESCANSA" no es un equipo real (es el hueco de quien no juega esa jornada,
+// porque la liga tiene un número impar de equipos) — el partido se marca
+// como acabado para que la jornada pueda cerrarse, pero nunca lleva un
+// marcador de verdad, así que en pantalla no se enseña ningún resultado.
+function isDescansoPartido(p) {
+  return p?.local === "DESCANSA" || p?.visitante === "DESCANSA";
 }
 
 const realBracketService = {
@@ -2759,7 +2789,7 @@ function JornadaStatusPill({ jornada, jornadas }) {
   // todavía no se haya escrito a mano en la jornada en sí) — se usa esa
   // versión para saber si ya está todo acabado, igual que en Calendario.
   const partidos = jornadas ? realBracketService.projectedPartidos(jornadas, jornada) : (jornada.partidos || []);
-  const allFinished = partidos.length > 0 && partidos.every((p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
+  const allFinished = partidos.length > 0 && partidos.every((p) => isDescansoPartido(p) || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null));
   if (allFinished) {
     return (
       <span className="fl-mono text-[10px] font-bold px-2.5 py-1 rounded-full" style={{ background: `${C.muted}22`, color: C.muted }}>ACABADA</span>
@@ -3185,20 +3215,6 @@ export default function App() {
         const lineups = { ...(jornada.lineups || {}) };
         let changed = false;
 
-        // En cuanto la jornada arranca, cualquier partido contra "DESCANSA"
-        // (el hueco de quien no juega esa jornada, porque la liga tiene un
-        // número impar de equipos) se da por finalizado solo, con empate
-        // técnico — nadie tiene que rellenar un marcador para un partido que
-        // no existe de verdad.
-        let partidos = jornada.partidos || [];
-        let partidosChanged = false;
-        partidos = partidos.map((p) => {
-          const isDescanso = p.local === "DESCANSA" || p.visitante === "DESCANSA";
-          const sinMarcador = p.marcadorLocal === "" || p.marcadorLocal == null || p.marcadorVisitante === "" || p.marcadorVisitante == null;
-          if (isDescanso && sinMarcador) { partidosChanged = true; return { ...p, marcadorLocal: 0, marcadorVisitante: 0 }; }
-          return p;
-        });
-
         Object.values(allTeams).forEach((t) => {
           const key = `${t.leagueId}::${t.name}`;
           if (lineups[key] || !t.lineup) return;
@@ -3211,11 +3227,11 @@ export default function App() {
           lineups[key] = debtLocked ? { ...t.lineup, debtLocked: true } : t.lineup;
           changed = true;
         });
-        if (changed || partidosChanged) {
-          const res = await writeJornada({ ...jornada, lineups, partidos });
+        if (changed) {
+          const res = await writeJornada({ ...jornada, lineups });
           if (res.ok) {
             anyChanged = true;
-            nextJ.push({ ...jornada, lineups, partidos });
+            nextJ.push({ ...jornada, lineups });
           } else {
             console.error("checkLineupLock: no se pudo guardar la jornada", jornada.id, res.error);
             nextJ.push(jornada); // no se guardó de verdad: no lo damos por bloqueado en pantalla
@@ -4741,7 +4757,8 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
         {partidos.length === 0 ? (
           <EmptyState title="Sin partidos" text="Todavía no hay partidos cargados para esta jornada." />
         ) : partidos.map((p) => {
-          const played = p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null;
+          const isDescanso = isDescansoPartido(p);
+          const played = isDescanso || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
           const started = hasJornadaEffectivelyStarted(jornada);
           const estado = played ? "FINALIZADO" : started ? "EN JUEGO" : "SIN EMPEZAR";
           return (
@@ -4751,7 +4768,9 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
                   <TeamCrest name={p.local} photo={teamCrests?.[p.local]} size={26} />
                   <span className="fl-body text-xs font-medium truncate" style={{ color: C.white }}>{p.local}</span>
                 </div>
-                <span className="fl-mono text-sm font-bold px-2" style={{ color: played ? C.white : C.muted }}>{played ? `${p.marcadorLocal} - ${p.marcadorVisitante}` : "vs"}</span>
+                <span className="fl-mono text-sm font-bold px-2" style={{ color: played && !isDescanso ? C.white : C.muted }}>
+                  {isDescanso ? "—" : played ? `${p.marcadorLocal} - ${p.marcadorVisitante}` : "vs"}
+                </span>
                 <div className="flex items-center gap-2 flex-1 min-w-0 justify-end">
                   <span className="fl-body text-xs font-medium truncate text-right" style={{ color: C.white }}>{p.visitante}</span>
                   <TeamCrest name={p.visitante} photo={teamCrests?.[p.visitante]} size={26} />
@@ -4800,7 +4819,7 @@ function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose })
       </div>
       <div className="px-4 py-3 flex items-center justify-center gap-4" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
         <div className="flex flex-col items-center gap-1"><TeamCrest name={partido.local} photo={teamCrests?.[partido.local]} size={30} /><span className="fl-mono text-[10px]" style={{ color: C.muted }}>{partido.local}</span></div>
-        <span className="fl-mono text-lg font-bold" style={{ color: C.white }}>{played ? `${partido.marcadorLocal} - ${partido.marcadorVisitante}` : "vs"}</span>
+        <span className="fl-mono text-lg font-bold" style={{ color: C.white }}>{isDescansoPartido(partido) ? "—" : played ? `${partido.marcadorLocal} - ${partido.marcadorVisitante}` : "vs"}</span>
         <div className="flex flex-col items-center gap-1"><TeamCrest name={partido.visitante} photo={teamCrests?.[partido.visitante]} size={30} /><span className="fl-mono text-[10px]" style={{ color: C.muted }}>{partido.visitante}</span></div>
       </div>
       <div className="flex-1 overflow-y-auto fl-scrollbar">
@@ -5677,8 +5696,9 @@ function groupPartidosByFecha(partidos) {
 // hora/"VS" en el centro.
 function PartidoRow({ m, teamCrests, jornada, players }) {
   const [showDetail, setShowDetail] = useState(false);
-  const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
-    m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
+  const isDescanso = isDescansoPartido(m);
+  const played = isDescanso || (m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" &&
+    m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "");
   return (
     <>
       <button onClick={() => setShowDetail(true)} className="fl-tap w-full text-left px-3 py-3 flex items-center gap-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
@@ -5689,7 +5709,7 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
         <div className="flex flex-col items-center px-1 flex-shrink-0" style={{ minWidth: 64 }}>
           {played ? (
             <>
-              <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>
+              {!isDescanso && <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</span>}
               <span className="fl-mono text-[9px] font-semibold flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-full" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
                 <CircleCheck size={10} /> FINALIZADO
               </span>
@@ -5769,7 +5789,8 @@ function PercentRing({ pct, color, size = 60, strokeWidth = 6 }) {
 // Supabase) y comparativa de estadísticas de equipo, sumando las
 // estadísticas de todas las jugadoras de cada equipo real esa jornada.
 function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose }) {
-  const played = m.marcadorLocal !== "" && m.marcadorLocal != null && m.marcadorVisitante !== "" && m.marcadorVisitante != null;
+  const isDescanso = isDescansoPartido(m);
+  const played = isDescanso || (m.marcadorLocal !== "" && m.marcadorLocal != null && m.marcadorVisitante !== "" && m.marcadorVisitante != null);
   const quarters = [
     [m.p1Local, m.p1Visitante], [m.p2Local, m.p2Visitante], [m.p3Local, m.p3Visitante], [m.p4Local, m.p4Visitante],
   ];
@@ -5819,7 +5840,7 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
               {hasQuarters && team.p.map((v, qi) => (
                 <span key={qi} className="fl-mono text-xs text-center" style={{ color: C.muted, width: 22 }}>{v !== "" && v != null ? v : "–"}</span>
               ))}
-              <span className="fl-mono text-xl font-bold text-right" style={{ color: team.color, width: 34 }}>{played ? team.score : "–"}</span>
+              <span className="fl-mono text-xl font-bold text-right" style={{ color: team.color, width: 34 }}>{isDescanso ? "" : played ? team.score : "–"}</span>
             </div>
           ))}
         </div>
@@ -5878,16 +5899,22 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
 // Calendario completo: pantalla a pantalla completa con una jornada por pestaña
 // (J1, J2…) y sus partidos agrupados por fecha, al estilo del calendario oficial.
 function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players }) {
+  // Solo se pueden ver/navegar las jornadas que ya tiene sentido conocer: las
+  // de liga regular siempre, y las de playoffs solo una vez que ya toca (ver
+  // playoffService.visibleJornadas) — así "Jornada 27 (cuartos)" no aparece
+  // como opción mientras todavía se está jugando la liga regular, ni semis
+  // antes de que cuartos esté decidido, etc.
+  const visible = playoffService.visibleJornadas(jornadas);
   // Sin useMemo a propósito: es un cálculo barato (un par de recorridos del
   // array de jornadas) y así se recalcula SIEMPRE con el array tal cual está
   // en este render, sin arriesgarse a quedarse con un índice obsoleto de un
   // render anterior si "jornadas" cambia de contenido sin cambiar de
   // referencia (por ejemplo, al añadirse una jornada nueva de playoffs).
-  const current = findCurrentJornada(jornadas);
-  const fallbackIdx = current ? jornadas.findIndex((j) => j.id === current.id) : Math.max(jornadas.length - 1, 0);
+  const current = findCurrentJornada(visible);
+  const fallbackIdx = current ? visible.findIndex((j) => j.id === current.id) : Math.max(visible.length - 1, 0);
   const [idx, setIdx] = useState(initialIndex ?? fallbackIdx);
-  useEffect(() => { setIdx(initialIndex ?? fallbackIdx); }, [jornadas.length]); // si cambia el número de jornadas disponibles, se vuelve a situar en la actual
-  const jornada = jornadas[idx];
+  useEffect(() => { setIdx(initialIndex ?? fallbackIdx); }, [visible.length]); // si cambia el número de jornadas disponibles, se vuelve a situar en la actual
+  const jornada = visible[idx];
   const partidos = useMemo(() => realBracketService.projectedPartidos(jornadas, jornada), [jornadas, jornada]);
   const grouped = useMemo(() => groupPartidosByFecha(partidos), [partidos]);
 
@@ -5900,7 +5927,7 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
       </div>
 
       <div className="flex gap-2 px-3 py-3 overflow-x-auto fl-scrollbar flex-shrink-0" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
-        {jornadas.map((j, i) => (
+        {visible.map((j, i) => (
           <button key={j.id} onClick={() => setIdx(i)}
             className="fl-tap flex-shrink-0 rounded-full flex items-center justify-center fl-mono text-xs font-semibold"
             style={{
@@ -9931,14 +9958,14 @@ function JornadaDetail({ jornada, players }) {
         ) : (
           <div className="space-y-1.5 mb-2.5">
             {partidos.map(m => {
-              const played = m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "";
+              const played = isDescansoPartido(m) || (m.marcadorLocal !== undefined && m.marcadorLocal !== null && m.marcadorLocal !== "" && m.marcadorVisitante !== undefined && m.marcadorVisitante !== null && m.marcadorVisitante !== "");
               return (
                 <div key={m.id} className="flex items-center gap-2 px-2.5 py-2 rounded-md" style={{ background: C.navy900, border: `1px solid ${C.lineSoft}` }}>
                   <div className="flex-1 min-w-0">
                     <div className="fl-body text-xs truncate" style={{ color: C.white }}>{m.local} <span style={{ color: C.muted }}>vs</span> {m.visitante}</div>
                     {(m.fecha || m.hora) && <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ")}</div>}
                   </div>
-                  {played && <div className="fl-mono text-xs font-bold flex-shrink-0" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</div>}
+                  {played && !isDescansoPartido(m) && <div className="fl-mono text-xs font-bold flex-shrink-0" style={{ color: C.white }}>{m.marcadorLocal} - {m.marcadorVisitante}</div>}
                 </div>
               );
             })}
