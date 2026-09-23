@@ -1714,13 +1714,20 @@ const marketPricingService = {
 
 // --- marketService -----------------------------------------------------------
 const marketService = {
+  hourOf(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  },
+  // Acepta "HH:MM" o "HH:MM:SS" (la hora de la liga se guarda con segundos
+  // para que el primer contador empiece exactamente en 23:59:59).
   parseHM(str) {
-    const [h, m] = (str || "00:00").split(":").map(Number);
-    return { h: h || 0, m: m || 0 };
+    const [h, m, sec] = (str || "00:00").split(":").map(Number);
+    return { h: h || 0, m: m || 0, s: sec || 0 };
   },
   atHour(dateBase, hm) {
     const d = new Date(dateBase);
-    d.setHours(hm.h, hm.m, 0, 0);
+    d.setHours(hm.h, hm.m, hm.s || 0, 0);
     return d.getTime();
   },
   // Ventana de mercado del nuevo modelo: el mercado está SIEMPRE abierto (no
@@ -4093,6 +4100,9 @@ export default function App() {
     const league = await createLeagueRow(name.trim(), profile.name);
     if (!league) return { ok: false, error: "No se pudo crear la liga. Inténtalo de nuevo." };
     await addMyLeagueId(league.id);
+    // Hora fija del mercado de esta liga: el momento EXACTO de creación, en el
+    // mismo reloj que usa el mercado → el primer contador arranca en 23:59:59.
+    await writeShared(leagueKey(league.id, "marketHourV2"), marketService.hourOf(nowMs()));
     setMyLeagues(prev => [...prev, league]);
     await selectLeague(league.id);
     return { ok: true, league };
@@ -4200,20 +4210,21 @@ export default function App() {
       }
       const freshTeams = freshTeamsOrNull;
       const now = nowMs();
-      // HORA FIJA DEL MERCADO DE ESTA LIGA, guardada en la propia liga la
-      // primera vez y ya nunca cambia: la hora a la que se creó la liga. Si la
-      // fila de la liga no trae fecha de creación, se usa la del primer equipo
-      // que entró (quien la creó) y, en último caso, la hora actual.
-      let leagueHour = await readShared(leagueKey(leagueId, "marketHour"), null);
-      if (!leagueHour || !/^\d{2}:\d{2}$/.test(leagueHour)) {
-        let hour = resetHour;
-        if (!hour) {
-          const teamTimes = Object.values(freshTeams).map((t) => t && t.createdAt).filter((v) => typeof v === "number" && v > 0);
-          const base = teamTimes.length ? new Date(Math.min(...teamTimes)) : new Date(now);
-          hour = base.toTimeString().slice(0, 5);
-        }
-        leagueHour = hour;
-        await writeShared(leagueKey(leagueId, "marketHour"), leagueHour);
+      // HORA FIJA DEL MERCADO DE ESTA LIGA ("HH:MM:SS"), guardada en la propia
+      // liga al crearla y ya nunca cambia. Se toma del MISMO reloj que usa el
+      // mercado (nowMs: real, o el simulado en modo pruebas). Antes se sacaba
+      // de created_at, que es la hora REAL: con el reloj de pruebas puesto en
+      // otra hora (p. ej. las 12:00 tras "Avanzar día"), el primer mercado de
+      // una liga recién creada a las 22:00 reales cerraba a las 22:00
+      // simuladas → contador de ~10 h en vez de 24 h.
+      let leagueHour = await readShared(leagueKey(leagueId, "marketHourV2"), null);
+      if (!leagueHour || !/^\d{2}:\d{2}(:\d{2})?$/.test(leagueHour)) {
+        // Ligas creadas antes de este cambio: sin modo pruebas se usa la hora
+        // real de creación; con modo pruebas, la hora actual del reloj simulado.
+        const simActive = __simAnchorSimMs != null;
+        const created = !simActive && resetHour ? resetHour : null;
+        leagueHour = created || marketService.hourOf(now);
+        await writeShared(leagueKey(leagueId, "marketHourV2"), leagueHour);
       }
       const window_ = marketService.computeWindow(leagueHour, now);
 
