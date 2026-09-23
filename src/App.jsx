@@ -2108,6 +2108,21 @@ function generateInviteCode() {
   return code;
 }
 
+// Fecha de creación de una liga como Date. La app la guarda en UTC
+// (toISOString, acabada en "Z"), pero si en Supabase la columna created_at es
+// "timestamp" SIN zona horaria, al leerla vuelve sin la "Z" y el navegador la
+// interpretaba como hora LOCAL: en España eso adelantaba el mercado 1-2 horas
+// (una liga creada a las 19:34 cambiaba el mercado a las 17:34). Si el texto
+// no trae zona horaria, se trata como UTC, que es como se guardó.
+function parseLeagueCreatedAt(createdAt) {
+  if (!createdAt) return null;
+  if (createdAt instanceof Date) return createdAt;
+  let str = String(createdAt).trim().replace(" ", "T");
+  if (!/([zZ]|[+-]\d\d(:?\d\d)?)$/.test(str)) str += "Z";
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 async function createLeagueRow(name, creatorName) {
   const id = uid("lg");
   const invite_code = generateInviteCode();
@@ -2977,6 +2992,7 @@ function CountdownChip({ closesAt, opensAt, isOpen }) {
     <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: closing ? C.negative : C.baby }}>
       <Clock size={13} className={closing ? "fl-pulse" : ""} />
       <span>{isOpen ? "Cierra en" : "Abre en"} {fmtHMS(Math.max(0, remaining))}</span>
+      <span className="text-[10px]" style={{ color: C.muted }}>· cambia a las {new Date(target).toTimeString().slice(0, 5)}</span>
     </div>
   );
 }
@@ -4353,8 +4369,9 @@ export default function App() {
   // Mientras la liga todavía no se ha cargado (p. ej. justo al crearla), es
   // null y el mercado NO se genera: antes se usaba "08:00" de relleno en ese
   // instante y el primer mercado se quedaba con esa hora equivocada.
+  const leagueCreatedDate = activeLeague ? parseLeagueCreatedAt(activeLeague.created_at) : null;
   const marketResetHour = activeLeague
-    ? (activeLeague.created_at ? new Date(activeLeague.created_at).toTimeString().slice(0, 5) : "08:00")
+    ? (leagueCreatedDate ? leagueCreatedDate.toTimeString().slice(0, 5) : "08:00")
     : null;
 
   // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
