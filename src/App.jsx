@@ -790,24 +790,62 @@ const idealFiveService = {
 
 // --- marketPricingService ----------------------------------------------------
 // Motor de precios "estilo bolsa" diseñado a medida (ver conversación de
-// diseño): cada jugadora (nunca entrenadoras/es, que siguen con su sistema
-// simple aparte) se revaloriza TODOS LOS DÍAS, haya jornada o no.
+// diseño): cada jugadora (las entrenadoras/es van aparte, ver
+// computeCoachDailyUpdate) se revaloriza TODOS LOS DÍAS, haya jornada o no.
 //
 // Cada día que se juega su partido, se calcula un "empuje base" grande (una
 // sola vez), que luego se REPARTE a lo largo de la semana con más fuerza el
 // día siguiente (el "pico") y decreciendo hasta quedarse plano si todavía no
 // ha vuelto a jugar. Encima de eso, cada día se suman empujones pequeños
-// (demanda de mercado, dificultad de próximos rivales, inactividad, hype),
-// y todo el conjunto se amortigua si la jugadora ya es muy cara (>85M), para
-// que las caras no se disparen tanto en euros como las baratas.
-const MARKET_BRAKE_THRESHOLD = 85; // millones: a partir de aquí empieza a frenar
+// (demanda de mercado, dificultad de próximos rivales, inactividad, hype).
+// Sin freno para las caras: pueden subir y bajar sin límite de precio.
 const WEEK_WEIGHTS = [0.5, 1.0, 0.7, 0.5, 0.35, 0.25]; // día 0 (el propio partido) modesto, día 1 el PICO, y decreciendo con suavidad
 const WEEK_PLATEAU = 0.2; // a partir del día 6 se queda AQUÍ de forma sostenida (no en 0): si no hay partido nuevo cerca, el impulso sigue empujando varios días más en vez de apagarse de golpe — así una buena racha sin rivales cerca puede seguir subiendo un buen rato antes de estabilizarse
 
-function marketBrakeFactor(priceM) {
-  if (!priceM || priceM <= MARKET_BRAKE_THRESHOLD) return 1;
-  return Math.min(1, Math.pow(MARKET_BRAKE_THRESHOLD / priceM, 2));
+// --- Ajustes de agresividad (v24) ---
+// Escala FIJA de puntos Fantasy de un partido (la misma para todas):
+//   ≤ 4  → partido MALO (baja)      5–7 → NORMAL (casi no se mueve)      ≥ 8 → BUENO (sube)
+const BAD_MAX_PTS = 4;
+const GOOD_MIN_PTS = 8;
+const GOOD_BASE = 0.012;             // partido bueno justo en 8 pts: +1,2% de empuje base
+const GOOD_PER_PT = 0.004;           // +0,4% por cada punto por encima de 8
+const BAD_BASE = -0.015;             // partido malo justo en 4 pts: -1,5% de empuje base
+const BAD_PER_PT = 0.005;            // -0,5% por cada punto por debajo de 4 (0 pts → -3,5%)
+const BIG_GAME_PTS = 18;             // partidazo (≥18 pts) → empujón extra
+const BIG_GAME_BONUS = 0.012;
+const VERY_BAD_PTS = 0;              // 0 o negativos → golpe extra
+const VERY_BAD_PENALTY = -0.01;
+// --- Entrenadoras/es ---
+// Se mueven por el RESULTADO de su equipo (el día del partido, de golpe) y,
+// cada día, por la demanda/hype del mercado igual que las jugadoras.
+const COACH_MIN_PRICE = 0.8;         // nunca por debajo de 800.000 €
+const COACH_WIN_BASE = 0.12;         // victoria: +120.000 € ...
+const COACH_WIN_PER_STREAK = 0.05;   // ... +50.000 € por cada victoria seguida más ...
+const COACH_WIN_RIVAL = 0.05;        // ... hasta +50.000 € según lo bueno que sea el rival ...
+const COACH_WIN_MAX = 0.30;          // ... tope +300.000 €
+const COACH_LOSS_BASE = 0.07;        // derrota: -70.000 € ...
+const COACH_LOSS_PER_STREAK = 0.02;  // ... -20.000 € más por cada derrota seguida ...
+const COACH_LOSS_PRICE = 0.04;       // ... hasta -40.000 € más cuanto más vale (a partir de ~10,8 M el máximo) ...
+const COACH_LOSS_MAX = 0.15;         // ... tope -150.000 €
+
+// Categoría de un partido según sus puntos: 1 bueno, 0 normal, -1 malo.
+function gameCategory(pts) {
+  if (pts >= GOOD_MIN_PTS) return 1;
+  if (pts <= BAD_MAX_PTS) return -1;
+  return 0;
 }
+const DNP_PUSH = -0.035;             // su equipo jugó y ella no (sin estadística, no jugó o 0 minutos)
+const DOWN_MULT = 1.2;               // las bajadas pesan un 20% MÁS que una subida equivalente (antes pesaban un 35% menos)
+const BACK_TO_BACK_MULT = 1.4;       // 2 partidos buenos (o malos) seguidos → ×1,4 ...
+const BACK_TO_BACK_EXTRA = 0.01;     // ... y +1% extra en el mismo sentido
+const DAILY_MOVE_CAP = 0.13;         // tope de movimiento en un solo día: ±13%
+
+// Cuánto más duro es el golpe cuando baja una jugadora cara (hasta ×1,5).
+function expensiveDropFactor(priceM, avgPrice) {
+  if (!avgPrice || !priceM || priceM <= avgPrice) return 1;
+  return 1 + Math.min(0.5, ((priceM - avgPrice) / avgPrice) * 0.35);
+}
+
 function daysBetweenDates(a, b) {
   const da = new Date(a + "T00:00:00"), db = new Date(b + "T00:00:00");
   return Math.round((db - da) / (24 * 3600 * 1000));
@@ -1365,6 +1403,21 @@ const marketPricingService = {
     return null;
   },
 
+  // ¿Su equipo jugó (con marcador) en esa fecha, aunque ella no tenga estadística?
+  findTeamMatchOnDate(player, jornadas, dateStr) {
+    for (const jornada of jornadas || []) {
+      for (const partido of jornada.partidos || []) {
+        if (isDescansoPartido(partido)) continue;
+        if (partido.local !== player.team && partido.visitante !== player.team) continue;
+        const d = parseFechaDDMMYYYY(partido.fecha);
+        if (!d || toDateStr(d) !== dateStr) continue;
+        if (!tripleFantasyService.matchWinner(partido)) continue;
+        return { jornada, partido };
+      }
+    }
+    return null;
+  },
+
   // El empuje "grande", una sola vez, el día de su partido. Todos los
   // factores son simétricos a propósito (lo bueno empuja para arriba tanto
   // como lo malo empuja para abajo) — antes varios de ellos (posición en la
@@ -1381,7 +1434,16 @@ const marketPricingService = {
     // pesan más del doble que antes, y cada extra pesa bastante menos, para
     // que ninguna combinación de extras pueda invertir una diferencia clara
     // de rendimiento.
-    const puntosFactor = ((stats.puntos || 0) - leagueAvgPoints) * 0.0022;
+    // Escala fija: ≤4 malo, 5-7 normal, ≥8 bueno (ver GOOD_MIN_PTS / BAD_MAX_PTS).
+    const pts = stats.puntos || 0;
+    let puntosFactor = 0;
+    if (pts >= GOOD_MIN_PTS) puntosFactor = GOOD_BASE + (pts - GOOD_MIN_PTS) * GOOD_PER_PT;
+    else if (pts <= BAD_MAX_PTS) puntosFactor = BAD_BASE - (BAD_MAX_PTS - pts) * BAD_PER_PT;
+    if (pts >= BIG_GAME_PTS) puntosFactor += BIG_GAME_BONUS;
+    else if (pts <= VERY_BAD_PTS) puntosFactor += VERY_BAD_PENALTY;
+    // En un partido NORMAL (5-7) los extras (resultado, tabla, minutos...) se
+    // quedan a la mitad: el precio apenas se mueve.
+    const extrasScale = pts >= GOOD_MIN_PTS || pts <= BAD_MAX_PTS ? 1 : 0.5;
     let resultadoFactor = 0;
     if (won === true) resultadoFactor = 0.0012 * (1 + (opponentWinPct - 0.5));
     else if (won === false) resultadoFactor = -0.0012 * (1 + (0.5 - opponentWinPct));
@@ -1391,14 +1453,15 @@ const marketPricingService = {
     const mvpPartidoFactor = isMvpPartido ? 0.0025 : 0;
     const minutosFactor = minutesJump ? 0.0008 : (minutesDrop ? -0.0008 : 0);
     const consistenciaFactor = isConsistentGood ? 0.0015 : (isConsistentBad ? -0.0015 : 0);
-    return puntosFactor + resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor;
+    return puntosFactor + (resultadoFactor + posicionFactor + mvpPartidoFactor + minutosFactor + consistenciaFactor) * extrasScale;
   },
 
   // Multiplicador de racha (caliente si encadena empujes positivos, fría si
   // encadena negativos). Tope ×1,25 en ambos sentidos.
   streakMultiplier(streakCount) {
-    if (!streakCount || streakCount <= 0) return 1;
-    return Math.min(1.25, 1 + 0.05 * streakCount);
+    // 1 partido: ×1 · 2 seguidos: ×1,12 · 3: ×1,24 ... tope ×1,6
+    if (!streakCount || streakCount <= 1) return 1;
+    return Math.min(1.6, 1 + 0.12 * (streakCount - 1));
   },
 
   // Cuánto pesa hoy el empuje base fijado el día de su último partido: baja
@@ -1420,7 +1483,7 @@ const marketPricingService = {
       const diff = 0.5 - opponentsAvgWinPct;
       rivales = diff >= 0 ? diff * 0.015 : diff * 0.0001; // rivales fuertes: casi no penaliza
     }
-    const inactividad = lowMinutes ? -0.002 : 0;
+    const inactividad = lowMinutes ? -0.006 : 0; // no está jugando: goteo a la baja diario (antes -0,2%)
     const hypeConfidence = Math.min(1, favoritesForHer / Math.max(1, 0.5 * totalTeams));
     const hype = hypeConfidence * 0.006;
     return demanda + rivales + inactividad + hype;
@@ -1428,15 +1491,75 @@ const marketPricingService = {
 
   // Punto de entrada: calcula el precio de HOY para una jugadora, o null si
   // no hay que tocarla (es entrenadora/or, o ya se actualizó hoy).
+  // Precio diario de una entrenadora/or: resultado del partido (victoria sube
+  // 120k-300k, derrota baja 70k-150k, más con rachas y, al bajar, más cuanto
+  // más vale) + los mismos empujones diarios de mercado que las jugadoras.
+  computeCoachDailyUpdate(player, ctx) {
+    const cycle = player.marketCycle || {};
+    if (cycle.lastPricedDate === ctx.todayStr) return null;
+    let coachStreak = cycle.coachStreak || 0; // +N victorias seguidas / -N derrotas seguidas
+    const price = player.basePrice || COACH_MIN_PRICE;
+    let resultDelta = 0; // en millones
+
+    const match = marketPricingService.findTeamMatchOnDate(player, ctx.jornadas, ctx.todayStr);
+    if (match) {
+      const { partido } = match;
+      const winner = tripleFantasyService.matchWinner(partido);
+      const isLocal = partido.local === player.team;
+      const won = (winner === "local") === isLocal;
+      if (won) {
+        coachStreak = coachStreak > 0 ? coachStreak + 1 : 1;
+        const opponent = isLocal ? partido.visitante : partido.local;
+        const oppWinPct = ctx.standings[opponent]?.winPct ?? 0.5;
+        resultDelta = Math.min(COACH_WIN_MAX, COACH_WIN_BASE + COACH_WIN_PER_STREAK * (coachStreak - 1) + COACH_WIN_RIVAL * oppWinPct);
+      } else {
+        coachStreak = coachStreak < 0 ? coachStreak - 1 : -1;
+        const priceExtra = COACH_LOSS_PRICE * Math.min(1, Math.max(0, price - COACH_MIN_PRICE) / 10);
+        resultDelta = -Math.min(COACH_LOSS_MAX, COACH_LOSS_BASE + COACH_LOSS_PER_STREAK * (-coachStreak - 1) + priceExtra);
+      }
+    }
+
+    const opponentsAvg = marketPricingService.nextTwoOpponentsAvgWinPct(player.team, ctx.jornadas, ctx.todayStr, ctx.standings);
+    const smallPush = marketPricingService.computeDailySmallFactors({
+      bidsForHer: ctx.bidsMap[player.id] || 0, totalTeams: ctx.totalTeams, opponentsAvgWinPct: opponentsAvg,
+      lowMinutes: false, favoritesForHer: ctx.favoritesMap[player.id] || 0,
+    });
+
+    const nextCycle = { ...cycle, coachStreak, lastPricedDate: ctx.todayStr };
+    const newPrice = Math.max(COACH_MIN_PRICE, price * (1 + smallPush) + resultDelta);
+    if (Math.abs(newPrice - price) < 1e-9) return { marketCycle: nextCycle };
+    return {
+      basePrice: newPrice,
+      prevBasePrice: player.basePrice,
+      priceHistory: [...(player.priceHistory || []), { date: ctx.todayStr, value: newPrice }].slice(-60),
+      marketCycle: nextCycle,
+    };
+  },
+
   computeDailyUpdate(player, ctx) {
-    if (player.position === "DT") return null;
+    if (player.position === "DT") return marketPricingService.computeCoachDailyUpdate(player, ctx);
     const cycle = player.marketCycle || {};
     if (cycle.lastPricedDate === ctx.todayStr) return null;
 
-    let { cycleStartDate = null, cycleBase = 0, streakCount = 0, pointsHistory = [], minutesHistory = [] } = cycle;
+    let { cycleStartDate = null, cycleBase = 0, streakCount = 0, pointsHistory = [], minutesHistory = [], lastDiff = null } = cycle;
+    const priceNow = player.basePrice || 1;
 
     const played = marketPricingService.findMatchOnDate(player, ctx.jornadas, ctx.todayStr);
-    if (played) {
+    // Su equipo jugó hoy (con marcador) pero ella no: sin estadística, marcada
+    // como que no jugó, o 0 minutos → baja, y más cuanto más cara es.
+    const teamMatch = !played ? marketPricingService.findTeamMatchOnDate(player, ctx.jornadas, ctx.todayStr) : null;
+    const dnp = (played && (!played.stats.jugo && !(played.stats.minutos > 0))) || (!played && !!teamMatch);
+    if (dnp) {
+      let base = DNP_PUSH * expensiveDropFactor(priceNow, ctx.avgPrice);
+      const wasBad = cycleBase < 0;
+      streakCount = wasBad ? streakCount + 1 : 1;
+      base *= marketPricingService.streakMultiplier(streakCount);
+      cycleStartDate = ctx.todayStr;
+      cycleBase = base;
+      lastDiff = -1; // cuenta como partido malo
+      pointsHistory = [...pointsHistory, 0].slice(-5);
+      minutesHistory = [...minutesHistory, 0].slice(-4);
+    } else if (played) {
       const { jornada, partido, stats, winner } = played;
       const isLocal = partido.local === player.team;
       const won = (winner === "local") === isLocal;
@@ -1459,22 +1582,31 @@ const marketPricingService = {
       const recentPts = [...pointsHistory, swishPts].slice(-4);
       const avgRecent = recentPts.reduce((a, b) => a + b, 0) / recentPts.length;
       const variance = recentPts.reduce((a, b) => a + Math.pow(b - avgRecent, 2), 0) / recentPts.length;
-      const isConsistentGood = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent > leagueAvg;
-      const isConsistentBad = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent < leagueAvg;
+      const isConsistentGood = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent >= GOOD_MIN_PTS;
+      const isConsistentBad = recentPts.length >= 4 && Math.sqrt(variance) < 6 && avgRecent <= BAD_MAX_PTS;
 
       let base = marketPricingService.computeBigPush({
         stats: { ...stats, puntos: swishPts }, leagueAvgPoints: leagueAvg, teamRank: standing.rank, totalTeams: ctx.totalTeams,
         opponentWinPct: oppStanding.winPct, won, isMvpPartido: !!stats.mvp, minutesJump, minutesDrop, isConsistentGood, isConsistentBad,
       });
-      // Sube rápido, baja algo más despacio: un partido malo suelto no debe
-      // pesar tanto como pesaría uno igual de bueno — pero si se encadenan
-      // varios partidos malos seguidos, la racha (más abajo) sigue
-      // amplificando el golpe con normalidad, así que de verdad baja.
-      if (base < 0) base *= 0.65;
+      // Las bajadas ahora pesan MÁS que las subidas (antes al revés), y
+      // todavía más si la jugadora es cara: si vale mucho y lo hace mal, cae fuerte.
+      if (base < 0) base *= DOWN_MULT * expensiveDropFactor(priceNow, ctx.avgPrice);
 
-      const sameSignAsBefore = (base >= 0 && cycleBase >= 0) || (base < 0 && cycleBase < 0);
-      streakCount = sameSignAsBefore ? streakCount + 1 : 1;
-      base *= marketPricingService.streakMultiplier(streakCount);
+      // Racha por CATEGORÍA de partido (bueno ≥8 / malo ≤4). Un partido
+      // normal (5-7) corta la racha.
+      const cat = gameCategory(swishPts);
+      const prevCat = lastDiff != null ? Math.sign(lastDiff) : Math.sign(cycleBase);
+      if (cat === 0) {
+        streakCount = 0;
+      } else {
+        streakCount = cat === prevCat ? streakCount + 1 : 1;
+        base *= marketPricingService.streakMultiplier(streakCount);
+        // Dos partidos BUENOS seguidos → subida fuerte. Dos MALOS → bajada fuerte.
+        if (cat === 1 && prevCat === 1 && base > 0) base = base * BACK_TO_BACK_MULT + BACK_TO_BACK_EXTRA;
+        else if (cat === -1 && prevCat === -1 && base < 0) base = base * BACK_TO_BACK_MULT - BACK_TO_BACK_EXTRA;
+      }
+      lastDiff = cat;
 
       cycleStartDate = ctx.todayStr;
       cycleBase = base;
@@ -1493,9 +1625,9 @@ const marketPricingService = {
     });
 
     let totalPush = weeklyPush + smallPush;
-    totalPush *= marketBrakeFactor(player.basePrice || 1);
+    totalPush = Math.max(-DAILY_MOVE_CAP, Math.min(DAILY_MOVE_CAP, totalPush));
 
-    const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastPricedDate: ctx.todayStr };
+    const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastDiff, lastPricedDate: ctx.todayStr };
     // Si hoy no ha pasado nada de verdad (sin jornada, sin demanda, sin nada
     // que empuje el precio), no tocamos basePrice/prevBasePrice/historial —
     // así se conserva el último movimiento real (para el Top subidas/bajadas
@@ -3378,7 +3510,9 @@ export default function App() {
       const { standings } = marketPricingService.computeStandings(freshJornadas);
       const bidsMap = await readAllBidsGlobal();
       const favoritesMap = await readFavoritesGlobalCounts();
-      const ctx = { todayStr, jornadas: freshJornadas, players: freshPlayers, standings, totalTeams, bidsMap, favoritesMap };
+      const jugadorasPrices = freshPlayers.filter((p) => p.position !== "DT").map((p) => p.basePrice || 0).filter((v) => v > 0);
+      const avgPrice = jugadorasPrices.length ? jugadorasPrices.reduce((a, b) => a + b, 0) / jugadorasPrices.length : 10;
+      const ctx = { todayStr, jornadas: freshJornadas, players: freshPlayers, standings, totalTeams, bidsMap, favoritesMap, avgPrice };
 
       const updates = [];
       freshPlayers.forEach((p) => {
@@ -3401,7 +3535,7 @@ export default function App() {
           if (basePlayer && basePlayer.position !== "DT") {
             const existing = updates.find((u) => u.id === mvpId);
             const currentPrice = existing ? existing.basePrice : basePlayer.basePrice;
-            const bump = currentPrice * 0.007 * marketBrakeFactor(currentPrice);
+            const bump = currentPrice * 0.007;
             const newPrice = currentPrice + bump;
             if (existing) {
               existing.basePrice = newPrice;
