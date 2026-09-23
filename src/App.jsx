@@ -544,7 +544,7 @@ const auctionService = {
   },
   upsertBid(bids, { marketId, assetId, userId, amount }) {
     const existingIdx = bids.findIndex(b => b.marketId === marketId && b.assetId === assetId && b.userId === userId && b.status === "active");
-    const now = nowMs();
+    const now = realNowMs();
     if (existingIdx >= 0) {
       const next = [...bids];
       next[existingIdx] = { ...next[existingIdx], amount, createdAt: now };
@@ -576,7 +576,7 @@ const auctionService = {
       const team = nextTeams[winner.userId] || teamService.emptyTeam();
       nextTeams[winner.userId] = teamService.addAsset(team, asset, winner.amount);
       results.push({ assetId, winnerUserId: winner.userId, amount: winner.amount, bidCount: candidates.length });
-      activityEntries.push({ id: uid("act"), ts: nowMs(), type: "fichaje", userId: winner.userId, assetId, amount: winner.amount });
+      activityEntries.push({ id: uid("act"), ts: realNowMs(), type: "fichaje", userId: winner.userId, assetId, amount: winner.amount });
     });
 
     const historyEntry = { id: market.id, closesAt: market.closesAt, opensAt: market.opensAt, results };
@@ -646,7 +646,7 @@ const offerService = {
     return { ok: true };
   },
   create(offers, { fromUser, toUser, assetId, amount }) {
-    return [...offers, { id: uid("of"), fromUser, toUser, assetId, amount, createdAt: nowMs(), status: "pending" }];
+    return [...offers, { id: uid("of"), fromUser, toUser, assetId, amount, createdAt: realNowMs(), status: "pending" }];
   },
   setStatus(offers, offerId, status) {
     return offers.map(o => o.id === offerId ? { ...o, status } : o);
@@ -799,16 +799,16 @@ const idealFiveService = {
 // ha vuelto a jugar. Encima de eso, cada día se suman empujones pequeños
 // (demanda de mercado, dificultad de próximos rivales, inactividad, hype).
 // Sin freno para las caras: pueden subir y bajar sin límite de precio.
-const WEEK_WEIGHTS = [0.5, 1.0, 0.7, 0.5, 0.35, 0.25]; // día 0 (el propio partido) modesto, día 1 el PICO, y decreciendo con suavidad
-const WEEK_PLATEAU = 0.2; // a partir del día 6 se queda AQUÍ de forma sostenida (no en 0): si no hay partido nuevo cerca, el impulso sigue empujando varios días más en vez de apagarse de golpe — así una buena racha sin rivales cerca puede seguir subiendo un buen rato antes de estabilizarse
+const WEEK_WEIGHTS = [0.6, 1.0, 0.85, 0.7, 0.55, 0.45]; // día 0 (el propio partido), día 1 el PICO, y bajando despacio (más movimiento sostenido durante la semana)
+const WEEK_PLATEAU = 0.3; // a partir del día 6 se queda AQUÍ de forma sostenida (no en 0): si no hay partido nuevo cerca, el impulso sigue empujando varios días más en vez de apagarse de golpe — así una buena racha sin rivales cerca puede seguir subiendo un buen rato antes de estabilizarse
 
 // --- Ajustes de agresividad (v24) ---
 // Escala FIJA de puntos Fantasy de un partido (la misma para todas):
 //   ≤ 4  → partido MALO (baja)      5–7 → NORMAL (casi no se mueve)      ≥ 8 → BUENO (sube)
 const BAD_MAX_PTS = 4;
 const GOOD_MIN_PTS = 8;
-const GOOD_BASE = 0.013;             // partido bueno justo en 8 pts: +1,3% de empuje base
-const GOOD_PER_PT = 0.0027;          // +0,27% por cada punto por encima de 8
+const GOOD_BASE = 0.009;             // partido bueno justo en 8 pts: +0,9% de empuje base
+const GOOD_PER_PT = 0.0032;          // +0,32% por cada punto por encima de 8 (los partidazos suben mucho más que uno justito)
 const BAD_BASE = -0.010;             // partido malo justo en 4 pts: -1,0% de empuje base
 const BAD_PER_PT = 0.0025;           // -0,25% por cada punto por debajo de 4
 const BIG_GAME_PTS = 18;             // partidazo (≥18 pts) → empujón extra
@@ -837,12 +837,11 @@ function gameCategory(pts) {
 const DNP_PUSH = -0.02;              // su equipo jugó y ella no (sin estadística, no jugó o 0 minutos) = partido malo
 const DOWN_MULT = 1.1;               // las bajadas pesan un 10% más que una subida equivalente
 // TENDENCIA (se arrastra de un partido al siguiente):
-const TREND_CARRY = 0.55;            // mismo sentido (bueno→bueno / malo→malo): se suma el 55% del empuje anterior → sigue y acelera
+const TREND_CARRY = 0.7;             // mismo sentido (bueno→bueno / malo→malo): se suma el 70% del empuje anterior → sigue y acelera bastante
 const TREND_KEEP_NORMAL = 0.45;      // partido normal: mantiene el 45% del empuje anterior → sigue en la misma dirección, pero menos
 const REVERSAL_GAME = 0.5;           // cambio de tendencia (malo→bueno / bueno→malo): cuenta el 50% del partido nuevo...
 const REVERSAL_PREV = 0.4;           // ...más el 40% del empuje anterior → se mueve poco, pero SIEMPRE en el sentido del partido nuevo
-const WEEK_MOVE_SOFTCAP_UP = 3.0;    // millones: al subir, el movimiento de un ciclo (≈ una semana) se suaviza hacia +3 M como mucho
-const WEEK_MOVE_SOFTCAP_DOWN = 2.7;  // al bajar, hacia -2,7 M como mucho
+const DAILY_SOFTCAP_M = 2.6;         // millones: el movimiento de UN DÍA se suaviza hacia ±2,6 M (nunca pasa de ~2-3 M en un día)
 const DAILY_MOVE_CAP = 0.08;         // tope de seguridad en un solo día: ±8%
 
 // Cuánto más duro es el golpe cuando baja una jugadora cara (hasta ×1,35).
@@ -906,6 +905,11 @@ function getEffectiveToday() {
 // Usar SIEMPRE esto en vez de Date.now() para cualquier cosa que deba
 // respetar el modo pruebas.
 function nowMs() { return getEffectiveToday().getTime(); }
+// Reloj REAL, siempre. El simulador solo acelera el JUEGO (jornadas, precios,
+// alineaciones, cláusulas...); todo lo que es "de verdad" va con esta hora:
+// la hora fija del mercado de cada liga y su cuenta atrás, pujas, ofertas,
+// notificaciones y fechas de historial/actividad.
+function realNowMs() { return Date.now(); }
 
 // --- realStandingsService ------------------------------------------------
 // Clasificación de los equipos REALES (no de fantasy), con el criterio de
@@ -1593,12 +1597,7 @@ const marketPricingService = {
       else if (cat === -1) b = Math.min(b, 0.2 * gameBase);
       if (cat !== 0) trend = cat;
       streakCount = cat === 0 ? streakCount : (Math.sign(cycleBase) === cat ? streakCount + 1 : 1);
-      // Regulado: el movimiento de todo el ciclo se suaviza hacia ±WEEK_MOVE_SOFTCAP millones.
-      const weekSum = WEEK_WEIGHTS.reduce((a, w) => a + w, 0) + WEEK_PLATEAU;
-      const euros = b * weekSum * priceNow;
-      const cap = euros >= 0 ? WEEK_MOVE_SOFTCAP_UP : WEEK_MOVE_SOFTCAP_DOWN;
-      const soft = cap * Math.tanh(euros / cap);
-      return priceNow > 0 ? soft / (weekSum * priceNow) : 0;
+      return b;
     };
     const priceNow = player.basePrice || 1;
 
@@ -1693,6 +1692,12 @@ const marketPricingService = {
 
     let totalPush = weeklyPush + smallPush;
     totalPush = Math.max(-DAILY_MOVE_CAP, Math.min(DAILY_MOVE_CAP, totalPush));
+    // Regulado por DÍA: el movimiento en euros de hoy se suaviza hacia ±2,6 M.
+    {
+      const eurosToday = totalPush * priceNow;
+      const softToday = DAILY_SOFTCAP_M * Math.tanh(eurosToday / DAILY_SOFTCAP_M);
+      totalPush = priceNow > 0 ? softToday / priceNow : 0;
+    }
 
     const nextCycle = { cycleStartDate, cycleBase, streakCount, pointsHistory, minutesHistory, lastDiff, trend, processedMatches, lastPricedDate: ctx.todayStr };
     // Si hoy no ha pasado nada de verdad (sin jornada, sin demanda, sin nada
@@ -1735,7 +1740,7 @@ const marketService = {
   // liga (la hora a la que se creó), se cierra, se reparten las pujas
   // ganadas, y se abre uno nuevo con jugadoras distintas al instante.
   // "resetHour" es un texto "HH:MM".
-  computeWindow(resetHour, now = nowMs()) {
+  computeWindow(resetHour, now = realNowMs()) {
     const reset = marketService.parseHM(resetHour);
     const todayReset = marketService.atHour(now, reset);
     const closesAt = now < todayReset ? todayReset : todayReset + 24 * 3600 * 1000;
@@ -2990,8 +2995,8 @@ function BidStatusPill({ status }) {
 }
 
 function CountdownChip({ closesAt, opensAt, isOpen }) {
-  const [now, setNow] = useState(nowMs());
-  useEffect(() => { const t = setInterval(() => setNow(nowMs()), 1000); return () => clearInterval(t); }, []);
+  const [now, setNow] = useState(realNowMs());
+  useEffect(() => { const t = setInterval(() => setNow(realNowMs()), 1000); return () => clearInterval(t); }, []);
   const target = isOpen ? closesAt : opensAt;
   const remaining = target - now;
   const closing = isOpen && remaining < 5 * 60 * 1000;
@@ -3442,7 +3447,7 @@ export default function App() {
         // vea cuánto se ha cobrado (o no) por el 5 ideal de esa jornada.
         await Promise.all(Object.entries(activityByLeague).map(async ([leagueId, entries]) => {
           const freshActivity = await readShared(leagueKey(leagueId, "activity"), []);
-          const withIds = entries.map((e) => ({ id: uid("act"), ts: nowMs(), ...e }));
+          const withIds = entries.map((e) => ({ id: uid("act"), ts: realNowMs(), ...e }));
           const nextActivity = [...withIds, ...freshActivity].slice(0, 60);
           await writeShared(leagueKey(leagueId, "activity"), nextActivity);
           if (leagueId === activeLeagueId) setActivity(nextActivity);
@@ -3695,7 +3700,7 @@ export default function App() {
   // aparte, dentro de syncMarket.
   const logActivity = useCallback(async (entry) => {
     const freshActivity = await readShared(leagueKey(activeLeagueId, "activity"), activity);
-    const nextActivity = [{ id: uid("act"), ts: nowMs(), ...entry }, ...freshActivity].slice(0, 60);
+    const nextActivity = [{ id: uid("act"), ts: realNowMs(), ...entry }, ...freshActivity].slice(0, 60);
     await writeShared(leagueKey(activeLeagueId, "activity"), nextActivity);
     setActivity(nextActivity);
   }, [activeLeagueId, activity]);
@@ -3819,7 +3824,7 @@ export default function App() {
         const nextDraftDay = state.draftDay + 1;
         picks.forEach(({ userName, playerId }) => {
           nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-          nextLog.push({ round, day: state.draftDay, userName, playerId, ts: nowMs() });
+          nextLog.push({ round, day: state.draftDay, userName, playerId, ts: realNowMs() });
         });
 
         // Viernes (5º día) ya cerrado: quien siga incompleta, reparto forzoso.
@@ -3836,7 +3841,7 @@ export default function App() {
             const catchUpPicks = playoffService.catchUpAllocation({ order: state.qualifiers, squadsSoFar: nextSquads, sortedPoolIds: sortedIds, targetSize });
             catchUpPicks.forEach(({ userName, playerId }) => {
               nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-              nextLog.push({ round, day: nextDraftDay, userName, playerId, ts: nowMs(), forced: true });
+              nextLog.push({ round, day: nextDraftDay, userName, playerId, ts: realNowMs(), forced: true });
             });
           }
         }
@@ -3896,7 +3901,7 @@ export default function App() {
           const nextLog = [...state.log];
           picks.forEach(({ userName, playerId }) => {
             nextSquads[userName] = [...(nextSquads[userName] || []), playerId];
-            nextLog.push({ round: "FINAL", day: 0, userName, playerId, ts: nowMs() });
+            nextLog.push({ round: "FINAL", day: 0, userName, playerId, ts: realNowMs() });
           });
           state = { ...state, squads: { ...state.squads, FINAL: nextSquads }, log: nextLog };
           changed = true;
@@ -3942,7 +3947,7 @@ export default function App() {
   const savePlayoffLineup = useCallback(async (round, lineup) => {
     if (!activeLeagueId || !profile) return { ok: false, error: "Sin sesión." };
     const state = await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState());
-    const nextLineups = { ...state.lineups, [round]: { ...(state.lineups[round] || {}), [profile.name]: { ...lineup, savedAt: nowMs() } } };
+    const nextLineups = { ...state.lineups, [round]: { ...(state.lineups[round] || {}), [profile.name]: { ...lineup, savedAt: realNowMs() } } };
     const nextState = { ...state, lineups: nextLineups };
     await writeShared(leagueKey(activeLeagueId, "playoffState"), nextState);
     setPlayoffState(nextState);
@@ -4022,7 +4027,7 @@ export default function App() {
   // esa liga sea la "activa" en ese momento (p. ej. desde Mis Ligas).
   const logActivityFor = useCallback(async (leagueId, entry) => {
     const freshActivity = await readShared(leagueKey(leagueId, "activity"), []);
-    const nextActivity = [{ id: uid("act"), ts: nowMs(), ...entry }, ...freshActivity].slice(0, 60);
+    const nextActivity = [{ id: uid("act"), ts: realNowMs(), ...entry }, ...freshActivity].slice(0, 60);
     await writeShared(leagueKey(leagueId, "activity"), nextActivity);
     if (leagueId === activeLeagueId) setActivity(nextActivity);
   }, [activeLeagueId]);
@@ -4102,7 +4107,7 @@ export default function App() {
     await addMyLeagueId(league.id);
     // Hora fija del mercado de esta liga: el momento EXACTO de creación, en el
     // mismo reloj que usa el mercado → el primer contador arranca en 23:59:59.
-    await writeShared(leagueKey(league.id, "marketHourV2"), marketService.hourOf(nowMs()));
+    await writeShared(leagueKey(league.id, "marketHourV3"), marketService.hourOf(realNowMs()));
     setMyLeagues(prev => [...prev, league]);
     await selectLeague(league.id);
     return { ok: true, league };
@@ -4209,22 +4214,16 @@ export default function App() {
         return;
       }
       const freshTeams = freshTeamsOrNull;
-      const now = nowMs();
-      // HORA FIJA DEL MERCADO DE ESTA LIGA ("HH:MM:SS"), guardada en la propia
-      // liga al crearla y ya nunca cambia. Se toma del MISMO reloj que usa el
-      // mercado (nowMs: real, o el simulado en modo pruebas). Antes se sacaba
-      // de created_at, que es la hora REAL: con el reloj de pruebas puesto en
-      // otra hora (p. ej. las 12:00 tras "Avanzar día"), el primer mercado de
-      // una liga recién creada a las 22:00 reales cerraba a las 22:00
-      // simuladas → contador de ~10 h en vez de 24 h.
-      let leagueHour = await readShared(leagueKey(leagueId, "marketHourV2"), null);
+      const now = realNowMs();
+      // HORA FIJA DEL MERCADO DE ESTA LIGA ("HH:MM:SS"): la hora REAL a la que
+      // se creó la liga. Se guarda en la liga y ya nunca cambia; el simulador
+      // no la toca. (Las versiones anteriores la calculaban con el reloj del
+      // simulador y la movían: por eso se guarda con otra clave nueva.)
+      let leagueHour = await readShared(leagueKey(leagueId, "marketHourV3"), null);
       if (!leagueHour || !/^\d{2}:\d{2}(:\d{2})?$/.test(leagueHour)) {
-        // Ligas creadas antes de este cambio: sin modo pruebas se usa la hora
-        // real de creación; con modo pruebas, la hora actual del reloj simulado.
-        const simActive = __simAnchorSimMs != null;
-        const created = !simActive && resetHour ? resetHour : null;
-        leagueHour = created || marketService.hourOf(now);
-        await writeShared(leagueKey(leagueId, "marketHourV2"), leagueHour);
+        // resetHour = hora real de created_at de la liga ("" si no la trae).
+        leagueHour = resetHour || marketService.hourOf(realNowMs());
+        await writeShared(leagueKey(leagueId, "marketHourV3"), leagueHour);
       }
       const window_ = marketService.computeWindow(leagueHour, now);
 
@@ -4356,7 +4355,7 @@ export default function App() {
           // Registra en Actividad a quien haya ganado premio (0 € no se registra).
           const wonEntries = Object.entries(teamCredits).filter(([, amount]) => amount > 0);
           if (wonEntries.length > 0) {
-            const tripleActivity = wonEntries.map(([userName, amount]) => ({ id: uid("act"), ts: nowMs(), type: "triple", userId: userName, amount }));
+            const tripleActivity = wonEntries.map(([userName, amount]) => ({ id: uid("act"), ts: realNowMs(), type: "triple", userId: userName, amount }));
             activityNext = [...tripleActivity, ...activityNext].slice(0, 60);
             await writeShared(leagueKey(leagueId, "activity"), activityNext);
           }
@@ -4398,7 +4397,7 @@ export default function App() {
   // "" = la liga no trae fecha de creación: syncMarket la saca de otro sitio
   // (y la guarda para siempre en la propia liga). Nunca "08:00" de relleno.
   const marketResetHour = activeLeague
-    ? (leagueCreatedDate ? leagueCreatedDate.toTimeString().slice(0, 5) : "")
+    ? (leagueCreatedDate ? marketService.hourOf(leagueCreatedDate.getTime()) : "")
     : null;
 
   // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
@@ -4438,8 +4437,8 @@ export default function App() {
     // Fuerza el cierre del mercado actual de esta liga, si lo hay y sigue sin resolver.
     if (activeLeagueId) {
       const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
-      if (freshMarket && !freshMarket.resolved && nowMs() < freshMarket.closesAt) {
-        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
+      if (freshMarket && !freshMarket.resolved && realNowMs() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: realNowMs() - 1000 });
       }
       await syncMarket(activeLeagueId, marketResetHour);
     }
@@ -4498,8 +4497,8 @@ export default function App() {
 
     if (activeLeagueId) {
       const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), null);
-      if (freshMarket && !freshMarket.resolved && nowMs() < freshMarket.closesAt) {
-        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
+      if (freshMarket && !freshMarket.resolved && realNowMs() < freshMarket.closesAt) {
+        await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: realNowMs() - 1000 });
       }
       await syncMarket(activeLeagueId, marketResetHour);
     }
@@ -4564,7 +4563,7 @@ export default function App() {
   const marketClosesAt = market?.closesAt || null;
   useEffect(() => {
     if (!activeLeagueId || !marketClosesAt) return;
-    const wait = marketClosesAt - nowMs();
+    const wait = marketClosesAt - realNowMs();
     if (wait > 24 * 3600 * 1000) return;
     const timers = [300, 3000, 8000].map((extra) =>
       setTimeout(() => syncMarket(activeLeagueId, marketResetHour), Math.max(0, wait) + extra));
@@ -4579,7 +4578,7 @@ export default function App() {
   const budgetAvailable = profile ? auctionService.availableBudget(myTeam, bids, market?.id, profile.name) : BUDGET_TOTAL;
   const budgetCommitted = profile ? auctionService.committedByUser(bids, market?.id, profile.name) : 0;
 
-  const isMarketOpen = market ? (nowMs() >= market.opensAt && nowMs() < market.closesAt) : false;
+  const isMarketOpen = market ? (realNowMs() >= market.opensAt && realNowMs() < market.closesAt) : false;
 
   const saveLineup = useCallback(async (lineup) => {
     setSaving(true);
@@ -4587,7 +4586,7 @@ export default function App() {
     // mercado se resuelve (o cualquier otra persona guarda algo) al mismo tiempo,
     // esa operación vive en otra clave y no puede perderse por esta escritura.
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
-    const nextTeam = { ...fresh, lineup: { ...lineup, savedAt: nowMs() } };
+    const nextTeam = { ...fresh, lineup: { ...lineup, savedAt: realNowMs() } };
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
     setSaving(false);
@@ -4606,7 +4605,7 @@ export default function App() {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
     const team = (await readTeam(activeLeagueId, profile.name)) || teamService.emptyTeam();
-    const open = freshMarket && nowMs() >= freshMarket.opensAt && nowMs() < freshMarket.closesAt;
+    const open = freshMarket && realNowMs() >= freshMarket.opensAt && realNowMs() < freshMarket.closesAt;
     const check = auctionService.validateBid({ team, players, asset, amount, marketOpen: open, bids: freshBids, marketId: freshMarket?.id, userId: profile.name });
     if (!check.ok) return check;
     const nextBids = auctionService.upsertBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name, amount });
@@ -4618,7 +4617,7 @@ export default function App() {
   const withdrawBid = useCallback(async (asset) => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
-    const open = freshMarket && nowMs() >= freshMarket.opensAt && nowMs() < freshMarket.closesAt;
+    const open = freshMarket && realNowMs() >= freshMarket.opensAt && realNowMs() < freshMarket.closesAt;
     if (!open) return { ok: false, error: "El mercado está cerrado ahora mismo." };
     const nextBids = auctionService.withdrawBid(freshBids, { marketId: freshMarket.id, assetId: asset.id, userId: profile.name });
     await writeShared(leagueKey(activeLeagueId, "bids"), nextBids);
@@ -4671,7 +4670,7 @@ export default function App() {
     const fresh = await readTeam(activeLeagueId, profile.name) || teamService.emptyTeam();
     const entry = teamService.getSquadEntry(fresh, assetId);
     if (!entry?.saleOffer) return { ok: false, error: "Esta jugadora ya no tiene una oferta activa." };
-    if (entry.saleOffer.expiresAt && nowMs() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
+    if (entry.saleOffer.expiresAt && realNowMs() > entry.saleOffer.expiresAt) return { ok: false, error: "La oferta ha caducado." };
     const amount = entry.saleOffer.amount;
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
@@ -4724,7 +4723,7 @@ export default function App() {
     const nextTeam = { ...fresh, budgetSpent: (fresh.budgetSpent || 0) + TRIPLE_ENTRY_FEE };
     const nextEntries = [...freshEntries, {
       id: uid("tf"), jornadaId, userId: profile.name, picks, mvpChoice, mvpOptions,
-      paidAt: nowMs(), settled: false, correct: null, mvpCorrect: null, prize: null,
+      paidAt: realNowMs(), settled: false, correct: null, mvpCorrect: null, prize: null,
     }];
     await Promise.all([
       writeTeam(activeLeagueId, profile.name, nextTeam),
@@ -4793,7 +4792,7 @@ export default function App() {
   const forceResolveMarket = useCallback(async () => {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     if (!freshMarket) return;
-    await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: nowMs() - 1000 });
+    await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: realNowMs() - 1000 });
     await syncMarket(activeLeagueId, marketResetHour);
   }, [market, syncMarket, activeLeagueId, marketResetHour]);
 
@@ -9360,7 +9359,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
   const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length
-    + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || nowMs() <= e.saleOffer.expiresAt)).length;
+    + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || realNowMs() <= e.saleOffer.expiresAt)).length;
   const sentOffersCount = (offers || []).filter(o => o.status === "pending" && o.fromUser === profile.name).length;
 
   if (clauseTarget) {
@@ -9470,7 +9469,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
               <div>
                 <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS DE LA LIGA</div>
                 {(() => {
-                  const misOfertasLiga = (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || nowMs() <= e.saleOffer.expiresAt));
+                  const misOfertasLiga = (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || realNowMs() <= e.saleOffer.expiresAt));
                   if (misOfertasLiga.length === 0) {
                     return <EmptyState compact title="Sin ofertas de la liga" text="Cuando pongas una jugadora en venta, la oferta que te haga la liga aparecerá aquí." />;
                   }
