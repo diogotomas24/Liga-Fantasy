@@ -2992,7 +2992,6 @@ function CountdownChip({ closesAt, opensAt, isOpen }) {
     <div className="flex items-center gap-1.5 fl-mono text-xs" style={{ color: closing ? C.negative : C.baby }}>
       <Clock size={13} className={closing ? "fl-pulse" : ""} />
       <span>{isOpen ? "Cierra en" : "Abre en"} {fmtHMS(Math.max(0, remaining))}</span>
-      <span className="text-[10px]" style={{ color: C.muted }}>· cambia a las {new Date(target).toTimeString().slice(0, 5)}</span>
     </div>
   );
 }
@@ -4545,6 +4544,21 @@ export default function App() {
     const t = setInterval(() => syncMarket(activeLeagueId, marketResetHour), 15000);
     return () => clearInterval(t);
   }, [activeLeagueId, marketResetHour, syncMarket]);
+
+  // Justo cuando la cuenta atrás llega a 0: se resuelve el mercado AL
+  // INSTANTE (pujas ganadas, fichajes, avisos, jugadoras nuevas, ofertas de
+  // la liga por las que estén en venta...) en vez de esperar al siguiente
+  // ciclo de 15 s. Se reintenta un par de veces por si en ese mismo segundo
+  // ya había otra sincronización en marcha.
+  const marketClosesAt = market?.closesAt || null;
+  useEffect(() => {
+    if (!activeLeagueId || !marketClosesAt) return;
+    const wait = marketClosesAt - nowMs();
+    if (wait > 24 * 3600 * 1000) return;
+    const timers = [300, 3000, 8000].map((extra) =>
+      setTimeout(() => syncMarket(activeLeagueId, marketResetHour), Math.max(0, wait) + extra));
+    return () => timers.forEach(clearTimeout);
+  }, [activeLeagueId, marketClosesAt, marketResetHour, syncMarket]);
 
   const myTeam = profile ? (teams[profile.name] || teamService.emptyTeam()) : teamService.emptyTeam();
   const mySquadIds = useMemo(() => teamService.squadIds(myTeam), [myTeam]);
