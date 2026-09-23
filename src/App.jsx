@@ -526,7 +526,11 @@ const auctionService = {
   validateBid({ team, players, asset, amount, marketOpen, bids, marketId, userId }) {
     if (!marketOpen) return { ok: false, error: "El mercado está cerrado ahora mismo." };
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (amount < Math.max(1, asset.basePrice || 1)) return { ok: false, error: `La puja mínima es ${fmtCredits(asset.basePrice || 1)}.` };
+    // Se compara en EUROS redondeados (lo que ve el usuario en pantalla): el precio
+    // interno en millones puede llevar más decimales que los euros mostrados, y
+    // pujar "justo el mínimo" daba error por unos céntimos de diferencia.
+    const minBidEuros = Math.round((asset.basePrice || 0) * 1000000);
+    if (Math.round(amount * 1000000) < minBidEuros) return { ok: false, error: `La puja mínima es ${fmtCredits(asset.basePrice || 0)}.` };
     const owned = new Set(teamService.squadIds(team));
     if (owned.has(asset.id)) return { ok: false, error: "Ya la tienes en tu plantilla." };
     if (asset.position === "DT") {
@@ -596,7 +600,7 @@ const clauseService = {
     }
     const clause = entry.clause || asset.basePrice || 1; // valor de cláusula guardado (sube con el mercado y al pagar por subirla)
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (amount < clause) return { ok: false, error: `Debes igualar o superar la cláusula: ${fmtCredits(clause)}.` };
+    if (Math.round(amount * 1000000) < Math.round(clause * 1000000)) return { ok: false, error: `Debes igualar o superar la cláusula: ${fmtCredits(clause)}.` };
     if (asset.position === "DT") {
       if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
     } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
@@ -629,7 +633,7 @@ const offerService = {
     const entry = teamService.getSquadEntry(sellerTeam, asset.id);
     if (!entry) return { ok: false, error: "Esta jugadora ya no pertenece a esa plantilla." };
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Introduce un importe válido." };
-    if (amount < (asset.basePrice || 0)) return { ok: false, error: `La oferta no puede ser menor que su valor actual: ${fmtCredits(asset.basePrice || 0)}.` };
+    if (Math.round(amount * 1000000) < Math.round((asset.basePrice || 0) * 1000000)) return { ok: false, error: `La oferta no puede ser menor que su valor actual: ${fmtCredits(asset.basePrice || 0)}.` };
     if (asset.position === "DT") {
       if (!teamService.hasRoomForCoach(buyerTeam, players)) return { ok: false, error: "Ya tienes entrenadora/or. Libérala primero." };
     } else if (!teamService.hasRoomForSquad(buyerTeam, players)) {
@@ -664,6 +668,17 @@ const tripleFantasyService = {
     const ln = Number(l), vn = Number(v);
     if (ln === vn) return null; // empate: no cuenta como partido resuelto (raro en baloncesto)
     return ln > vn ? "local" : "visitante";
+  },
+  // En un partido contra "DESCANSA", el lado que cuenta como ganador en el
+  // Triple es siempre el equipo real (nunca DESCANSA). null si no es descanso.
+  byeSide(partido) {
+    if (!isDescansoPartido(partido)) return null;
+    return partido.local === "DESCANSA" ? "visitante" : "local";
+  },
+  // Ganador a efectos de la quiniela: descanso → el equipo real (acierto
+  // automático); resto de partidos → el del marcador.
+  tripleWinner(partido) {
+    return tripleFantasyService.byeSide(partido) || tripleFantasyService.matchWinner(partido);
   },
   // Puntos Fantasy totales de cada jugadora en UNA jornada concreta.
   jornadaPointsByPlayer(jornada, players) {
@@ -706,7 +721,7 @@ const tripleFantasyService = {
   isJornadaReady(jornada) {
     const partidos = jornada?.partidos || [];
     if (partidos.length === 0 || !jornada.stats || Object.keys(jornada.stats).length === 0) return false;
-    return partidos.every(p => tripleFantasyService.matchWinner(p) !== null);
+    return partidos.every(p => tripleFantasyService.tripleWinner(p) !== null);
   },
   // Top 7 candidatas a MVP: por puntos Fantasy acumulados hasta la fecha: si
   // todavía nadie tiene puntos (inicio de temporada), se ordena por valor de
@@ -727,8 +742,8 @@ const tripleFantasyService = {
     const partidos = jornada.partidos || [];
     let correct = 0;
     partidos.forEach(p => {
-      const actual = tripleFantasyService.matchWinner(p);
-      const pick = entry.picks?.[p.id];
+      const actual = tripleFantasyService.tripleWinner(p);
+      const pick = entry.picks?.[p.id] || tripleFantasyService.byeSide(p); // descanso: acierto siempre
       if (actual && pick && actual === pick) correct++;
     });
     const mvpCorrect = entry.mvpChoice === "otra"
@@ -2684,8 +2699,9 @@ function CourtSlot({ player, onClick, size = 78, label, isCaptain = false, teamC
           <div className="fl-body font-bold truncate" style={{ color: C.white, fontSize: Math.max(10, Math.round(width * 0.13)) }}>{player.name}</div>
         </div>
       </div>
-      <div className="fl-mono text-[9px] mt-1 flex items-center gap-1" style={{ color: C.muted }}>
-        <Coins size={9} color={C.gold} /> {fmtCredits(player.basePrice || 0)}
+      <div className="fl-mono text-[9px] mt-1 flex items-center justify-center gap-1 whitespace-nowrap font-semibold"
+        style={{ color: C.gold, minWidth: "max-content" }}>
+        <Coins size={9} color={C.gold} className="shrink-0" /> <span>{fmtCredits(player.basePrice || 0).replace(" €", "\u00A0€")}</span>
       </div>
     </button>
   );
@@ -5973,7 +5989,9 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
 
   const mvpCandidates = useMemo(() => tripleFantasyService.computeMvpCandidates(players, jornadas), [players, jornadas]);
   const partidos = jornada?.partidos || [];
-  const allPicked = partidos.length > 0 && partidos.every(p => picks[p.id]) && !!mvpChoice;
+  const allPicked = partidos.length > 0 && partidos.every(p => picks[p.id] || tripleFantasyService.byeSide(p)) && !!mvpChoice;
+  // Una vez empezada la jornada ya no se puede entrar al Triple.
+  const jornadaStarted = !!jornada && hasJornadaEffectivelyStarted(jornada);
 
   // Historial: tus participaciones de OTRAS jornadas (no la que se ve ahora mismo).
   const pastEntries = useMemo(() => {
@@ -6016,8 +6034,8 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
                     )}
                     <div className="space-y-1">
                       {jPartidos.map(p => {
-                        const winner = tripleFantasyService.matchWinner(p);
-                        const pick = entry.picks?.[p.id];
+                        const winner = tripleFantasyService.tripleWinner(p);
+                        const pick = entry.picks?.[p.id] || tripleFantasyService.byeSide(p);
                         const hit = winner && pick && winner === pick;
                         const pickName = pick === "local" ? p.local : pick === "visitante" ? p.visitante : "—";
                         return (
@@ -6070,8 +6088,8 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
           <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>TUS PRONÓSTICOS</div>
           <div className="space-y-1.5">
             {partidos.map(p => {
-              const winner = tripleFantasyService.matchWinner(p);
-              const pick = myEntry.picks?.[p.id];
+              const winner = tripleFantasyService.tripleWinner(p);
+              const pick = myEntry.picks?.[p.id] || tripleFantasyService.byeSide(p);
               const hit = winner && pick && winner === pick;
               const pickName = pick === "local" ? p.local : pick === "visitante" ? p.visitante : "—";
               return (
@@ -6108,9 +6126,26 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
 
   const togglePick = (partidoId, side) => setPicks(prev => ({ ...prev, [partidoId]: side }));
 
+  if (jornadaStarted) {
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        <div className="flex items-center justify-between px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
+          <button onClick={onClose} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
+          <span className="fl-display text-base uppercase" style={{ color: C.white }}>🏀 Triple Fabtasy</span>
+          <button onClick={() => setShowHistory(true)} className="fl-tap p-1.5 -mr-1"><Clock size={20} color={C.muted} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+          <EmptyState title={`Jornada ${jornadaNumber} en juego`} text="La jornada ya ha empezado, así que el Triple Fabtasy está cerrado. Podrás participar en la siguiente jornada antes de que arranque." />
+        </div>
+      </div>
+    );
+  }
+
   const submit = async () => {
     setError(""); setBusy(true);
-    const res = await onJoin(jornada.id, picks, mvpChoice, mvpCandidates.map(p => p.id));
+    const finalPicks = { ...picks };
+    partidos.forEach(p => { const bye = tripleFantasyService.byeSide(p); if (bye) finalPicks[p.id] = bye; });
+    const res = await onJoin(jornada.id, finalPicks, mvpChoice, mvpCandidates.map(p => p.id));
     setBusy(false);
     if (!res.ok) setError(res.error);
   };
@@ -6139,7 +6174,15 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
 
         <div className="fl-mono text-[10px] mb-2" style={{ color: C.muted }}>PRONOSTICA LOS {partidos.length} PARTIDOS</div>
         <div className="space-y-2 mb-5">
-          {partidos.map(p => (
+          {partidos.map(p => tripleFantasyService.byeSide(p) ? (
+            <div key={p.id} className="fl-row p-2.5 flex items-center gap-2" style={{ opacity: 0.85 }}>
+              {(() => { const team = p.local === "DESCANSA" ? p.visitante : p.local; return (<>
+                <TeamCrest name={team} size={20} photo={teamCrests?.[team]} />
+                <span className="fl-body text-xs font-semibold truncate flex-1" style={{ color: C.white }}>{team}</span>
+                <span className="fl-mono text-[10px] flex items-center gap-1 flex-shrink-0" style={{ color: C.positive }}><CircleCheck size={12} /> Descansa · acierto automático</span>
+              </>); })()}
+            </div>
+          ) : (
             <div key={p.id} className="fl-row p-2.5">
               <div className="grid grid-cols-2 gap-2">
                 <button onClick={() => togglePick(p.id, "local")} className="fl-tap rounded-md py-2.5 px-2 text-xs font-semibold flex items-center gap-1.5 justify-center"
@@ -6195,7 +6238,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
 // puntos que cuadraban una alineación válida ese día. Se recalcula al vuelo
 // (es una función pura sobre las estadísticas ya cargadas), aunque el premio
 // de 100.000 € solo se abona una vez por jornada (ver checkIdealFive en App).
-function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
+function IdealFiveScreen({ jornadas, players, teamCrests, onClose, onOpenPlayer }) {
   const [selectedIdx, setSelectedIdx] = useState(Math.max(jornadas.length - 1, 0));
   const jornada = jornadas[selectedIdx];
   const ideal = useMemo(() => jornada ? idealFiveService.compute(jornada, players) : null, [jornada, players]);
@@ -6253,8 +6296,8 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose }) {
                       return (
                         <div key={id} className="flex flex-col items-center">
                           <div className="relative">
-                            <CourtSlot player={p} size={70} teamCrests={teamCrests} />
-                            <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                            <CourtSlot player={p} size={70} teamCrests={teamCrests} onClick={p && onOpenPlayer ? () => onOpenPlayer(p) : undefined} />
+                            <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                               style={{ background: C.navy900, color: C.gold, border: `1px solid ${C.gold}` }}>
                               {pointsFor(id)}
                             </span>
@@ -6572,7 +6615,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
           <div className="text-left flex-1 relative z-10">
             <div className="fl-display text-base uppercase" style={{ color: C.white }}>Triple Fabtasy</div>
             <div className="fl-mono text-[11px] mt-0.5" style={{ color: "rgba(255,255,255,0.75)" }}>
-              {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : (
+              {myTripleEntry ? (myTripleEntry.settled ? `Premio: ${fmtCredits(myTripleEntry.prize || 0)}` : "Ya has participado") : (lastJornada && hasJornadaEffectivelyStarted(lastJornada)) ? "Cerrado · la jornada ya ha empezado" : (
                 <>Entrada <span style={{ color: C.principal, fontWeight: 700 }}>{fmtCredits(TRIPLE_ENTRY_FEE)}</span> · hasta {fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}</>
               )}
             </div>
@@ -7940,7 +7983,7 @@ function EquipoTab({ myJugadoras, myCoaches, myTeam, budgetAvailable, budgetComm
 
   const valorPlantilla = isPlayoffMode
     ? playoffSquadPlayers.reduce((s, p) => s + (p.basePrice || 0), 0)
-    : (myTeam.squad || []).reduce((s, e) => s + (e.pricePaid || 0), 0);
+    : teamService.currentSquadValue(myTeam, players); // valor de mercado ACTUAL (igual que en Inicio): sube/baja con compras, ventas y cambios de precio
   const targetSquadSize = isPlayoffMode ? PLAYOFF_SQUAD_SIZE[playoffState.round] : (MAX_SQUAD_JUGADORAS + MAX_COACHES);
   const fichasLabel = isPlayoffMode ? `${playoffSquadPlayers.length}/${targetSquadSize}` : `${myTeam.squad.length}/${MAX_SQUAD_JUGADORAS + MAX_COACHES}`;
 
@@ -8189,7 +8232,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
       {showIdealFive && (
         <IdealFiveScreen jornadas={jornadas} players={players} teamCrests={teamCrests}
-          onClose={() => setShowIdealFive(false)} />
+          onClose={() => setShowIdealFive(false)} onOpenPlayer={onOpenPlayer} />
       )}
     </div>
   );
@@ -9136,7 +9179,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
                               <PlayerPhoto url={asset.photo} size={38} />
                               <div className="flex-1 min-w-0">
                                 <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
-                                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Oferta: {fmtCredits(entry.saleOffer.amount)}</div>
+                                <OfferAmountLines amount={entry.saleOffer.amount} value={asset.basePrice || 0} prefix="Oferta:" />
                               </div>
                             </button>
                             <div className="flex flex-col gap-1.5 flex-shrink-0">
@@ -9373,6 +9416,24 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
 
 // Ofertas de compra: las que has enviado (pendientes de que respondan) y las
 // que has recibido por tus jugadoras (para aceptar o rechazar).
+// Importe de una oferta bien visible + el valor actual de la jugadora debajo
+// y la diferencia (verde si te ofrecen más de lo que vale, roja si menos).
+function OfferAmountLines({ amount, value, prefix }) {
+  const diff = (amount || 0) - (value || 0);
+  const pct = value > 0 ? (diff / value) * 100 : 0;
+  const diffColor = diff >= 0 ? C.positive : C.negative;
+  return (
+    <>
+      <div className="fl-mono text-sm font-bold whitespace-nowrap mt-0.5" style={{ color: C.baby }}>
+        {prefix ? <span className="text-[10px] font-medium" style={{ color: C.muted }}>{prefix} </span> : null}{fmtCredits(amount)}
+      </div>
+      <div className="fl-mono text-[10px] whitespace-nowrap" style={{ color: C.muted }}>
+        Vale {fmtCredits(value)} · <span style={{ color: diffColor, fontWeight: 600 }}>{diff >= 0 ? "+" : ""}{pct.toFixed(1).replace(".", ",")}%</span>
+      </div>
+    </>
+  );
+}
+
 function OfertasRecibidasList({ offers, players, me, onRespond }) {
   const [busyId, setBusyId] = useState(null);
   const received = offers.filter(o => o.status === "pending" && o.toUser === me);
@@ -9393,7 +9454,8 @@ function OfertasRecibidasList({ offers, players, me, onRespond }) {
                   <PlayerPhoto url={asset.photo} size={36} />
                   <div className="flex-1 min-w-0">
                     <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
-                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{o.fromUser} ofrece {fmtCredits(o.amount)}</div>
+                    <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{o.fromUser} ofrece</div>
+                    <OfferAmountLines amount={o.amount} value={asset.basePrice || 0} />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
