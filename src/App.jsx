@@ -4155,7 +4155,7 @@ export default function App() {
   // de un job programado en servidor; la resolución de la subasta y el descuento del
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
   const syncMarket = useCallback(async (leagueId, resetHour) => {
-    if (!leagueId || resolvingRef.current) return;
+    if (!leagueId || !resetHour || resolvingRef.current) return;
     // En playoffs no hay mercado (se pasa a draft, sin dinero de por medio) —
     // sin este freno, el motor de mercado seguía rotando en segundo plano
     // aunque no se viera en pantalla, y de ahí salían avisos de favoritos
@@ -4272,6 +4272,14 @@ export default function App() {
           const changedNames = Object.keys(teamsNext).filter((name) => teamsNext[name] !== freshTeams[name]);
           await Promise.all(changedNames.map((name) => writeTeam(leagueId, name, teamsNext[name])));
         }
+      } else if (marketNext && !marketNext.resolved && now < marketNext.closesAt
+        && Math.abs(marketNext.closesAt - window_.closesAt) > 60 * 1000) {
+        // El mercado en curso tiene una hora de cierre que no es la de la liga
+        // (se generó con una hora equivocada, p. ej. "08:00" de relleno justo
+        // al crear la liga): se recoloca a la hora correcta sin tocar sus
+        // jugadoras ni sus pujas.
+        marketNext = { ...marketNext, opensAt: window_.opensAt, closesAt: window_.closesAt };
+        await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
       }
 
       // Liquida las participaciones de Triple Fantasy cuya jornada ya tiene los 7
@@ -4342,9 +4350,12 @@ export default function App() {
   // Hora fija diaria del mercado de esta liga: la hora a la que se creó (p. ej.
   // si la liga se creó a las 19:34, el mercado se resuelve y se regenera cada
   // día a esa misma hora). Cada liga tiene la suya propia.
-  const marketResetHour = activeLeague?.created_at
-    ? new Date(activeLeague.created_at).toTimeString().slice(0, 5)
-    : "08:00";
+  // Mientras la liga todavía no se ha cargado (p. ej. justo al crearla), es
+  // null y el mercado NO se genera: antes se usaba "08:00" de relleno en ese
+  // instante y el primer mercado se quedaba con esa hora equivocada.
+  const marketResetHour = activeLeague
+    ? (activeLeague.created_at ? new Date(activeLeague.created_at).toTimeString().slice(0, 5) : "08:00")
+    : null;
 
   // MODO PRUEBAS: avanza un día "de mentira" para el motor de precios, sin
   // esperar a la medianoche real, y de paso fuerza a que el mercado de la
