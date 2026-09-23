@@ -1026,6 +1026,24 @@ const playoffService = {
     const partidos = last.partidos || [];
     return partidos.length > 0 && partidos.every((p) => isDescansoPartido(p) || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null));
   },
+  // ¿Ya es el día SIGUIENTE a la fecha del último partido de liga regular?
+  // (J26 el domingo 16/05 → true a partir del lunes 17/05 a las 00:00). El
+  // modo playoffs NO empieza antes de ese día, aunque todos los resultados
+  // de la última jornada ya estén cargados: ese día se sigue viendo el
+  // ranking de liga regular.
+  regularSeasonDateOver(jornadas) {
+    const regular = playoffService.regularJornadas(jornadas);
+    if (regular.length === 0) return false;
+    const last = [...regular].sort((a, b) => jornadaNumberFromName(b.name) - jornadaNumberFromName(a.name))[0];
+    const endDate = jornadaEndDate(last);
+    if (!endDate) return false;
+    const dayAfter = new Date(endDate);
+    dayAfter.setDate(dayAfter.getDate() + 1);
+    dayAfter.setHours(0, 0, 0, 0);
+    const today = getEffectiveToday();
+    today.setHours(0, 0, 0, 0);
+    return today >= dayAfter;
+  },
   findRoundJornadas(jornadas, playoffRound) { return (jornadas || []).filter((j) => j.playoffRound === playoffRound); },
   // Jornadas que tiene sentido poder ver/navegar AHORA MISMO en Calendario y
   // similares. Las de liga regular, siempre (el calendario completo se
@@ -1037,7 +1055,7 @@ const playoffService = {
   // que se sabe de verdad quién juega.
   visibleJornadas(jornadas) {
     const list = jornadas || [];
-    const regularDone = playoffService.regularSeasonFinished(list);
+    const regularDone = playoffService.regularSeasonDateOver(list); // playoffs visibles desde el día siguiente a la última jornada
     const bracket = realBracketService.buildBracket(list);
     const cuartosDecided = bracket.ready && bracket.cuartos.every((m) => !!m.winner);
     const semisDecided = cuartosDecided && bracket.semis.every((m) => !!m.winner);
@@ -2355,7 +2373,7 @@ function defaultPlayoffRoundFor(id) {
 // ha escrito algo.
 async function syncRealBracketToDb(jornadas) {
   try {
-    if (!playoffService.regularSeasonFinished(jornadas)) return false;
+    if (!playoffService.regularSeasonDateOver(jornadas)) return false; // cruces reales: a partir del día siguiente a la J26
     const bracket = realBracketService.buildBracket(jornadas);
     if (!bracket.ready) return false;
     const hasScore = (p) => p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null;
@@ -2916,7 +2934,10 @@ function findLiveJornada(jornadas) {
     const dayAfterEnd = new Date(end);
     dayAfterEnd.setDate(dayAfterEnd.getDate() + 1);
     dayAfterEnd.setHours(0, 0, 0, 0);
-    return today < dayAfterEnd ? j : null; // la última empezada: en juego o ya acabada
+    // La última empezada: en juego salvo que ya tenga TODOS sus resultados
+    // cargados (entonces ya se ve la General) o haya pasado su último día.
+    if (tripleFantasyService.isJornadaReady(j)) return null;
+    return today < dayAfterEnd ? j : null;
   }
   return null;
 }
@@ -3818,7 +3839,12 @@ export default function App() {
             dateReady = today >= dayAfter;
           }
         }
-        if (resultsReady || dateReady) {
+        // Solo por FECHA: el modo playoffs arranca el día siguiente al último
+        // partido de liga regular (lunes 17/05), aunque los resultados del
+        // domingo ya estén todos cargados antes — ese domingo se sigue viendo
+        // el ranking global de la liga regular.
+        void resultsReady;
+        if (dateReady) {
           const regularStandings = rankingService.computeStandings(teamsMap || {}, freshPlayers, playoffService.regularJornadas(freshJornadas), activeLeagueId);
           const qualifiers = regularStandings.slice(0, 8).map((r) => r.name);
           if (qualifiers.length > 0) {
