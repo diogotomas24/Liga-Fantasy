@@ -911,6 +911,24 @@ function nowMs() { return getEffectiveToday().getTime(); }
 // notificaciones y fechas de historial/actividad.
 function realNowMs() { return Date.now(); }
 
+// --- TAREAS AUTOMÁTICAS EN EL SERVIDOR --------------------------------------
+// Cierre del mercado, precios diarios, bloqueo de alineaciones, 5 ideal,
+// Triple, avisos y playoffs los ejecuta la Edge Function "fabtasy-cron" de
+// Supabase cada minuto (pg_cron), funcione o no la app de alguien. La app
+// solo LEE el resultado. IS_SERVER lo pone a true el propio servidor, que
+// reutiliza exactamente este mismo código. Si algún día hubiera que volver
+// al modo antiguo (todo desde la app), basta con SERVER_AUTOMATION = false.
+let IS_SERVER = false;
+const SERVER_AUTOMATION = true;
+function clientSkipsAutomation() { return !IS_SERVER && SERVER_AUTOMATION; }
+// Pide al servidor que ejecute YA una pasada (p. ej. justo al llegar el
+// contador del mercado a 0, al crear una liga o con los botones del
+// simulador), en vez de esperar al siguiente minuto.
+async function runServerTick() {
+  if (IS_SERVER || !SERVER_AUTOMATION) return;
+  try { await supabase.functions.invoke("fabtasy-cron", { body: { source: "app" } }); } catch {}
+}
+
 // --- realStandingsService ------------------------------------------------
 // Clasificación de los equipos REALES (no de fantasy), con el criterio de
 // desempate: 1º más victorias, 2º si hay empate a victorias se mira el
@@ -3438,6 +3456,7 @@ export default function App() {
   // alineaciones que falten y subir cláusulas que se hayan quedado por
   // debajo del valor de mercado actual.
   const settlePlayerPricing = useCallback(async (currentPlayers) => {
+    if (clientSkipsAutomation()) return currentPlayers;
     const freshJ = await readJornadas();
     const pricedIds = await readShared("pricedJornadas", []);
     const toPrice = freshJ.filter(j => j.stats && Object.keys(j.stats).length > 0 && !pricedIds.includes(j.id));
@@ -3465,6 +3484,7 @@ export default function App() {
   // las ligas, no solo a la liga que tengas abierta en este momento. Cada
   // jornada se avisa una sola vez (lista global "jornadaStartWarned").
   const checkJornadaStartWarning = useCallback(async () => {
+    if (clientSkipsAutomation()) return; // lo hace el servidor
     try {
       const freshJ = await readJornadas();
       const warned = await readShared("jornadaStartWarned", []);
@@ -3495,6 +3515,7 @@ export default function App() {
   // CUALQUIER equipo de CUALQUIER liga que tenga alguna de esas 5 en su
   // plantilla (por eso usa readAllTeamsGlobal, no una liga concreta).
   const checkIdealFive = useCallback(async () => {
+    if (clientSkipsAutomation()) return; // lo hace el servidor
     try {
       const freshJ = await readJornadas();
       const freshPlayers = await readPlayers();
@@ -3551,6 +3572,11 @@ export default function App() {
   // alineación distinta (esos cambios solo afectarán a la siguiente jornada
   // sin empezar). Se hace una sola vez por jornada (lista global "lineupLocked").
   const checkLineupLock = useCallback(async () => {
+    if (clientSkipsAutomation()) {
+      // Lo congela el servidor; la app solo recoge las alineaciones ya bloqueadas.
+      try { const fj = await readJornadas(); if (fj.length) setJornadas((prev) => mergeJornadasPreservingLineups(fj, prev)); } catch {}
+      return;
+    }
     try {
       const freshJ = await readJornadas();
       let anyChanged = false;
@@ -3681,6 +3707,7 @@ export default function App() {
   // freno para las caras, y además reparte, una sola vez por jornada
   // completa, el bono de "MVP de toda la jornada".
   const checkDailyMarketPricing = useCallback(async () => {
+    if (clientSkipsAutomation()) return; // lo hace el servidor
     try {
       // El "día de hoy" para esta comprobación tiene que salir del MISMO
       // reloj que usa el resto de la app (el que tiquea solo, real o
@@ -3797,6 +3824,11 @@ export default function App() {
   // resultado real de los partidos de esa ronda.
   const checkPlayoffProgress = useCallback(async () => {
     if (!activeLeagueId) return;
+    if (clientSkipsAutomation()) {
+      // Lo avanza el servidor; la app solo lee el estado de playoffs.
+      try { setPlayoffState(await readShared(leagueKey(activeLeagueId, "playoffState"), playoffService.emptyState())); } catch {}
+      return;
+    }
     try {
       let [freshJornadas, freshPlayers, teamsMap] = await Promise.all([readJornadas(), readPlayers(), readAllTeams(activeLeagueId)]);
       // Cruces reales de playoffs → se escriben en las jornadas de playoffs
@@ -4205,6 +4237,7 @@ export default function App() {
     // Hora fija del mercado de esta liga: el momento EXACTO de creación, en el
     // mismo reloj que usa el mercado → el primer contador arranca en 23:59:59.
     await writeShared(leagueKey(league.id, "marketHourV3"), marketService.hourOf(realNowMs()));
+    await runServerTick(); // crea ya el primer mercado de la liga (desde el servidor)
     setMyLeagues(prev => [...prev, league]);
     await selectLeague(league.id);
     return { ok: true, league };
@@ -4292,6 +4325,23 @@ export default function App() {
     // propósito y no puede fiarse de un "playoffState" quizás desactualizado.
     const freshPlayoffPhase = (await readShared(leagueKey(leagueId, "playoffState"), null))?.phase || "none";
     if (freshPlayoffPhase !== "none") return;
+    if (clientSkipsAutomation()) {
+      // Solo LECTURA: el mercado lo resuelve/renueva el servidor.
+      try {
+        const [pl, tm, mk, bd, hi, ac, of, tr, jo] = await Promise.all([
+          readPlayers(), readAllTeams(leagueId),
+          readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
+          readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
+          readShared(leagueKey(leagueId, "offers"), []), readShared(leagueKey(leagueId, "triple"), []),
+          readJornadas(),
+        ]);
+        if (pl && pl.length) setPlayers(pl);
+        if (tm) setTeams(tm);
+        setMarket(mk); setBids(bd); setMarketHistory(hi); setActivity(ac); setOffers(of); setTripleEntries(tr);
+        if (jo && jo.length) setJornadas((prev) => mergeJornadasPreservingLineups(jo, prev));
+      } catch {}
+      return;
+    }
     resolvingRef.current = true;
     try {
       const [freshPlayers, freshTeamsOrNull, freshMarket, freshBids, freshHistory, freshActivity, freshOffers, freshTriple, freshJornadas] = await Promise.all([
@@ -4527,6 +4577,7 @@ export default function App() {
     await writeShared("marketSimAnchorRealMs", anchorRealMs);
     setSimulatedAnchor(new Date(`${nextDateStr}T12:00:00`).getTime(), anchorRealMs); // pone en hora el "reloj" que usa el resto de la app (qué jornada toca, si ya empezó...) y lo deja corriendo de verdad desde aquí
     await writeShared("marketPricingLastRun", ""); // para que se ejecute ya mismo, sin esperar
+    await runServerTick(); // el servidor aplica ya mismo el salto (precios, bloqueos, playoffs, mercado)
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que acabe de "empezar", sin esperar al intervalo de 60s
     await checkDailyMarketPricing();
     await checkPlayoffProgress(); // por si este salto cruza el corte de fin de liga regular / inicio o fin de una ronda de playoffs
@@ -4588,6 +4639,7 @@ export default function App() {
     await writeShared("marketSimAnchorRealMs", anchorRealMs);
     setSimulatedAnchor(new Date(`${dateStr}T${hhmm}:00`).getTime(), anchorRealMs);
     await writeShared("marketPricingLastRun", ""); // para que el motor de precios corra ya mismo si tocaba
+    await runServerTick(); // el servidor aplica ya mismo el salto (precios, bloqueos, playoffs, mercado)
     await checkLineupLock(); // congela ya mismo las alineaciones de cualquier jornada que "empiece" con este salto
     await checkDailyMarketPricing();
     await checkPlayoffProgress(); // por si este salto cruza el corte de fin de liga regular / inicio o fin de una ronda de playoffs
@@ -4638,6 +4690,7 @@ export default function App() {
     // a antes de que empezara, y no coincidiría con lo que tocaría ver.
     if (activeLeagueId) await deleteShared(leagueKey(activeLeagueId, "playoffState"));
     setSimulatedToday(null);
+    await runServerTick();
     const [freshPlayers, freshJornadas] = await Promise.all([readPlayers(), readJornadas()]);
     setPlayers(freshPlayers);
     setJornadas(freshJornadas);
@@ -4662,8 +4715,8 @@ export default function App() {
     if (!activeLeagueId || !marketClosesAt) return;
     const wait = marketClosesAt - realNowMs();
     if (wait > 24 * 3600 * 1000) return;
-    const timers = [300, 3000, 8000].map((extra) =>
-      setTimeout(() => syncMarket(activeLeagueId, marketResetHour), Math.max(0, wait) + extra));
+    const timers = [300, 3000, 8000].map((extra, i) =>
+      setTimeout(async () => { if (i === 0) await runServerTick(); syncMarket(activeLeagueId, marketResetHour); }, Math.max(0, wait) + extra));
     return () => timers.forEach(clearTimeout);
   }, [activeLeagueId, marketClosesAt, marketResetHour, syncMarket]);
 
@@ -4890,6 +4943,7 @@ export default function App() {
     const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
     if (!freshMarket) return;
     await writeShared(leagueKey(activeLeagueId, "currentMarket"), { ...freshMarket, closesAt: realNowMs() - 1000 });
+    await runServerTick();
     await syncMarket(activeLeagueId, marketResetHour);
   }, [market, syncMarket, activeLeagueId, marketResetHour]);
 
