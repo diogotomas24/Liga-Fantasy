@@ -2863,6 +2863,30 @@ function computeJornadaStartTime(jornada) {
   return new Date(earliestDate.getFullYear(), earliestDate.getMonth(), earliestDate.getDate(), 12, 0, 0, 0);
 }
 
+// CLAUSULAZOS CERRADOS: desde 24 h antes del inicio de una jornada (p. ej.
+// sábado 12:00 → cerrados desde el viernes a las 12:00) hasta que empieza.
+// En cuanto la jornada arranca, se pueden volver a pagar cláusulas.
+// Devuelve { blocked, jornada, reopensAt }.
+const CLAUSE_BLACKOUT_MS = 24 * 3600 * 1000;
+function clauseWindowStatus(jornadas) {
+  const now = nowMs();
+  for (const j of jornadas || []) {
+    if (hasJornadaEffectivelyStarted(j)) continue;
+    const start = computeJornadaStartTime(j);
+    if (!start) continue;
+    const startMs = start.getTime();
+    if (now >= startMs - CLAUSE_BLACKOUT_MS && now < startMs) return { blocked: true, jornada: j, reopensAt: startMs };
+  }
+  return { blocked: false, jornada: null, reopensAt: null };
+}
+function clauseBlackoutText(status) {
+  if (!status?.blocked) return "";
+  const d = new Date(status.reopensAt);
+  const dias = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+  const pad = (n) => String(n).padStart(2, "0");
+  return `Cláusulas cerradas hasta que empiece la ${status.jornada?.name || "jornada"} (${dias[d.getDay()]} ${pad(d.getDate())}/${pad(d.getMonth() + 1)} a las ${pad(d.getHours())}:${pad(d.getMinutes())}).`;
+}
+
 // ¿Ha "empezado de verdad" una jornada? Sí en cuanto se cumpla CUALQUIERA de
 // estas tres cosas: ha llegado su hora programada, o ya se ha introducido el
 // marcador de algún partido suyo, o ya hay alguna estadística de jugadora
@@ -4776,6 +4800,10 @@ export default function App() {
   }, [market, bids, profile, activeLeagueId]);
 
   const buyClause = useCallback(async (sellerName, asset, amount) => {
+    // Clausulazos cerrados las 24 h previas al inicio de una jornada (se mira
+    // con las jornadas recién leídas, por si acaban de cargar algún marcador).
+    const windowNow = clauseWindowStatus(await readJornadas());
+    if (windowNow.blocked) return { ok: false, error: clauseBlackoutText(windowNow) };
     const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, sellerName)]);
     const check = clauseService.validateBuyout({
       buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId: market?.id,
@@ -5483,6 +5511,7 @@ function FuncionamientoScreen({ onClose }) {
         "Ofertas directas: puedes ofrecer dinero por una jugadora que ya tiene dueña/o; decide si la acepta o la rechaza.",
         "Cláusula: toda jugadora fichada tiene una cláusula de salida — págala entera y te la llevas sin pedir permiso.",
         "Puedes subir tu propia cláusula pagando de tu bolsillo: cada euro que metas la sube el doble (pagar 1.000.000 € la sube 2.000.000 €).",
+        "Las 24 horas antes de que empiece cada jornada no se pueden pagar cláusulas (si la jornada empieza el sábado a las 12:00, quedan cerradas desde el viernes a las 12:00). En cuanto empieza la jornada, se vuelven a abrir.",
       ],
     },
   ];
@@ -8304,9 +8333,9 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
             <ActionSheetItem label="Hacer oferta" onClick={() => { setShowActions(false); setShowThirdPartyOffer(true); }} />
             <ActionSheetItem
-              label={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Pagar cláusula (bloqueada)" : "Pagar cláusula"}
-              disabled={teamService.isClauseLocked(ownerInfo.ownerEntry)}
-              subtitle={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Todavía no se puede pagar" : fmtCredits(ownerInfo.ownerEntry.clause || player.basePrice || 0)}
+              label={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Pagar cláusula (bloqueada)" : clauseWindowStatus(jornadas).blocked ? "Pagar cláusula (cerrado antes de jornada)" : "Pagar cláusula"}
+              disabled={teamService.isClauseLocked(ownerInfo.ownerEntry) || clauseWindowStatus(jornadas).blocked}
+              subtitle={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Todavía no se puede pagar" : clauseWindowStatus(jornadas).blocked ? clauseBlackoutText(clauseWindowStatus(jornadas)) : fmtCredits(ownerInfo.ownerEntry.clause || player.basePrice || 0)}
               onClick={() => { setShowActions(false); setShowThirdPartyClause(true); }} />
           </ActionSheet>
         )}
