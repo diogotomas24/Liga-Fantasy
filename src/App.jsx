@@ -885,7 +885,11 @@ function isMonday(date) { return date.getDay() === 1; }
 // modo pruebas, funciona exactamente igual que siempre (usa la hora real).
 let __simAnchorSimMs = null; // instante simulado (ms) que se fijó la última vez
 let __simAnchorRealMs = null; // instante real (ms) en que se fijó esa última vez
+// SIMULADOR DESACTIVADO: el juego ya va en serio y todo usa la hora real.
+// (Si algún día hiciera falta volver a probar con fechas falsas, poner true.)
+const SIMULATOR_ENABLED = false;
 function setSimulatedToday(dateStr, timeStr) {
+  if (!SIMULATOR_ENABLED) { __simAnchorSimMs = null; __simAnchorRealMs = null; return; }
   if (!dateStr) { __simAnchorSimMs = null; __simAnchorRealMs = null; return; }
   setSimulatedAnchor(new Date(`${dateStr}T${timeStr || "12:00"}:00`).getTime(), Date.now());
 }
@@ -893,6 +897,7 @@ function setSimulatedToday(dateStr, timeStr) {
 // vez de "ahora mismo") — se usa al recargar la app, para reconstruir el
 // reloj simulado exactamente como estaba, ya avanzado lo que corresponda.
 function setSimulatedAnchor(simMs, realMs) {
+  if (!SIMULATOR_ENABLED) { __simAnchorSimMs = null; __simAnchorRealMs = null; return; }
   __simAnchorSimMs = simMs;
   __simAnchorRealMs = realMs;
 }
@@ -2852,15 +2857,24 @@ function jornadaDate(jornada) {
 // día de su primer partido — no hace falta saber la hora exacta de cada
 // partido (a veces no se sabe), basta con la fecha más temprana de todos.
 // Si ningún partido tiene fecha reconocible, devuelve null.
+// Inicio de una jornada = el partido más temprano de todos los suyos. Si el
+// partido tiene hora en Supabase (columna "hora", p. ej. "10:30"), se usa esa
+// hora; si no la tiene, se da por hecho que empieza a las 12:00. Así, si un
+// sábado hay un partido a las 10:00, las alineaciones se cierran a las 10:00
+// y no a las 12:00 (con el partido ya en juego).
 function computeJornadaStartTime(jornada) {
-  let earliestDate = null;
+  let earliest = null;
   (jornada?.partidos || []).forEach((p) => {
-    if (!p.fecha) return;
+    if (!p.fecha || isDescansoPartido(p)) return;
     const d = parseFechaDDMMYYYY(p.fecha);
-    if (d && (!earliestDate || d < earliestDate)) earliestDate = d;
+    if (!d) return;
+    const m = /^(\d{1,2})[:.h](\d{2})/.exec(String(p.hora || "").trim());
+    const h = m ? Math.min(23, Number(m[1])) : 12;
+    const mi = m ? Math.min(59, Number(m[2])) : 0;
+    const t = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, mi, 0, 0);
+    if (!earliest || t < earliest) earliest = t;
   });
-  if (!earliestDate) return null;
-  return new Date(earliestDate.getFullYear(), earliestDate.getMonth(), earliestDate.getDate(), 12, 0, 0, 0);
+  return earliest;
 }
 
 // CLAUSULAZOS CERRADOS: desde 24 h antes del inicio de una jornada (p. ej.
@@ -5043,7 +5057,7 @@ export default function App() {
             )
           )}
           {tab === "mas" && (
-            <MasTab activity={activity} players={players} onAdvanceSimDay={advanceSimDay} onExitSimMode={exitSimMode} onResetTest={resetTestMode} onDebugLineupLock={debugLineupLock} onJumpSimDateTime={jumpToSimDateTime} onResetPlayoffState={resetPlayoffState} />
+            <MasTab activity={activity} players={players} />
           )}
         </div>
       </main>
@@ -10220,189 +10234,11 @@ function HistoricoTab({ marketHistory, players, bids, profile, myPastBids, activ
 /* =============================================================================
    MÁS: Actividad · Jornadas · Administración
    ========================================================================== */
-function MasTab({ activity, players, onAdvanceSimDay, onExitSimMode, onResetTest, onDebugLineupLock, onJumpSimDateTime, onResetPlayoffState }) {
-  const [simDate, setSimDate] = useState(undefined); // undefined = cargando, null = sin simular
-  const [simTime, setSimTime] = useState(null);
-  const [jumpDate, setJumpDate] = useState("");
-  const [jumpTime, setJumpTime] = useState("12:00");
-  const [jumpBusy, setJumpBusy] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [debugJornadaId, setDebugJornadaId] = useState("j1");
-  const [debugSteps, setDebugSteps] = useState(null);
-  const [debugBusy, setDebugBusy] = useState(false);
-  const [playoffResetBusy, setPlayoffResetBusy] = useState(false);
-  const [liveClock, setLiveClock] = useState(() => getEffectiveToday());
-
-  // Reloj en vivo del modo pruebas: tiquea cada segundo con la hora
-  // simulada (o la real, si no hay simulación activa), para poder ver pasar
-  // segundos/minutos/horas y comprobar en directo avisos, cláusulas y
-  // caducidades sin tener que refrescar nada a mano.
-  useEffect(() => {
-    const t = setInterval(() => setLiveClock(getEffectiveToday()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      const d = await readShared("marketSimDate", null);
-      const t = await readShared("marketSimTime", null);
-      setSimDate(d);
-      setSimTime(t || "12:00");
-      // Precarga los selectores de fecha/hora con el momento simulado actual
-      // (o con hoy si todavía no hay ninguna simulación activa).
-      setJumpDate(d || toDateStr(new Date()));
-      setJumpTime(t || "12:00");
-    })();
-  }, []);
-
-  const advance = async () => {
-    setBusy(true);
-    const next = await onAdvanceSimDay();
-    setSimDate(next);
-    setSimTime("12:00");
-    setJumpDate(next); setJumpTime("12:00");
-    setBusy(false);
-  };
-  const exit = async () => {
-    setBusy(true);
-    await onExitSimMode();
-    setSimDate(null);
-    setSimTime(null);
-    setBusy(false);
-  };
-  const jumpNow = async () => {
-    if (!jumpDate) return;
-    setJumpBusy(true);
-    const res = await onJumpSimDateTime(jumpDate, jumpTime);
-    if (res) { setSimDate(res.date); setSimTime(res.time); }
-    setJumpBusy(false);
-  };
-  const resetPlayoffsOnly = async () => {
-    setPlayoffResetBusy(true);
-    await onResetPlayoffState();
-    setPlayoffResetBusy(false);
-  };
-  const doReset = async () => {
-    setBusy(true);
-    await onResetTest();
-    setSimDate(null);
-    setBusy(false);
-    setConfirmReset(false);
-  };
-  const runDebug = async () => {
-    setDebugBusy(true);
-    setDebugSteps(null);
-    const steps = await onDebugLineupLock(debugJornadaId.trim() || "j1");
-    setDebugSteps(steps);
-    setDebugBusy(false);
-  };
-
+// Pestaña "Más": historial de actividad de la liga. (El panel del modo
+// pruebas / simulador se ha retirado al empezar la temporada de verdad.)
+function MasTab({ activity, players }) {
   return (
     <div>
-      <div className="fl-row p-3.5 mb-4" style={{ border: `1px solid ${C.gold}55` }}>
-        <div className="flex items-center gap-1.5 mb-1.5">
-          <FlaskConical size={14} color={C.gold} />
-          <span className="fl-mono text-[10px] font-bold tracking-wide" style={{ color: C.gold }}>MODO PRUEBAS — MERCADO</span>
-        </div>
-        <p className="fl-body text-xs mb-2.5" style={{ color: C.muted }}>
-          Adelanta un día "de mentira" para ver cómo se mueve el mercado sin esperar a la medianoche real: mueve precios y también resuelve el mercado de tu liga actual (entrega jugadoras a quien más pujó). Como el precio es global, esto se ve en cualquier liga.
-        </p>
-        <div className="fl-mono text-[11px] mb-2.5" style={{ color: C.white }}>
-          {simDate === undefined ? "Cargando…" : simDate ? <>Simulando: <span style={{ color: C.gold, fontWeight: 700 }}>{simDate}</span> a las <span style={{ color: C.gold, fontWeight: 700 }}>{simTime || "12:00"}</span></> : "Sin simular (fecha real)"}
-        </div>
-
-        {/* Reloj en vivo: tiquea de verdad, para ver pasar el tiempo simulado
-            segundo a segundo y comprobar avisos/cláusulas/caducidades en directo. */}
-        <div className="rounded-md p-3 mb-2.5 text-center" style={{ background: C.navy900, border: `1px solid ${simDate ? C.gold + "55" : C.line}` }}>
-          <div className="flex items-center justify-center gap-1.5 mb-1">
-            <Clock size={11} color={simDate ? C.gold : C.muted} className={simDate ? "fl-pulse" : ""} />
-            <span className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>{simDate ? "RELOJ SIMULADO (EN VIVO)" : "RELOJ REAL"}</span>
-          </div>
-          <div className="fl-mono text-2xl font-bold" style={{ color: simDate ? C.gold : C.white }}>
-            {liveClock.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-          </div>
-          <div className="fl-mono text-[10px] mt-0.5" style={{ color: C.muted }}>
-            {liveClock.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
-          </div>
-        </div>
-
-        <div className="flex gap-2 mb-2">
-          <button disabled={busy} onClick={advance} className="fl-tap flex-1 rounded-md py-2 text-xs font-semibold disabled:opacity-50" style={{ background: C.gold, color: C.ink }}>
-            {busy ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Avanzar 1 día"}
-          </button>
-          {simDate && (
-            <button disabled={busy} onClick={exit} className="fl-tap rounded-md py-2 px-3 text-xs font-semibold disabled:opacity-50" style={{ border: `1px solid ${C.line}`, color: C.muted }}>
-              Salir
-            </button>
-          )}
-        </div>
-
-        {/* Saltar directamente a una fecha y hora concretas, para probar el
-            inicio exacto de una jornada sin tener que avanzar día a día. */}
-        <div className="rounded-md p-2.5 mb-2.5" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
-          <div className="flex items-center gap-1.5 mb-2">
-            <Clock size={12} color={C.gold} />
-            <span className="fl-mono text-[9px] font-bold tracking-wide" style={{ color: C.muted }}>SALTAR A FECHA Y HORA</span>
-          </div>
-          <div className="flex gap-2 mb-2">
-            <input type="date" value={jumpDate} onChange={(e) => setJumpDate(e.target.value)}
-              className="flex-1 fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
-            <input type="time" value={jumpTime} onChange={(e) => setJumpTime(e.target.value)} step="1"
-              className="fl-mono text-xs rounded-md px-2 py-2 outline-none" style={{ width: 100, background: C.navy700, border: `1px solid ${C.line}`, color: C.white, colorScheme: "dark" }} />
-          </div>
-          <button disabled={jumpBusy || !jumpDate} onClick={jumpNow} className="fl-tap w-full rounded-md py-2 text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" style={{ background: C.principal, color: C.white }}>
-            {jumpBusy ? <Loader2 size={13} className="animate-spin" /> : <>Ir a esta fecha y hora <ChevronRight size={13} /></>}
-          </button>
-          <p className="fl-body text-[10px] mt-2" style={{ color: C.muted }}>
-            Todo el juego (mercado, jornadas, notificaciones, cláusulas, ofertas, playoffs…) usa este reloj en vez del real mientras esté activo. Al saltar hacia atrás de antes de que empezaran los playoffs, usa el botón de abajo para reiniciar también esa fase si se había quedado activada.
-          </p>
-        </div>
-
-        <button disabled={playoffResetBusy} onClick={resetPlayoffsOnly} className="fl-tap w-full rounded-md py-2 mb-2.5 text-xs font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" style={{ border: `1px solid ${C.principal}55`, color: C.principal }}>
-          {playoffResetBusy ? <Loader2 size={13} className="animate-spin" /> : <>Reiniciar solo fase de playoffs</>}
-        </button>
-
-        {confirmReset ? (
-          <div className="rounded-md p-2.5 mb-2.5" style={{ background: `${C.negative}15`, border: `1px solid ${C.negative}` }}>
-            <p className="fl-body text-[11px] mb-2" style={{ color: C.white }}>
-              Esto borra estadísticas y resultados de partidos, y devuelve los precios a como estaban antes de empezar esta ronda de pruebas. No se puede deshacer. ¿Seguro?
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <button disabled={busy} onClick={() => setConfirmReset(false)} className="fl-tap rounded-md py-1.5 text-[11px] font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
-                Cancelar
-              </button>
-              <button disabled={busy} onClick={doReset} className="fl-tap rounded-md py-1.5 text-[11px] font-semibold flex items-center justify-center gap-1.5" style={{ background: C.negative, color: C.white }}>
-                {busy ? <Loader2 size={12} className="animate-spin" /> : "Sí, reiniciar"}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button disabled={busy} onClick={() => setConfirmReset(true)} className="fl-tap w-full rounded-md py-2 text-xs font-semibold mb-2.5" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
-            Reiniciar prueba
-          </button>
-        )}
-
-        <div className="pt-2.5" style={{ borderTop: `1px solid ${C.line}` }}>
-          <div className="fl-mono text-[10px] font-bold tracking-wide mb-1.5" style={{ color: C.gold }}>DIAGNÓSTICO: BLOQUEO DE ALINEACIÓN</div>
-          <div className="flex gap-2 mb-2">
-            <input value={debugJornadaId} onChange={(e) => setDebugJornadaId(e.target.value)} placeholder="id de jornada (ej. j1)"
-              className="flex-1 rounded-md px-2.5 py-1.5 fl-mono text-xs" style={{ background: C.navy900, border: `1px solid ${C.line}`, color: C.white }} />
-            <button disabled={debugBusy} onClick={runDebug} className="fl-tap rounded-md px-3 py-1.5 text-xs font-semibold disabled:opacity-50" style={{ border: `1px solid ${C.gold}`, color: C.gold }}>
-              {debugBusy ? <Loader2 size={13} className="animate-spin" /> : "Probar"}
-            </button>
-          </div>
-          {debugSteps && (
-            <div className="rounded-md p-2.5 space-y-1" style={{ background: C.navy900 }}>
-              {debugSteps.map((s, i) => (
-                <div key={i} className="fl-mono text-[10px]" style={{ color: s.startsWith("❌") ? C.negative : s.startsWith("⛔") ? C.gold : s.startsWith("✅") ? C.positive : C.muted }}>
-                  {s}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
       <ActividadFeed activity={activity} players={players} />
     </div>
   );
