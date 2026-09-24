@@ -165,9 +165,12 @@ function calcSwishPoints(stats, position) {
   const tap = s.tap || 0;                               // tapones
   const faltas = s.faltas || 0;
   const valoracion = s.valoracion || 0;
+  // Si NO ha jugado (0 minutos), no puntúa NADA: ni el +1 de minutos ni
+  // ninguna otra estadística.
+  const noPlayed = minutos <= 0;
 
-  const pf = {
-    minutos: minutos >= 20 ? 2 : 1, // regla literal: <20 = +1 (incluidos 0 minutos), ≥20 = +2
+  const pf = noPlayed ? { minutos: 0, puntos: 0, asist: 0, tlibre: 0, t3: 0, rebotes: 0, pd: 0, tap: 0, faltas: 0, valoracion: 0 } : {
+    minutos: minutos >= 20 ? 2 : 1, // ≥20 min = +2; de 1 a 19 min = +1; 0 min = 0 (arriba)
     puntos: Math.floor(puntos / 4),
     asist: Math.floor(asist / 2),
     tlibre: -Math.floor(tlibre / 2),
@@ -670,7 +673,12 @@ const offerService = {
 // Quiniela semanal: 1 M€ de entrada, acertar el ganador de los 7 partidos de
 // la jornada y quién será la MVP. Dinero 100% ficticio del propio juego.
 const TRIPLE_ENTRY_FEE = 1; // 1 M€
-const TRIPLE_PRIZE_TABLE = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 2, 6: 3.5, 7: 5 };
+// Premios según los partidos FALLADOS (así vale igual haya 6 partidos + el
+// descanso o 7 partidos): todos acertados 5 M, fallando 1 → 3,5 M, fallando
+// 2 → 2 M; todos + la MVP → 6 M. El partido de quien descansa es acierto
+// automático. (Antes se contaba "5, 6 o 7 aciertos" y, como en la base de
+// datos cada jornada tiene 6 partidos, el premio de 5 M era imposible.)
+const TRIPLE_PRIZE_BY_MISSES = { 0: 5, 1: 3.5, 2: 2 };
 const TRIPLE_PRIZE_PERFECT_MVP = 6;
 
 const tripleFantasyService = {
@@ -762,8 +770,9 @@ const tripleFantasyService = {
     const mvpCorrect = entry.mvpChoice === "otra"
       ? !(entry.mvpOptions || []).includes(actualMvpId)
       : entry.mvpChoice === actualMvpId;
-    let prize = TRIPLE_PRIZE_TABLE[correct] ?? 0;
-    if (correct === partidos.length && mvpCorrect) prize = TRIPLE_PRIZE_PERFECT_MVP;
+    const misses = Math.max(0, partidos.length - correct);
+    let prize = TRIPLE_PRIZE_BY_MISSES[misses] ?? 0;
+    if (misses === 0 && mvpCorrect) prize = TRIPLE_PRIZE_PERFECT_MVP;
     return { correct, mvpCorrect, prize, actualMvpId };
   },
 };
@@ -5501,70 +5510,146 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
 function FuncionamientoScreen({ onClose }) {
   const SECTIONS = [
     {
-      icon: "🏀", color: C.principal, title: "Cómo empiezan las plantillas",
+      icon: "🏀", color: C.principal, title: "Empezar: cuenta, liga y equipo inicial",
       body: [
-        `Cada mánager arranca con ${fmtCredits(BUDGET_TOTAL * 1000000)} y la plantilla vacía.`,
-        `Puedes fichar hasta ${MAX_SQUAD_JUGADORAS} jugadoras + ${MAX_COACHES} entrenadora/or (${MAX_SQUAD_JUGADORAS + MAX_COACHES} fichas en total) a través del mercado.`,
-        "No hay reparto inicial ni sorteo: todo el mundo empieza de cero y compite por las mismas jugadoras desde el primer día.",
+        "Fabtasy es el fantasy de la Copa Aragón Femenina 26/27: eres mánager de un equipo de jugadoras reales, que puntúan cada fin de semana según lo que hacen en sus partidos de verdad. Gana quien más puntos sume en la temporada. Todo el dinero es ficticio.",
+        "Crea tu cuenta con email y contraseña. Después crea una liga (e invita a tus amigos con el enlace) o únete a una con la invitación que te pasen. Puedes estar en varias ligas a la vez y cambiar entre ellas desde \"Mis ligas\"; en cada una tienes un equipo distinto.",
+        `Al entrar en una liga recibes un equipo inicial de ${INITIAL_SQUAD_COUNT} jugadoras al azar (con al menos 2 bases, 2 aleros y 1 pívot) que vale entre ${INITIAL_SQUAD_VALUE_RANGE.min} y ${INITIAL_SQUAD_VALUE_RANGE.max} M. Ese reparto NO se descuenta de tu dinero.`,
+        `Además tienes ${fmtCredits(BUDGET_TOTAL)} de presupuesto para fichar en el mercado, y una alineación 2-2-1 ya preparada para puntuar desde el primer día.`,
       ],
     },
     {
-      icon: "📅", color: C.baby, title: "Jornada a jornada",
+      icon: "👕", color: C.gold, title: "Tu plantilla (pestaña Equipo)",
       body: [
-        "Cada semana hay una jornada de partidos reales. Antes de que empiece el primero, guarda tu alineación titular.",
-        "En cuanto arranca, se bloquea — ya no se puede tocar hasta la siguiente jornada.",
-        "Cuando se cargan las estadísticas reales, tu equipo puntúa según a quién pusiste de titular (o quién entró desde el banquillo).",
-        "Al cerrar la jornada, el mercado se resuelve y se abre uno nuevo con jugadoras frescas.",
+        `Puedes tener hasta ${MAX_SQUAD_JUGADORAS} jugadoras y ${MAX_COACHES} entrenador/a. Cada una tiene un valor de mercado (que sube y baja cada día) y una cláusula (lo que alguien tendría que pagar para quitártela).`,
+        "ALINEACIÓN: tus 5 titulares, el banquillo, el entrenador/a titular y la capitana.",
+        "PLANTILLA: todas tus jugadoras con su valor y su cláusula, y sus opciones (poner en venta, vender, subir la cláusula...). Arriba ves tus fichas ocupadas, el valor de tu plantilla, tu dinero disponible y lo comprometido en pujas.",
+        "PUNTOS: lo que ha hecho tu equipo en cada jornada, jugadora por jugadora. Si una suplente ha entrado sola, lo verás marcado con flechas ↓↑.",
       ],
     },
     {
-      icon: "🎯", color: "#22C55E", title: "Triple Fantasy",
+      icon: "🧑‍🤝‍🧑", color: C.gold, title: "Alineación, capitana y banquillo",
       body: [
-        `Quiniela semanal aparte, con dinero de mentira: por ${fmtCredits(TRIPLE_ENTRY_FEE * 1000000)}, aciertas quién gana cada partido de la jornada más quién será la MVP.`,
-        "Con 5 de 7 aciertos o más, hay premio — hasta 5.000.000 €, o 6.000.000 € si la clavas entera con la MVP incluida.",
-        "No afecta a tu plantilla ni a tu presupuesto real: es un juego aparte, solo por diversión (y algo de dinero extra).",
+        "Formación: 2-2-1, 1-3-1, 1-2-2 o 2-1-2 (bases-aleros-pívots). Siempre son 5 titulares.",
+        "Capitana: una de tus titulares. Sus puntos cuentan DOBLE esa jornada.",
+        "Banquillo: una suplente por posición (base, alero y pívot). Si la suplente puntúa MÁS que la titular que menos ha puntuado de su misma posición, entra sola en su lugar.",
+        "Entrenador/a titular: suma +5 puntos si su equipo gana.",
+        "⚠️ Si no tienes las 5 titulares completas, esa jornada no puntúas nada, aunque tengas banquillo.",
       ],
     },
     {
-      icon: "🏆", color: "#C026D3", title: "Los playoffs",
+      icon: "🧮", color: C.baby, title: "Cómo se puntúa",
       body: [
-        "Al acabar la liga regular, las 8 mejores clasificadas pasan a playoffs. El resto se queda como espectador.",
-        "Aquí se olvida el mercado: cada ronda haces una lista de preferencia y, sin dinero de por medio, se reparten jugadoras de los equipos reales que sigan vivos.",
-        "Cuartos se juega a doble jornada (ida y vuelta) y pasan las 4 mejores. Semis y la Final son a partido único.",
+        "Cada estadística real se convierte en puntos Fantasy. Si una jugadora no juega (0 minutos), no puntúa nada.",
+        "Minutos: 20 o más → +2 · de 1 a 19 → +1.",
+        "Puntos anotados: +1 por cada 4 · Asistencias: +1 por cada 2.",
+        "Triples: +1 por triple (pívots: +2 por triple).",
+        "Rebotes totales: +1 por cada 2 (pívots: +1 por cada 3).",
+        "Tapones: +1 por tapón (pívots: +1 por cada 2).",
+        "Pérdidas: −1 por cada 2 (pívots: −1 por cada 3) · Tiros libres fallados: −1 por cada 2.",
+        "Faltas: −1 por cada 3; con 5 faltas, −3.",
+        "Valoración del partido: 1 a 5 → +1 · 6 a 10 → +2 · 11 a 15 → +3 · más de 15 → +4 · 0 o negativa → 0.",
+        "Ejemplo: una base con 32 min, 16 puntos, 7 asistencias, 3 rebotes, 2 pérdidas, 3 faltas y 18 de valoración suma 2+4+3+1−1−1+4 = 12 puntos (24 si es tu capitana).",
       ],
     },
     {
-      icon: "🧑‍🤝‍🧑", color: C.gold, title: "Tu equipo: alineación, capitana y banquillo",
+      icon: "📅", color: C.baby, title: "Cómo va cada jornada, paso a paso",
       body: [
-        "Eliges formación (2-2-1, 1-3-1, 1-2-2 o 2-1-2 — siempre 5 titulares) y una capitana, que duplica sus puntos esa jornada.",
-        "Si una titular no juega, la mejor jugadora de su misma posición en el banquillo entra sola a sustituirla — pero solo si puntúa más que ella.",
-        "Ojo: si no completas las 5 titulares, esa jornada no puntúas nada, aunque tengas banquillo de sobra.",
+        "Ejemplo con una jornada que empieza el sábado a las 12:00 (la hora del primer partido; si no hay hora oficial, las 12:00):",
+        "Durante la semana: preparas la alineación, pujas, haces ofertas y fichas.",
+        "Viernes 12:00 (24 h antes): se cierran los clausulazos hasta que empiece la jornada.",
+        "Sábado 11:50: te llega un aviso de que la jornada está a punto de empezar.",
+        "Sábado 12:00: tu alineación se CONGELA (la que tengas guardada es la que puntúa), se cierra el Triple Fabtasy y se vuelven a abrir las cláusulas. El Ranking pasa a mostrar la jornada en juego.",
+        "Durante el fin de semana: según se cargan resultados y estadísticas, ves tus puntos en directo.",
+        "Con todos los resultados: se pagan el 5 ideal y el Triple, y el Ranking vuelve a la General.",
+        "Esa noche a las 00:00: los precios de las jugadoras se mueven según sus partidos.",
+        "⚠️ Si al empezar la jornada tienes el dinero en negativo, esa jornada no puntúas.",
+      ],
+    },
+    {
+      icon: "🛒", color: C.negative, title: "El mercado diario y tu dinero",
+      body: [
+        `Cada liga tiene su mercado, que se renueva cada 24 horas a la hora de la liga (arriba ves la cuenta atrás). Cada día salen ${MARKET_ASSET_COUNT} jugadoras o entrenadores libres, que no son de nadie.`,
+        "Pujas: la mínima es el valor actual de la jugadora; puedes pujar lo que quieras por encima. Nadie ve cuánto has pujado, y puedes cambiar o retirar tu puja mientras el mercado esté abierto.",
+        "Al cerrar gana la puja más alta (si hay empate, la que se hizo antes). Solo pagas si ganas.",
+        "3 minutos antes del cierre te llega un aviso.",
+        "Disponible: lo que te queda para gastar. Comprometido: lo que tienes en pujas abiertas.",
+        "Puedes pujar por encima de tu dinero, con un límite de deuda del 20% del valor de tu plantilla. Pero si empieza una jornada y sigues en negativo, esa jornada no puntúas.",
+      ],
+    },
+    {
+      icon: "💸", color: C.positive, title: "Vender y ofertas entre mánagers",
+      body: [
+        "Venta inmediata a la liga: te pagan al momento el 50% del valor de la jugadora. Rápido, pero pierdes dinero.",
+        "Ponerla en venta: cada día, al renovarse el mercado, la liga te hace una oferta de entre el 90% y el 110% de su valor. Vale hasta el siguiente cierre del mercado y puedes aceptarla o rechazarla (verás en verde o rojo si te ofrecen más o menos de lo que vale).",
+        "Ofertas a otros mánagers: puedes ofrecer dinero por una jugadora de otro equipo (como mínimo, su valor actual). Le llega un aviso y decide si acepta o rechaza; si acepta, la jugadora pasa a tu equipo al momento.",
+        "Favoritas ⭐: márcalas y te avisaremos cuando salgan al mercado o cambien de equipo.",
+      ],
+    },
+    {
+      icon: "🔒", color: C.negative, title: "Las cláusulas",
+      body: [
+        "Toda jugadora con dueño tiene una cláusula: quien la pague entera se la lleva al momento, sin que el dueño pueda evitarlo (un \"clausulazo\").",
+        "Las del equipo inicial nacen con una cláusula de entre 1,45 y 1,66 veces su valor. Las que fichas después tienen como cláusula lo que pagaste por ellas.",
+        "Protección: las 2 primeras semanas tras conseguir una jugadora, su cláusula está protegida y nadie puede pagarla.",
+        "Subir tu cláusula: puedes pagar de tu bolsillo para subirla. Cada euro que metes la sube el doble (pagar 1.000.000 € la sube 2.000.000 €).",
+        "Subida automática: la cláusula nunca queda por debajo del valor de mercado. Si la jugadora sube de valor, su cláusula sube sola esa noche, gratis.",
+        "Las 24 horas antes de que empiece cada jornada no se pueden pagar cláusulas (si la jornada empieza el sábado a las 12:00, quedan cerradas desde el viernes a las 12:00). En cuanto empieza la jornada, se vuelven a abrir.",
+      ],
+    },
+    {
+      icon: "📈", color: C.positive, title: "Cómo cambian los precios",
+      body: [
+        "Cada noche a las 00:00 los precios se actualizan, como en una bolsa, según el último partido (en puntos Fantasy):",
+        "Partido malo (4 o menos): baja · Normal (5 a 7): casi no se mueve · Bueno (8 o más): sube, y cuanto mejor, más · No jugar cuenta como partido malo.",
+        "Las rachas cuentan: bueno→bueno sigue subiendo y cada vez más; bueno→normal sube menos; malo→peor baja más; malo→normal baja menos; malo→bueno (o al revés) se mueve poco y cambia la tendencia.",
+        "Las jugadoras caras bajan más fuerte cuando lo hacen mal. El efecto de un partido se reparte en la semana (el día siguiente es el que más se mueve), y en un solo día casi nunca se mueve más de 2-3 M.",
+        "También influyen las pujas y favoritas que tenga, lo fáciles que sean sus próximos rivales y ser la MVP de la jornada.",
+        "Entrenadores/as: con victoria suben entre 120.000 y 300.000 € (más si encadenan victorias); con derrota bajan entre 70.000 y 150.000 € (más con rachas y cuanto más valen). Nunca bajan de 800.000 €.",
       ],
     },
     {
       icon: "⭐", color: C.gold, title: "El 5 ideal",
       body: [
-        "Cada jornada, la app calcula las 5 jugadoras (2 bases, 2 aleros, 1 pívot) que más puntos han hecho, encajando en una alineación válida.",
-        `Si tienes alguna de esas 5 y de verdad te ha puntuado esa jornada (de titular o entrando desde el banquillo), cobras ${fmtCredits(IDEAL_FIVE_REWARD)} automáticamente.`,
-        "También puedes consultar el 5 ideal de cualquier jornada pasada, o el mejor 5 ideal acumulado de toda la temporada, desde el menú.",
+        "Cada jornada se calcula el mejor quinteto posible (en una formación válida) con las jugadoras que más han puntuado.",
+        `Si alguna de ellas te ha puntuado a ti esa jornada (de titular o entrando desde el banquillo), cobras ${fmtCredits(IDEAL_FIVE_REWARD)} automáticamente.`,
+        "Desde el menú puedes ver el 5 ideal de cada jornada y el mejor de toda la temporada, y tocar una jugadora para ver su ficha.",
       ],
     },
     {
-      icon: "🧮", color: C.baby, title: "Cómo se puntúa (Swish)",
+      icon: "🎯", color: "#22C55E", title: "Triple Fabtasy",
       body: [
-        "Cada estadística real de la jugadora suma o resta puntos Fantasy: minutos jugados, puntos anotados, asistencias, triples (con más valor para las pívots), rebotes, tapones...",
-        "Restan las pérdidas, los tiros libres fallados y las faltas.",
-        "La valoración final del partido también cuenta como puntos extra — pero si es 0 o negativa, no suma nada.",
+        `Quiniela semanal aparte de tu equipo. Entrada: ${fmtCredits(TRIPLE_ENTRY_FEE)} de tu presupuesto.`,
+        "Eliges quién gana cada partido de la jornada y quién será la MVP (entre 7 candidatas u \"otra\"). El equipo que descansa cuenta siempre como acierto automático.",
+        "Se cierra en cuanto empieza la jornada.",
+        `Premios: fallando 2 partidos → ${fmtCredits(TRIPLE_PRIZE_BY_MISSES[2])} · fallando 1 → ${fmtCredits(TRIPLE_PRIZE_BY_MISSES[1])} · acertándolos todos → ${fmtCredits(TRIPLE_PRIZE_BY_MISSES[0])} · todos + la MVP → ${fmtCredits(TRIPLE_PRIZE_PERFECT_MVP)}.`,
+        "Se cobra automáticamente cuando están todos los resultados.",
       ],
     },
     {
-      icon: "🛒", color: C.negative, title: "El mercado: pujas, ofertas y cláusulas",
+      icon: "📊", color: C.principal, title: "El Ranking",
       body: [
-        "Pujas: cada día hay un lote de jugadoras en subasta. Puja lo que quieras — gana quien más ofrezca cuando cierre.",
-        "Ofertas directas: puedes ofrecer dinero por una jugadora que ya tiene dueña/o; decide si la acepta o la rechaza.",
-        "Cláusula: toda jugadora fichada tiene una cláusula de salida — págala entera y te la llevas sin pedir permiso.",
-        "Puedes subir tu propia cláusula pagando de tu bolsillo: cada euro que metas la sube el doble (pagar 1.000.000 € la sube 2.000.000 €).",
-        "Las 24 horas antes de que empiece cada jornada no se pueden pagar cláusulas (si la jornada empieza el sábado a las 12:00, quedan cerradas desde el viernes a las 12:00). En cuanto empieza la jornada, se vuelven a abrir.",
+        "General: puntos acumulados de toda la temporada. En caso de empate, va delante quien tenga la plantilla más valiosa.",
+        "Por jornada: los puntos de una jornada concreta.",
+        "Mientras hay una jornada en juego, el Ranking muestra esa jornada con tus puntos en directo; cuando acaba, vuelve solo a la General. Siempre puedes elegir otra a mano en el botón naranja.",
+        "Las flechas indican si has subido o bajado de puesto respecto a la jornada anterior.",
+      ],
+    },
+    {
+      icon: "🏆", color: "#C026D3", title: "Los playoffs",
+      body: [
+        "Al acabar la liga regular (última jornada: domingo 16/05), entran en playoffs los 8 primeros del ranking de cada liga. El resto se queda de espectador.",
+        "Lunes 17/05: arrancan. Ya no hay mercado ni dinero: en cada ronda haces una lista de preferencia de jugadoras (solo de equipos reales que sigan vivos en los playoffs de verdad) y de lunes a viernes se reparten cada día según las listas. Si el viernes a alguien le faltan, se le completan automáticamente.",
+        "Plantillas de playoffs: 10 jugadoras en cuartos, 9 en semis y 9 en la final.",
+        "Cuartos (sábados 22/05 y 29/05, ida y vuelta): se suman los puntos de los dos partidos y pasan los 4 mejores.",
+        "Semis (sábado 05/06) y Final (domingo 06/06): a un solo partido. Quien más puntos haga en la final es campeón o campeona 🏆.",
+        "Los cruces del torneo real (1º-8º, 2º-7º, 3º-6º y 4º-5º) aparecen solos en el calendario.",
+      ],
+    },
+    {
+      icon: "🔔", color: C.baby, title: "Avisos al móvil",
+      body: [
+        "Activa las notificaciones y te avisaremos cuando: la jornada vaya a empezar (10 min antes), el mercado vaya a cerrar (3 min antes), ganes una puja, te hagan un clausulazo o lo hagas tú, recibas una oferta o te respondan, te quedes en negativo, entres en el 5 ideal, o una favorita salga al mercado o cambie de equipo.",
       ],
     },
   ];
@@ -6686,7 +6771,7 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
         </div>
 
         <div className="grid grid-cols-4 gap-1.5 mb-4">
-          {[["5 aciertos", TRIPLE_PRIZE_TABLE[5]], ["6 aciertos", TRIPLE_PRIZE_TABLE[6]], ["7/7", TRIPLE_PRIZE_TABLE[7]], ["7/7 + MVP", TRIPLE_PRIZE_PERFECT_MVP]].map(([label, val]) => (
+          {[["Fallando 2", TRIPLE_PRIZE_BY_MISSES[2]], ["Fallando 1", TRIPLE_PRIZE_BY_MISSES[1]], ["Todos", TRIPLE_PRIZE_BY_MISSES[0]], ["Todos + MVP", TRIPLE_PRIZE_PERFECT_MVP]].map(([label, val]) => (
             <div key={label} className="fl-row py-2 px-1 text-center">
               <div className="fl-mono font-bold" style={{ color: C.gold, fontSize: 12 }}>{fmtCredits(val)}</div>
               <div className="fl-mono text-[8px] mt-0.5" style={{ color: C.muted }}>{label}</div>
