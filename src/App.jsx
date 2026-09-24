@@ -563,10 +563,17 @@ const auctionService = {
     const results = [];
     const activityEntries = [];
 
+    const alreadyOwned = auctionService.ownedIdsOf(teams);
     (market.assetIds || []).forEach(assetId => {
       const asset = players.find(p => p.id === assetId);
       const candidates = nextBids.filter(b => b.marketId === market.id && b.assetId === assetId && b.status === "active");
       if (!asset || candidates.length === 0) return;
+      // Blindaje: si mientras tanto la jugadora ha pasado a una plantilla, no
+      // se adjudica (evita que esté en dos equipos a la vez); pujas anuladas.
+      if (alreadyOwned.has(assetId)) {
+        candidates.forEach(b => { const idx = nextBids.findIndex(x => x.id === b.id); if (idx >= 0) nextBids[idx] = { ...nextBids[idx], status: "lost" }; });
+        return;
+      }
       const sorted = [...candidates].sort((a, b) => (b.amount - a.amount) || (a.createdAt - b.createdAt));
       const winner = sorted[0];
       sorted.forEach(b => {
@@ -581,6 +588,12 @@ const auctionService = {
 
     const historyEntry = { id: market.id, closesAt: market.closesAt, opensAt: market.opensAt, results };
     return { teams: nextTeams, bids: nextBids, historyEntry, activityEntries };
+  },
+  // Jugadoras que YA tienen dueña en alguna plantilla de la liga.
+  ownedIdsOf(teams) {
+    const owned = new Set();
+    Object.values(teams || {}).forEach((t) => teamService.squadIds(t).forEach((id) => owned.add(id)));
+    return owned;
   },
 };
 
@@ -4208,6 +4221,11 @@ export default function App() {
     const fresh = (await readAllTeams(leagueId)) || {};
     const ownedIds = new Set();
     Object.values(fresh).forEach(t => teamService.squadIds(t).forEach(id => ownedIds.add(id)));
+    // Las que están AHORA en el mercado de la liga tampoco entran en el
+    // reparto (si no, una misma jugadora estaría en una plantilla y a la vez
+    // en el mercado como libre).
+    const currentMarketNow = await readShared(leagueKey(leagueId, "currentMarket"), null);
+    (currentMarketNow?.assetIds || []).forEach((id) => ownedIds.add(id));
     const freeJugadoras = freshPlayers.filter(p => p.position !== "DT" && !ownedIds.has(p.id));
     const draft = teamService.autoDraftSquad(freeJugadoras, INITIAL_SQUAD_VALUE_RANGE, INITIAL_SQUAD_COUNT);
     let team = teamService.addInitialSquad(teamService.emptyTeam(), draft);
@@ -4505,6 +4523,27 @@ export default function App() {
         // jugadoras ni sus pujas.
         marketNext = { ...marketNext, opensAt: window_.opensAt, closesAt: window_.closesAt };
         await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
+      }
+
+      // AUTORREPARACIÓN: si en el mercado abierto hay alguna jugadora que ya
+      // pertenece a una plantilla (p. ej. entró en el reparto inicial de
+      // alguien que se unió después de generarse el mercado), se sustituye
+      // por otra libre y se anulan las pujas que hubiera por ella.
+      if (marketNext && !marketNext.resolved && now < marketNext.closesAt) {
+        const ownedNow = auctionService.ownedIdsOf(teamsNext);
+        const bad = (marketNext.assetIds || []).filter((id) => ownedNow.has(id));
+        if (bad.length > 0) {
+          const keep = (marketNext.assetIds || []).filter((id) => !ownedNow.has(id));
+          const replacements = marketService.buildAssets(playersNext, teamsNext, bad.length, keep);
+          marketNext = { ...marketNext, assetIds: [...keep, ...replacements] };
+          await writeShared(leagueKey(leagueId, "currentMarket"), marketNext);
+          const badSet = new Set(bad);
+          const cleanedBids = bidsNext.filter((b) => !(b.marketId === marketNext.id && badSet.has(b.assetId) && b.status === "active"));
+          if (cleanedBids.length !== bidsNext.length) {
+            bidsNext = cleanedBids;
+            await writeShared(leagueKey(leagueId, "bids"), bidsNext);
+          }
+        }
       }
 
       // Liquida las participaciones de Triple Fantasy cuya jornada ya tiene los 7
@@ -9549,7 +9588,8 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset }
   const [detailPlayer, setDetailPlayer] = useState(null);
   const [showSearch, setShowSearch] = useState(false);
-  const assets = (market.assetIds || []).map(id => players.find(p => p.id === id)).filter(Boolean);
+  const ownedInLeague = auctionService.ownedIdsOf(teams);
+  const assets = (market.assetIds || []).filter(id => !ownedInLeague.has(id)).map(id => players.find(p => p.id === id)).filter(Boolean);
   const myActiveBids = bids.filter(b => b.marketId === market.id && b.userId === profile.name && b.status === "active");
   const myPastBids = bids.filter(b => b.userId === profile.name && b.status !== "active" && b.marketId !== market.id);
   const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length
