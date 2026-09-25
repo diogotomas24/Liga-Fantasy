@@ -8448,8 +8448,8 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
   if (showThirdPartyOffer && ownerInfo) {
     return (
       <OfferScreen target={myPendingOffer
-          ? { sellerName: ownerInfo.ownerName, asset: player, editing: true, offerId: myPendingOffer.id, initialAmount: myPendingOffer.amount }
-          : { sellerName: ownerInfo.ownerName, asset: player }} budgetAvailable={budgetAvailable}
+          ? { sellerName: ownerInfo.ownerName, asset: player, entry: ownerInfo.ownerEntry, editing: true, offerId: myPendingOffer.id, initialAmount: myPendingOffer.amount }
+          : { sellerName: ownerInfo.ownerName, asset: player, entry: ownerInfo.ownerEntry }} budgetAvailable={budgetAvailable}
         onBack={() => setShowThirdPartyOffer(false)}
         onConfirm={async (amount) => {
           const res = myPendingOffer && offersCtx.onEditOffer
@@ -9748,9 +9748,11 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   // Oferta mía pendiente por esa jugadora (si la hay): abre la pantalla en
   // modo "editar" en vez de mandar una nueva.
   const myPendingOffer = (sellerName, assetId) => (offers || []).find(o => o.status === "pending" && o.fromUser === profile.name && o.toUser === sellerName && o.assetId === assetId) || null;
+  const entryOf = (sellerName, assetId) => teamService.getSquadEntry(teams?.[sellerName], assetId);
   const openOfferFor = (sellerName, asset) => {
     const mine = myPendingOffer(sellerName, asset.id);
-    setOfferTarget(mine ? { sellerName, asset, editing: true, offerId: mine.id, initialAmount: mine.amount } : { sellerName, asset });
+    const entry = entryOf(sellerName, asset.id);
+    setOfferTarget(mine ? { sellerName, asset, entry, editing: true, offerId: mine.id, initialAmount: mine.amount } : { sellerName, asset, entry });
   };
 
   if (clauseTarget) {
@@ -9853,7 +9855,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
                 )}
               </div>
               <OfertasEnviadasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer}
-                onEdit={(o, asset) => setOfferTarget({ sellerName: o.toUser, asset, editing: true, offerId: o.id, initialAmount: o.amount })} />
+                onEdit={(o, asset) => setOfferTarget({ sellerName: o.toUser, asset, entry: entryOf(o.toUser, asset.id), editing: true, offerId: o.id, initialAmount: o.amount })} />
             </div>
           )}
 
@@ -10071,7 +10073,8 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
 const OffersContext = createContext({ offers: [], me: null, onEditOffer: null, onCancelOffer: null });
 
 function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
-  const { sellerName, asset, editing, initialAmount } = target;
+  const { sellerName, asset, editing, initialAmount, entry } = target;
+  const clauseValue = entry ? (entry.clause || asset.basePrice || 0) : null;
   const minEuros = Math.round((asset.basePrice || 1) * 1000000);
   const [amountEuros, setAmountEuros] = useState(String(editing && initialAmount ? Math.max(minEuros, Math.round(initialAmount * 1000000)) : minEuros));
   const [showKeypad, setShowKeypad] = useState(false);
@@ -10108,7 +10111,26 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
             <PlayerPhoto url={asset.photo} size={92} rounded={999} />
           </div>
         </div>
-        <div className="text-center fl-body text-sm font-medium mb-4" style={{ color: C.white }}>{asset.name}</div>
+        <div className="text-center fl-body text-sm font-medium mb-3" style={{ color: C.white }}>{asset.name}</div>
+        {/* Precio de la jugadora y su cláusula, para saber de qué partes al ofertar */}
+        <div className="space-y-2 mb-5 px-1">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center justify-center rounded-full" style={{ width: 22, height: 22, background: C.gold }}><Coins size={12} color={C.ink} /></span>
+              <span className="fl-mono text-[11px] uppercase" style={{ color: C.muted }}>Valor de mercado</span>
+            </div>
+            <span className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(asset.basePrice || 0)}</span>
+          </div>
+          {clauseValue != null && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="flex items-center justify-center rounded-full" style={{ width: 22, height: 22, background: C.negative }}><Lock size={11} color={C.white} /></span>
+                <span className="fl-mono text-[11px] uppercase" style={{ color: C.muted }}>Valor de cláusula</span>
+              </div>
+              <span className="fl-mono text-sm font-semibold" style={{ color: C.white }}>{fmtCredits(clauseValue)}</span>
+            </div>
+          )}
+        </div>
         <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>{editing ? "NUEVO IMPORTE" : "TU OFERTA"}</label>
         {editing && initialAmount ? <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>Oferta actual: {fmtCredits(initialAmount)} · valor de la jugadora: {fmtCredits(asset.basePrice || 0)}</div> : null}
         <button onClick={() => setShowKeypad(true)} className="w-full rounded-md px-3 py-2.5 text-sm fl-mono flex items-center justify-between"
