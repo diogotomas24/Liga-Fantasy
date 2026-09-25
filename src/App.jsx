@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from "react";
 import {
   Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown, FlaskConical,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
@@ -4997,6 +4997,30 @@ export default function App() {
     return { ok: true };
   }, [profile, players, bids, market, offers, activeLeagueId]);
 
+  // Cambia el importe de una oferta ENVIADA que siga pendiente.
+  const editOffer = useCallback(async (offerId, amount) => {
+    const freshOffers = await readShared(leagueKey(activeLeagueId, "offers"), offers);
+    const offer = freshOffers.find(o => o.id === offerId && o.status === "pending" && o.fromUser === profile.name);
+    if (!offer) return { ok: false, error: "Esta oferta ya no está pendiente." };
+    const asset = players.find(p => p.id === offer.assetId);
+    if (!asset) return { ok: false, error: "No se encuentra la jugadora." };
+    const [buyerTeam, sellerTeam] = await Promise.all([readTeam(activeLeagueId, profile.name), readTeam(activeLeagueId, offer.toUser)]);
+    const freshBids = await readShared(leagueKey(activeLeagueId, "bids"), bids);
+    const freshMarket = await readShared(leagueKey(activeLeagueId, "currentMarket"), market);
+    // Se valida como si fuera nueva (mínimo = valor actual, presupuesto...),
+    // quitando de en medio la propia oferta que se está editando.
+    const check = offerService.validateSend({
+      buyerName: profile.name, buyerTeam, sellerName: offer.toUser, sellerTeam, players, asset, amount,
+      bids: freshBids, marketId: freshMarket?.id, offers: freshOffers.filter(o => o.id !== offerId),
+    });
+    if (!check.ok) return check;
+    const nextOffers = freshOffers.map(o => o.id === offerId ? { ...o, amount, createdAt: realNowMs(), edited: true } : o);
+    await writeShared(leagueKey(activeLeagueId, "offers"), nextOffers);
+    setOffers(nextOffers);
+    sendPushNotification(activeLeagueId, offer.toUser, "✏️ Oferta modificada", `${profile.name} ha cambiado su oferta por ${asset.name}: ahora te ofrece ${fmtCredits(amount)}.`);
+    return { ok: true };
+  }, [profile, players, bids, market, offers, activeLeagueId]);
+
   // Responde (acepta/rechaza) una oferta recibida, o cancela una enviada.
   const respondOffer = useCallback(async (offerId, action) => {
     const freshOffers = await readShared(leagueKey(activeLeagueId, "offers"), offers);
@@ -5067,6 +5091,7 @@ export default function App() {
   if (!market && playoffState.phase === "none") return <Loading />;
 
   return (
+    <OffersContext.Provider value={{ offers: offers || [], me: profile.name, onEditOffer: editOffer, onCancelOffer: respondOffer }}>
     <div className="min-h-screen fl-body" style={{ background: C.navy900 }}>
       <GlobalStyle />
       <Header profile={profile} saving={saving} activeLeague={activeLeague} onBackToLeagues={backToLeagues} activeLeagueId={activeLeagueId} onOpenMenu={() => setShowSideMenu(true)} />
@@ -5098,7 +5123,7 @@ export default function App() {
               <MercadoTab market={market} players={players} bids={bids} marketHistory={marketHistory} activity={activity}
                 profile={profile} myTeam={myTeam} teams={teams} isMarketOpen={isMarketOpen}
                 budgetAvailable={budgetAvailable} onBid={placeBid} onWithdrawBid={withdrawBid} onBuyClause={buyClause}
-                offers={offers} onSendOffer={sendOffer} onRespondOffer={respondOffer}
+                offers={offers} onSendOffer={sendOffer} onEditOffer={editOffer} onRespondOffer={respondOffer}
                 jornadas={jornadas} teamCrests={teamCrests}
                 favoritos={favoritos} onToggleFavorite={toggleFavorito}
                 onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRejectSaleOffer={rejectSaleOffer} onRaiseClause={raiseClause} />
@@ -5123,6 +5148,7 @@ export default function App() {
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
       )}
     </div>
+    </OffersContext.Provider>
   );
 }
 
@@ -6151,6 +6177,19 @@ function Header({ profile, saving, activeLeague, onBackToLeagues, activeLeagueId
       try {
         const registration = await navigator.serviceWorker.getRegistration("/sw.js");
         const subscription = registration ? await registration.pushManager.getSubscription() : null;
+        // Si el móvil ya tiene las notificaciones activadas, se vuelve a
+        // guardar la suscripción con ESTA liga y ESTA persona. Antes, quien las
+        // activó en otra liga (p. ej. una de pruebas ya borrada) veía la
+        // campana "activada" pero en la liga nueva no le llegaba nada.
+        if (subscription && activeLeagueId && profile?.name) {
+          try {
+            const json = subscription.toJSON();
+            await supabase.from("push_subscriptions").upsert({
+              id: uid("push"), league_id: activeLeagueId, user_name: profile.name,
+              endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth,
+            }, { onConflict: "endpoint" });
+          } catch {}
+        }
         if (!cancelled) setNotifState(subscription ? "on" : "off");
       } catch {
         if (!cancelled) setNotifState("off");
@@ -7916,8 +7955,15 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
-                <div>
-                  <div className="text-sm font-medium" style={{ color: C.white }}>{r.name}{r.name === me ? " (tú)" : ""}</div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-sm font-medium truncate" style={{ color: C.white }}>{r.name}{r.name === me ? " (tú)" : ""}</span>
+                    {/* Valor de plantilla ACTUAL (se mueve con compras, ventas y cambios de precio) */}
+                    <span className="fl-mono text-[10px] font-semibold flex items-center gap-0.5 whitespace-nowrap flex-shrink-0 px-1.5 py-0.5 rounded"
+                      style={{ color: C.gold, background: "rgba(255,200,61,0.10)" }} title="Valor de plantilla">
+                      <Coins size={9} color={C.gold} />{fmtCredits(r.squadValue || 0).replace(" €", "\u00A0€")}
+                    </span>
+                  </div>
                   <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{r.jCount} jugadoras · {r.cCount} DT</div>
                 </div>
               </div>
@@ -8308,6 +8354,7 @@ function RaiseClauseScreen({ player, entry, onBack, onConfirm }) {
 }
 
 function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavorite, isOwned, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRaiseClause, onClose, teams, me, budgetAvailable, onBuyClause, onSendOffer }) {
+  const offersCtx = useContext(OffersContext);
   const [showHistorico, setShowHistorico] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [showRaiseClause, setShowRaiseClause] = useState(false);
@@ -8393,12 +8440,21 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
     );
   }
 
+  // ¿Ya tengo una oferta pendiente por esta jugadora a su dueño?
+  const myPendingOffer = ownerInfo
+    ? (offersCtx.offers || []).find(o => o.status === "pending" && o.fromUser === (offersCtx.me || me) && o.toUser === ownerInfo.ownerName && o.assetId === player.id) || null
+    : null;
+
   if (showThirdPartyOffer && ownerInfo) {
     return (
-      <OfferScreen target={{ sellerName: ownerInfo.ownerName, asset: player }} budgetAvailable={budgetAvailable}
+      <OfferScreen target={myPendingOffer
+          ? { sellerName: ownerInfo.ownerName, asset: player, editing: true, offerId: myPendingOffer.id, initialAmount: myPendingOffer.amount }
+          : { sellerName: ownerInfo.ownerName, asset: player }} budgetAvailable={budgetAvailable}
         onBack={() => setShowThirdPartyOffer(false)}
         onConfirm={async (amount) => {
-          const res = await onSendOffer(ownerInfo.ownerName, player, amount);
+          const res = myPendingOffer && offersCtx.onEditOffer
+            ? await offersCtx.onEditOffer(myPendingOffer.id, amount)
+            : await onSendOffer(ownerInfo.ownerName, player, amount);
           if (res.ok) onClose(); else return res;
         }} />
     );
@@ -8469,7 +8525,16 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
 
         {showActions && ownerInfo && (
           <ActionSheet onClose={() => setShowActions(false)} title={player.name}>
-            <ActionSheetItem label="Hacer oferta" onClick={() => { setShowActions(false); setShowThirdPartyOffer(true); }} />
+            {myPendingOffer ? (
+              <>
+                <ActionSheetItem label="Editar oferta" subtitle={`Tu oferta actual: ${fmtCredits(myPendingOffer.amount)}`} onClick={() => { setShowActions(false); setShowThirdPartyOffer(true); }} />
+                {offersCtx.onCancelOffer && (
+                  <ActionSheetItem label="Retirar oferta" onClick={async () => { setShowActions(false); await offersCtx.onCancelOffer(myPendingOffer.id, "cancel"); }} />
+                )}
+              </>
+            ) : (
+              <ActionSheetItem label="Hacer oferta" onClick={() => { setShowActions(false); setShowThirdPartyOffer(true); }} />
+            )}
             <ActionSheetItem
               label={teamService.isClauseLocked(ownerInfo.ownerEntry) ? "Pagar cláusula (bloqueada)" : clauseWindowStatus(jornadas).blocked ? "Pagar cláusula (cerrado antes de jornada)" : "Pagar cláusula"}
               disabled={teamService.isClauseLocked(ownerInfo.ownerEntry) || clauseWindowStatus(jornadas).blocked}
@@ -9666,7 +9731,7 @@ function PlayoffDraftTab({ playoffState, players, teamCrests, profile, jornadas,
   );
 }
 
-function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onBuyClause, offers, onSendOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRejectSaleOffer, onRaiseClause, teamCrests }) {
+function MercadoTab({ market, players, bids, marketHistory, activity, profile, myTeam, teams, isMarketOpen, budgetAvailable, onBid, onWithdrawBid, onBuyClause, offers, onSendOffer, onEditOffer, onRespondOffer, jornadas, favoritos, onToggleFavorite, onSellImmediate, onToggleForSale, onAcceptSaleOffer, onRejectSaleOffer, onRaiseClause, teamCrests }) {
   const [sub, setSub] = useState("mercado");
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
@@ -9680,6 +9745,13 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const receivedOffersCount = (offers || []).filter(o => o.status === "pending" && o.toUser === profile.name).length
     + (myTeam.squad || []).filter(e => e.forSale && e.saleOffer && (!e.saleOffer.expiresAt || realNowMs() <= e.saleOffer.expiresAt)).length;
   const sentOffersCount = (offers || []).filter(o => o.status === "pending" && o.fromUser === profile.name).length;
+  // Oferta mía pendiente por esa jugadora (si la hay): abre la pantalla en
+  // modo "editar" en vez de mandar una nueva.
+  const myPendingOffer = (sellerName, assetId) => (offers || []).find(o => o.status === "pending" && o.fromUser === profile.name && o.toUser === sellerName && o.assetId === assetId) || null;
+  const openOfferFor = (sellerName, asset) => {
+    const mine = myPendingOffer(sellerName, asset.id);
+    setOfferTarget(mine ? { sellerName, asset, editing: true, offerId: mine.id, initialAmount: mine.amount } : { sellerName, asset });
+  };
 
   if (clauseTarget) {
     return (
@@ -9697,7 +9769,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
     return (
       <OfferScreen target={offerTarget} budgetAvailable={budgetAvailable}
         onBack={() => setOfferTarget(null)}
-        onConfirm={(amount) => onSendOffer(offerTarget.sellerName, offerTarget.asset, amount)} />
+        onConfirm={(amount) => offerTarget.editing ? onEditOffer(offerTarget.offerId, amount) : onSendOffer(offerTarget.sellerName, offerTarget.asset, amount)} />
     );
   }
 
@@ -9735,8 +9807,9 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
             </div>
           )}
           <EnVentaSection teams={teams} players={players} teamCrests={teamCrests} me={profile.name}
+            myOfferFor={myPendingOffer} onCancelOffer={onRespondOffer}
             onSelectClause={(sellerName, asset, entry) => setClauseTarget({ sellerName, asset, entry })}
-            onSelectOffer={(sellerName, asset) => setOfferTarget({ sellerName, asset })}
+            onSelectOffer={openOfferFor}
             onOpenPlayer={setDetailPlayer} />
         </>
       )}
@@ -9779,7 +9852,8 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
                   </div>
                 )}
               </div>
-              <OfertasEnviadasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer} />
+              <OfertasEnviadasList offers={offers || []} players={players} me={profile.name} onRespond={onRespondOffer}
+                onEdit={(o, asset) => setOfferTarget({ sellerName: o.toUser, asset, editing: true, offerId: o.id, initialAmount: o.amount })} />
             </div>
           )}
 
@@ -9857,7 +9931,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
 // muestran cláusula porque, mientras están libres, no la tienen.
 // Jugadoras marcadas "en venta" por cualquier equipo de la liga, visibles
 // directamente en el Mercado (no solo dentro de su ficha).
-function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer, teamCrests, me }) {
+function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenPlayer, teamCrests, me, myOfferFor, onCancelOffer }) {
   const rows = [];
   Object.entries(teams || {}).forEach(([name, team]) => {
     (team.squad || []).forEach(entry => {
@@ -9903,10 +9977,30 @@ function EnVentaSection({ teams, players, onSelectClause, onSelectOffer, onOpenP
                         {fmtCredits(entry.clause || player.basePrice)}
                       </button>
                     )}
-                    <button onClick={() => onSelectOffer(owner, player)}
-                      className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
-                      Hacer oferta
-                    </button>
+                    {(() => {
+                      const mine = myOfferFor ? myOfferFor(owner, player.id) : null;
+                      if (!mine) return (
+                        <button onClick={() => onSelectOffer(owner, player)}
+                          className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ color: C.principal, border: `1px solid ${C.principal}` }}>
+                          Hacer oferta
+                        </button>
+                      );
+                      return (
+                        <>
+                          <span className="fl-mono text-[10px]" style={{ color: C.muted }}>Tu oferta: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(mine.amount)}</span></span>
+                          <button onClick={() => onSelectOffer(owner, player)}
+                            className="fl-tap fl-mono text-xs font-semibold rounded-md px-3 py-2" style={{ background: C.baby, color: C.ink }}>
+                            Editar oferta
+                          </button>
+                          {onCancelOffer && (
+                            <button onClick={() => onCancelOffer(mine.id, "cancel")}
+                              className="fl-tap fl-mono text-[11px] font-medium rounded-md px-3 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+                              Retirar oferta
+                            </button>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -9972,10 +10066,14 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
 // Pantalla de oferta de compra directa a otra persona: cualquier importe, la
 // otra persona decide si la acepta. Disponible siempre, incluso con la
 // jugadora todavía protegida por cláusula.
+// Ofertas del usuario disponibles en cualquier pantalla (la ficha de una
+// jugadora se abre desde muchos sitios distintos).
+const OffersContext = createContext({ offers: [], me: null, onEditOffer: null, onCancelOffer: null });
+
 function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
-  const { sellerName, asset } = target;
+  const { sellerName, asset, editing, initialAmount } = target;
   const minEuros = Math.round((asset.basePrice || 1) * 1000000);
-  const [amountEuros, setAmountEuros] = useState(String(minEuros));
+  const [amountEuros, setAmountEuros] = useState(String(editing && initialAmount ? Math.max(minEuros, Math.round(initialAmount * 1000000)) : minEuros));
   const [showKeypad, setShowKeypad] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -9992,7 +10090,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
     return (
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center px-6" style={{ background: C.navy900 }}>
         <CircleCheck size={40} color={C.positive} />
-        <div className="fl-body text-sm mt-3 text-center" style={{ color: C.white }}>Oferta enviada a {sellerName}.</div>
+        <div className="fl-body text-sm mt-3 text-center" style={{ color: C.white }}>{editing ? `Oferta a ${sellerName} actualizada.` : `Oferta enviada a ${sellerName}.`}</div>
         <button onClick={onBack} className="fl-tap mt-4 rounded-md px-5 py-2.5 text-sm font-semibold" style={{ background: C.baby, color: C.ink }}>Volver</button>
       </div>
     );
@@ -10002,7 +10100,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: C.navy900 }}>
       <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)" }}>
         <button onClick={onBack} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
-        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Oferta a {sellerName}</div>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>{editing ? "Editar oferta" : "Oferta a"} {editing ? `· ${sellerName}` : sellerName}</div>
       </div>
       <div className="flex-1 overflow-y-auto px-5 py-6">
         <div className="flex justify-center mb-6">
@@ -10011,7 +10109,8 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
           </div>
         </div>
         <div className="text-center fl-body text-sm font-medium mb-4" style={{ color: C.white }}>{asset.name}</div>
-        <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>TU OFERTA</label>
+        <label className="fl-mono text-[10px] block mb-1.5" style={{ color: C.muted }}>{editing ? "NUEVO IMPORTE" : "TU OFERTA"}</label>
+        {editing && initialAmount ? <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>Oferta actual: {fmtCredits(initialAmount)} · valor de la jugadora: {fmtCredits(asset.basePrice || 0)}</div> : null}
         <button onClick={() => setShowKeypad(true)} className="w-full rounded-md px-3 py-2.5 text-sm fl-mono flex items-center justify-between"
           style={{ background: C.navy800, border: `1px solid ${C.line}`, color: C.white }}>
           <span>{fmtCredits(Number(amountEuros) / 1000000)}</span>
@@ -10023,7 +10122,7 @@ function OfferScreen({ target, budgetAvailable, onBack, onConfirm }) {
         <button onClick={submit} disabled={busy || !Number(amountEuros) || Number(amountEuros) < minEuros}
           className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
           style={{ background: C.principal, color: C.white }}>
-          {busy ? <Loader2 size={15} className="animate-spin" /> : "Enviar oferta"}
+          {busy ? <Loader2 size={15} className="animate-spin" /> : editing ? "Guardar oferta" : "Enviar oferta"}
         </button>
         <div className="text-center fl-mono text-[11px] mt-2.5 pb-2" style={{ color: C.muted }}>
           Tu saldo: <span style={{ color: C.baby, fontWeight: 600 }}>{fmtCredits(budgetAvailable)}</span>
@@ -10101,7 +10200,7 @@ function OfertasRecibidasList({ offers, players, me, onRespond }) {
   );
 }
 
-function OfertasEnviadasList({ offers, players, me, onRespond }) {
+function OfertasEnviadasList({ offers, players, me, onRespond, onEdit }) {
   const [busyId, setBusyId] = useState(null);
   const sent = offers.filter(o => o.status === "pending" && o.fromUser === me);
   const respond = async (id, action) => { setBusyId(id); await onRespond(id, action); setBusyId(null); };
@@ -10122,10 +10221,18 @@ function OfertasEnviadasList({ offers, players, me, onRespond }) {
                   <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{asset.name}</div>
                   <div className="fl-mono text-[10px]" style={{ color: C.muted }}>A {o.toUser} · {fmtCredits(o.amount)}</div>
                 </div>
-                <button disabled={busyId === o.id} onClick={() => respond(o.id, "cancel")}
-                  className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
-                  Cancelar
-                </button>
+                <div className="flex flex-col gap-1.5 flex-shrink-0">
+                  {onEdit && (
+                    <button disabled={busyId === o.id} onClick={() => onEdit(o, asset)}
+                      className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ background: C.baby, color: C.ink }}>
+                      Editar oferta
+                    </button>
+                  )}
+                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "cancel")}
+                    className="fl-tap fl-mono text-[11px] font-medium rounded-md px-2.5 py-1.5" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+                    Cancelar
+                  </button>
+                </div>
               </div>
             );
           })}
