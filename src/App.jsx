@@ -113,9 +113,9 @@ const FORMATIONS = {
   "2-3-0": { BASE: 2, ALERO: 3, PIVOT: 0 },
 };
 
-// La 2-3-0 entra en juego al acabar la J1: se puede elegir desde el lunes
-// 28/09/2026 y cuenta para el 5 ideal de las jornadas que empiecen desde ese
-// día (la J1 se jugó sin ella, así que su 5 ideal tampoco la usa).
+// La 2-3-0 ya se puede elegir en la alineación (se activó con la J1 ya
+// empezada, así que ninguna alineación de la J1 la usa). Para el 5 ideal
+// cuenta en las jornadas que empiecen desde el 28/09 (la J1 se jugó sin ella).
 const FORMATION_230_FROM = { y: 2026, m: 8, d: 28 };
 function formation230Available(atMs) {
   const from = new Date(FORMATION_230_FROM.y, FORMATION_230_FROM.m, FORMATION_230_FROM.d, 0, 0, 0, 0).getTime();
@@ -5610,7 +5610,7 @@ function FuncionamientoScreen({ onClose }) {
     {
       icon: "🧑‍🤝‍🧑", color: C.gold, title: "Alineación, capitana y banquillo",
       body: [
-        "Formación: 2-2-1, 1-3-1, 1-2-2, 2-1-2 o 2-3-0 (bases-aleros-pívots). Siempre son 5 titulares. La 2-3-0 es \"todas abiertas\", sin pívot: una base arriba en el centro, la otra base y un alero en los 45° y dos aleros en las esquinas (disponible desde el lunes 28/09).",
+        "Formación: 2-2-1, 1-3-1, 1-2-2, 2-1-2 o 2-3-0 (bases-aleros-pívots). Siempre son 5 titulares. La 2-3-0 es \"todas abiertas\", sin pívot: una base arriba en el centro, la otra base y un alero en los 45° y dos aleros en las esquinas.",
         "Capitana: una de tus titulares. Sus puntos cuentan DOBLE esa jornada.",
         "Banquillo: una suplente por posición (base, alero y pívot). Si la suplente puntúa MÁS que la titular que menos ha puntuado de su misma posición, entra sola en su lugar.",
         "Entrenador/a titular: suma +5 puntos si su equipo gana.",
@@ -9195,7 +9195,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
           </button>
           {formationOpen && (
             <div className="absolute z-10 top-full left-0 right-0 mt-1 rounded-md overflow-hidden fl-pop" style={{ background: C.white, border: `1px solid ${C.line}` }}>
-              {formationsAvailable().map(key => (
+              {Object.keys(FORMATIONS).map(key => (
                 <button key={key} onClick={() => changeFormation(key)}
                   className="fl-tap w-full text-left px-3 py-2 fl-mono text-xs"
                   style={{ color: C.ink, background: key === formationKey ? C.babySoft : "transparent" }}>
