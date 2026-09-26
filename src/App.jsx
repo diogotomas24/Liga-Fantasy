@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from "react";
 import {
-  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown, FlaskConical,
+  Trophy, Users, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Plus, Trash2, Crown, FlaskConical, Camera, UserCircle2,
   Check, Loader2, RefreshCw, TrendingUp, TrendingDown, Minus, Star, Clock,
   ShieldCheck, Gavel, Wallet, Menu, Coins, Pencil, X, Lock,
   ImageOff, CircleCheck, CircleX, CircleDot, Search, Bell, BellOff, MoreVertical, BarChart3,
@@ -108,7 +108,56 @@ const FORMATIONS = {
   "1-3-1": { BASE: 1, ALERO: 3, PIVOT: 1 },
   "1-2-2": { BASE: 1, ALERO: 2, PIVOT: 2 },
   "2-1-2": { BASE: 2, ALERO: 1, PIVOT: 2 },
+  // Todas abiertas: 1 base arriba en el centro, 1 base y 1 alero en los 45°
+  // y 2 aleros en las esquinas. Sin pívot titular (el banquillo sigue igual).
+  "2-3-0": { BASE: 2, ALERO: 3, PIVOT: 0 },
 };
+
+// La 2-3-0 entra en juego al acabar la J1: se puede elegir desde el lunes
+// 28/09/2026 y cuenta para el 5 ideal de las jornadas que empiecen desde ese
+// día (la J1 se jugó sin ella, así que su 5 ideal tampoco la usa).
+const FORMATION_230_FROM = { y: 2026, m: 8, d: 28 };
+function formation230Available(atMs) {
+  const from = new Date(FORMATION_230_FROM.y, FORMATION_230_FROM.m, FORMATION_230_FROM.d, 0, 0, 0, 0).getTime();
+  return (atMs ?? nowMs()) >= from;
+}
+function formationsAvailable(atMs) {
+  return Object.keys(FORMATIONS).filter((k) => k !== "2-3-0" || formation230Available(atMs));
+}
+
+// Filas de la pista (de arriba —cerca de canasta— a abajo) para una formación.
+// idsBy = { BASE: [...], ALERO: [...], PIVOT: [...] }; needBy = huecos por
+// posición (o null si solo se pintan las que hay, p. ej. en el 5 ideal).
+// cls = cómo se reparten en horizontal (gapCls para las filas centradas).
+function courtRowsFor(formationKey, idsBy, needBy, gapCls = "gap-8") {
+  // Cada fila lleva sus "cells": { posKey, id } (id null = hueco vacío por
+  // rellenar; solo si se pasan huecos needBy). ids = las ocupadas.
+  const B = idsBy.BASE || [], A = idsBy.ALERO || [], P = idsBy.PIVOT || [];
+  const fill = (posKey, list, count) => {
+    const out = list.slice(0, count).map((id) => ({ posKey, id }));
+    while (needBy && out.length < count) out.push({ posKey, id: null });
+    return out;
+  };
+  const row = (key, cells, cls) => ({ key, cells, ids: cells.map((c) => c.id).filter(Boolean), cls });
+  if (formationKey === "2-3-0") {
+    // Esquinas: 2 aleros · 45°: 1 base (izquierda) y 1 alero (derecha) · Centro arriba: 1 base.
+    const corners = fill("ALERO", A.slice(0, 2), needBy ? 2 : Math.min(2, A.length));
+    const wingBase = fill("BASE", B.slice(1, 2), needBy ? 1 : Math.max(0, Math.min(1, B.length - 1)));
+    const wingAlero = fill("ALERO", A.slice(2, 3), needBy ? 1 : Math.max(0, Math.min(1, A.length - 2)));
+    const top = fill("BASE", B.slice(0, 1), needBy ? 1 : Math.min(1, B.length));
+    return [
+      row("esquinas", corners, "justify-between px-0"),
+      row("45", [...wingBase, ...wingAlero], wingBase.length && wingAlero.length ? "justify-between px-8" : `justify-center ${gapCls}`),
+      row("centro", top, `justify-center ${gapCls}`),
+    ].filter((r) => r.cells.length > 0);
+  }
+  const nP = needBy ? needBy.PIVOT : P.length, nA = needBy ? needBy.ALERO : A.length, nB = needBy ? needBy.BASE : B.length;
+  return [
+    row("PIVOT", fill("PIVOT", P, nP), `justify-center ${gapCls}`),
+    row("ALERO", fill("ALERO", A, nA), nA > 1 ? "justify-between px-1" : `justify-center ${gapCls}`),
+    row("BASE", fill("BASE", B, nB), `justify-center ${gapCls}`),
+  ].filter((r) => r.cells.length > 0);
+}
 const BENCH_CAP_PER_POS = 1; // banquillo: máx. 1 base + 1 alero + 1 pívot
 
 const DEFAULT_MARKET_CONFIG = { openHour: "08:00", closeHour: "20:00" };
@@ -795,7 +844,9 @@ const idealFiveService = {
     Object.values(byPos).forEach((list) => list.sort((a, b) => b.pts - a.pts));
 
     let best = null;
-    Object.entries(FORMATIONS).forEach(([formation, need]) => {
+    const jStart = computeJornadaStartTime(jornada);
+    const allowed = new Set(formationsAvailable(jStart ? jStart.getTime() : nowMs()));
+    Object.entries(FORMATIONS).filter(([formation]) => allowed.has(formation)).forEach(([formation, need]) => {
       const picks = [];
       let total = 0;
       let ok = true;
@@ -5140,6 +5191,7 @@ export default function App() {
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "mi_perfil" && <MiPerfilScreen profile={profile} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <SoporteScreen profile={profile} leagues={myLeagues} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
@@ -5156,7 +5208,9 @@ export default function App() {
    MENÚ LATERAL
    ========================================================================== */
 function SideMenu({ profile, onClose, onNavigate }) {
+  const avatars = useAvatars();
   const items = [
+    { key: "mi_perfil", icon: UserCircle2, label: "Mi perfil" },
     { key: "mis_ligas", icon: Trophy, label: "Mis ligas" },
     { key: "tienda", icon: Store, label: "Tienda" },
     { key: "ranking", icon: Crown, label: "Ranking" },
@@ -5169,10 +5223,13 @@ function SideMenu({ profile, onClose, onNavigate }) {
     <div className="fixed inset-0 z-50 flex">
       <div className="w-[78%] max-w-[320px] h-full flex flex-col fl-body" style={{ background: C.navy900, borderRight: `1px solid ${C.line}` }}>
         <div className="flex items-center justify-between px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
-          <div>
-            <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{profile?.name || "Perfil"}</div>
-            <div className="fl-mono text-[10px]" style={{ color: C.muted }}>Menú</div>
-          </div>
+          <button onClick={() => onNavigate("mi_perfil")} className="fl-tap flex items-center gap-3 text-left">
+            <Avatar name={profile?.name} src={avatars[profile?.name]} size={42} ring={C.baby} />
+            <div>
+              <div className="fl-display text-sm uppercase" style={{ color: C.white }}>{profile?.name || "Perfil"}</div>
+              <div className="fl-mono text-[10px]" style={{ color: C.baby }}>Ver perfil ›</div>
+            </div>
+          </button>
           <button onClick={onClose} className="fl-tap p-1"><X size={20} color={C.muted} /></button>
         </div>
         <div className="flex-1 overflow-y-auto fl-scrollbar py-2">
@@ -5454,11 +5511,7 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
     return stats ? calcPointsBreakdown(stats, p.position).total : 0;
   };
   const byPos = (posKey) => (ideal?.playerIds || []).filter((id) => findPlayer(id)?.position === posKey);
-  const rows = [
-    { pos: POSITIONS[2], ids: byPos("PIVOT") },
-    { pos: POSITIONS[1], ids: byPos("ALERO") },
-    { pos: POSITIONS[0], ids: byPos("BASE") },
-  ];
+  const rows = courtRowsFor(ideal?.formation, { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") }, null, "gap-3");
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -5499,8 +5552,8 @@ function IdealFiveGlobalScreen({ onClose, jornadas, players, teamCrests }) {
             <div className="rounded-2xl relative overflow-hidden" style={{ background: C.navy700, border: `2px solid ${C.gold}55`, boxShadow: `0 0 24px ${C.gold}22`, minHeight: 420 }}>
               <BasketballCourt />
               <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
-                {rows.map(({ pos, ids }) => (
-                  <div key={pos.key} className={`flex items-start flex-wrap ${pos.key === "ALERO" ? "justify-between px-1" : "justify-center gap-3"}`}>
+                {rows.map(({ key: rowKey, ids, cls }) => (
+                  <div key={rowKey} className={`flex items-start flex-wrap ${cls}`}>
                     {ids.map((id) => {
                       const p = findPlayer(id);
                       return (
@@ -5540,6 +5593,7 @@ function FuncionamientoScreen({ onClose }) {
       body: [
         "Fabtasy es el fantasy de la Copa Aragón Femenina 26/27: eres mánager de un equipo de jugadoras reales, que puntúan cada fin de semana según lo que hacen en sus partidos de verdad. Gana quien más puntos sume en la temporada. Todo el dinero es ficticio.",
         "Crea tu cuenta con email y contraseña. Después crea una liga (e invita a tus amigos con el enlace) o únete a una con la invitación que te pasen. Puedes estar en varias ligas a la vez y cambiar entre ellas desde \"Mis ligas\"; en cada una tienes un equipo distinto.",
+        "Mi perfil (en el menú ☰): sube tu foto y aparecerá en el Ranking; tocando la foto de cualquiera se ve en grande. El nombre de usuario no se puede cambiar.",
         `Al entrar en una liga recibes un equipo inicial de ${INITIAL_SQUAD_COUNT} jugadoras al azar (con al menos 2 bases, 2 aleros y 1 pívot) que vale entre ${INITIAL_SQUAD_VALUE_RANGE.min} y ${INITIAL_SQUAD_VALUE_RANGE.max} M. Ese reparto NO se descuenta de tu dinero.`,
         `Además tienes ${fmtCredits(BUDGET_TOTAL)} de presupuesto para fichar en el mercado, y una alineación 2-2-1 ya preparada para puntuar desde el primer día.`,
       ],
@@ -5556,7 +5610,7 @@ function FuncionamientoScreen({ onClose }) {
     {
       icon: "🧑‍🤝‍🧑", color: C.gold, title: "Alineación, capitana y banquillo",
       body: [
-        "Formación: 2-2-1, 1-3-1, 1-2-2 o 2-1-2 (bases-aleros-pívots). Siempre son 5 titulares.",
+        "Formación: 2-2-1, 1-3-1, 1-2-2, 2-1-2 o 2-3-0 (bases-aleros-pívots). Siempre son 5 titulares. La 2-3-0 es \"todas abiertas\", sin pívot: una base arriba en el centro, la otra base y un alero en los 45° y dos aleros en las esquinas (disponible desde el lunes 28/09).",
         "Capitana: una de tus titulares. Sus puntos cuentan DOBLE esa jornada.",
         "Banquillo: una suplente por posición (base, alero y pívot). Si la suplente puntúa MÁS que la titular que menos ha puntuado de su misma posición, entra sola en su lugar.",
         "Entrenador/a titular: suma +5 puntos si su equipo gana.",
@@ -6035,6 +6089,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {menuScreen === "tienda" && <ComingSoonScreen title="Tienda" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "noticias" && <ComingSoonScreen title="Noticias" onClose={() => setMenuScreen(null)} />}
       {menuScreen === "funcionamiento" && <FuncionamientoScreen onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "mi_perfil" && <MiPerfilScreen profile={profile} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "soporte" && <SoporteScreen profile={profile} leagues={leagues} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
@@ -6897,11 +6952,7 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose, onOpenPlayer 
     return stats ? calcPointsBreakdown(stats, p.position).total : 0;
   };
   const byPos = (posKey) => (ideal?.playerIds || []).filter(id => findPlayer(id)?.position === posKey);
-  const rows = [
-    { pos: POSITIONS[2], ids: byPos("PIVOT") },
-    { pos: POSITIONS[1], ids: byPos("ALERO") },
-    { pos: POSITIONS[0], ids: byPos("BASE") },
-  ];
+  const rows = courtRowsFor(ideal?.formation, { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") }, null, "gap-3");
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -6935,8 +6986,8 @@ function IdealFiveScreen({ jornadas, players, teamCrests, onClose, onOpenPlayer 
             <div className="rounded-2xl relative overflow-hidden" style={{ background: C.navy700, border: `2px solid ${C.gold}55`, boxShadow: `0 0 24px ${C.gold}22`, minHeight: 420 }}>
               <BasketballCourt />
               <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
-                {rows.map(({ pos, ids }) => (
-                  <div key={pos.key} className={`flex items-start flex-wrap ${pos.key === "ALERO" ? "justify-between px-1" : "justify-center gap-3"}`}>
+                {rows.map(({ key: rowKey, ids, cls }) => (
+                  <div key={rowKey} className={`flex items-start flex-wrap ${cls}`}>
                     {ids.map((id) => {
                       const p = findPlayer(id);
                       return (
@@ -7814,11 +7865,17 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
 /* =============================================================================
    CLASIFICACIÓN
    ========================================================================== */
+function ClasificacionTabAvatarCell({ name, avatars, onZoom }) {
+  return <Avatar name={name} src={avatars[name]} size={36} onZoom={() => onZoom(name)} />;
+}
+
 function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, budgetAvailable, onBuyClause, onSendOffer, onGoTo, playoffState, favoritos, onToggleFavorite }) {
   // undefined = automático: durante una jornada en juego se ve ESA jornada (con
   // sus puntos en vivo); cuando acaba, la General hasta que empiece la
   // siguiente. Si la persona elige algo a mano, se respeta su elección.
   const [manualJornadaId, setManualJornadaId] = useState(undefined);
+  const avatars = useAvatars();
+  const [zoomName, setZoomName] = useState(null);
   const [open, setOpen] = useState(false);
   const [viewingTeam, setViewingTeam] = useState(null); // nombre del usuario que se está mirando
   const isPlayoffMode = playoffState && playoffState.phase !== "none";
@@ -7890,6 +7947,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
               }}>
                 <div className="flex items-center gap-2.5">
                   <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
+                  <ClasificacionTabAvatarCell name={r.name} avatars={avatars} onZoom={setZoomName} />
                   <div>
                     <div className="text-sm font-medium" style={{ color: C.white }}>{r.name}{r.name === me ? " (tú)" : ""}</div>
                     <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{r.active ? roundLabel : `Eliminada/o en ${{ CUARTOS: "Cuartos", SEMIS: "Semis", FINAL: "Final" }[r.eliminatedIn]}`}</div>
@@ -7914,6 +7972,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
             }}
             onClose={() => setViewingTeam(null)} />
         )}
+        {zoomName && <AvatarZoom name={zoomName} src={avatars[zoomName]} onClose={() => setZoomName(null)} />}
       </div>
     );
   }
@@ -7955,6 +8014,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
               <div className="flex items-center gap-2.5">
                 <span className="fl-mono text-xs w-5 text-center" style={{ color: C.muted }}>{r.rank}</span>
                 <DeltaArrow delta={r.delta} />
+                <ClasificacionTabAvatarCell name={r.name} avatars={avatars} onZoom={setZoomName} />
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span className="text-sm font-medium truncate" style={{ color: C.white }}>{r.name}{r.name === me ? " (tú)" : ""}</span>
@@ -7984,6 +8044,7 @@ function ClasificacionTab({ teams, players, jornadas, me, leagueId, teamCrests, 
           } : null}
           onClose={() => setViewingTeam(null)} />
       )}
+      {zoomName && <AvatarZoom name={zoomName} src={avatars[zoomName]} onClose={() => setZoomName(null)} />}
     </div>
   );
 }
@@ -8790,11 +8851,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
 
   const req = FORMATIONS[usedLineup?.formation || "2-2-1"];
   const byPos = (posKey) => (usedLineup?.starters || []).filter(id => findPlayer(id)?.position === posKey);
-  const rows = [
-    { pos: POSITIONS[2], ids: byPos("PIVOT"), need: req.PIVOT },
-    { pos: POSITIONS[1], ids: byPos("ALERO"), need: req.ALERO },
-    { pos: POSITIONS[0], ids: byPos("BASE"), need: req.BASE },
-  ];
+  const rows = courtRowsFor(usedLineup?.formation || "2-2-1", { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") }, req);
   const bench = usedLineup?.bench || { BASE: null, ALERO: null, PIVOT: null };
   const coachId = usedLineup?.titularCoach || null;
   const swaps = useMemo(() => computeLineupSwaps(usedLineup, jornada, players), [usedLineup, jornada, players]);
@@ -8835,16 +8892,14 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
           <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, minHeight: 420 }}>
             <BasketballCourt />
             <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
-              {rows.map(({ pos, ids, need }) => {
-                const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
-                const isWing = pos.key === "ALERO" && need > 1;
+              {rows.map(({ key: rowKey, cells, cls }) => {
                 return (
-                  <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-8"}`}>
-                    {slots.map((id, i) => {
+                  <div key={rowKey} className={`flex items-start flex-wrap ${cls}`}>
+                    {cells.map(({ posKey, id }, i) => {
                       const p = id ? findPlayer(id) : null;
                       const isOut = id && swappedOutIds.has(id);
                       return (
-                        <div key={id || `${pos.key}-empty-${i}`} className="flex flex-col items-center">
+                        <div key={id || `${rowKey}-${posKey}-empty-${i}`} className="flex flex-col items-center">
                           <div className="relative" style={{ opacity: isOut ? 0.45 : 1 }}>
                             <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
                             {p && (
@@ -9076,11 +9131,11 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
   const canSave = starters.length === totalNeeded;
   const reserva = myJugadoras.filter(p => !starters.includes(p.id) && bench[p.position] !== p.id);
 
-  const rows = [
-    { pos: POSITIONS[2], ids: starters.filter(id => byPos("PIVOT").some(p => p.id === id)), need: req.PIVOT }, // Pívot arriba (cerca de canasta)
-    { pos: POSITIONS[1], ids: starters.filter(id => byPos("ALERO").some(p => p.id === id)), need: req.ALERO },
-    { pos: POSITIONS[0], ids: starters.filter(id => byPos("BASE").some(p => p.id === id)), need: req.BASE },
-  ];
+  const rows = courtRowsFor(formationKey, {
+    PIVOT: starters.filter(id => byPos("PIVOT").some(p => p.id === id)), // Pívot arriba (cerca de canasta)
+    ALERO: starters.filter(id => byPos("ALERO").some(p => p.id === id)),
+    BASE: starters.filter(id => byPos("BASE").some(p => p.id === id)),
+  }, req);
 
   // Pantalla "Cambiar jugador" abierta: sustituye todo el editor mientras se elige.
   if (picker) {
@@ -9140,7 +9195,7 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
           </button>
           {formationOpen && (
             <div className="absolute z-10 top-full left-0 right-0 mt-1 rounded-md overflow-hidden fl-pop" style={{ background: C.white, border: `1px solid ${C.line}` }}>
-              {Object.keys(FORMATIONS).map(key => (
+              {formationsAvailable().map(key => (
                 <button key={key} onClick={() => changeFormation(key)}
                   className="fl-tap w-full text-left px-3 py-2 fl-mono text-xs"
                   style={{ color: C.ink, background: key === formationKey ? C.babySoft : "transparent" }}>
@@ -9164,20 +9219,16 @@ function LineupEditor({ myJugadoras, myCoaches, lineup, onSave, teamCrests }) {
       <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, minHeight: 420 }}>
         <BasketballCourt />
         <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
-          {rows.map(({ pos, ids, need }) => {
-            const slots = [...ids, ...Array(Math.max(need - ids.length, 0)).fill(null)];
-            // Los aleros se separan hacia los laterales SOLO cuando hay 2 o más
-            // (huecos en las esquinas cerca del triple); con uno solo (p. ej. en
-            // la formación 2-1-2) se centra sobre el tiro libre, como el resto de
-            // filas con un único hueco.
-            const isWing = pos.key === "ALERO" && need > 1;
+          {rows.map(({ key: rowKey, cells, cls }) => {
+            // Reparto según la formación (ver courtRowsFor): en 2-3-0, aleros
+            // en las esquinas, base + alero en los 45° y base arriba al centro.
             return (
-              <div key={pos.key} className={`flex items-start flex-wrap ${isWing ? "justify-between px-1" : "justify-center gap-8"}`}>
-                {slots.map((id, i) => {
+              <div key={rowKey} className={`flex items-start flex-wrap ${cls}`}>
+                {cells.map(({ posKey, id }, i) => {
                   const p = id ? myJugadoras.find(x => x.id === id) : null;
                   return (
-                    <CourtSlot key={id || `${pos.key}-empty-${i}`} player={p} size={70} isCaptain={!!id && captainId === id}
-                      onClick={() => setPicker({ type: "starter", posKey: pos.key, currentId: id || null })} teamCrests={teamCrests} />
+                    <CourtSlot key={id || `${rowKey}-${posKey}-empty-${i}`} player={p} size={70} isCaptain={!!id && captainId === id}
+                      onClick={() => setPicker({ type: "starter", posKey, currentId: id || null })} teamCrests={teamCrests} />
                   );
                 })}
               </div>
@@ -10068,6 +10119,157 @@ function RivalRosters({ teams, players, me, onSelectClause, onSelectOffer, onOpe
 // Pantalla de oferta de compra directa a otra persona: cualquier importe, la
 // otra persona decide si la acepta. Disponible siempre, incluso con la
 // jugadora todavía protegida por cláusula.
+/* -----------------------------------------------------------------------
+   FOTOS DE PERFIL — columna profiles.avatar_url (imagen pequeña en JPEG,
+   256x256, guardada como data URL). Se cargan todas juntas (son pocas) y se
+   comparten entre pantallas con un pequeño almacén en memoria.
+   ----------------------------------------------------------------------- */
+let __avatars = {};
+const __avatarListeners = new Set();
+async function refreshAvatars() {
+  try {
+    const { data, error } = await supabase.from("profiles").select("name, avatar_url").not("avatar_url", "is", null);
+    if (error) throw error;
+    const map = {};
+    (data || []).forEach((r) => { if (r.name && r.avatar_url) map[r.name] = r.avatar_url; });
+    __avatars = map;
+    __avatarListeners.forEach((f) => f(map));
+  } catch {}
+}
+function useAvatars() {
+  const [map, setMap] = useState(__avatars);
+  useEffect(() => {
+    __avatarListeners.add(setMap);
+    refreshAvatars();
+    return () => { __avatarListeners.delete(setMap); };
+  }, []);
+  return map;
+}
+// Reduce y recorta al centro la foto elegida → JPEG 256x256 (~20-30 KB).
+function imageFileToAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer la imagen"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Formato de imagen no válido"));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const sx = (img.width - side) / 2, sy = (img.height - side) / 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = 256; canvas.height = 256;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, 256, 256);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+async function saveMyAvatar(userName, dataUrl) {
+  try {
+    const { error } = await supabase.from("profiles").update({ avatar_url: dataUrl }).eq("name", userName);
+    if (error) throw error;
+    await refreshAvatars();
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message || "No se pudo guardar la foto" }; }
+}
+
+// Círculo con la foto de perfil (o la inicial si no tiene). Si se pasa
+// onZoom, al tocarlo se amplía sin abrir lo que haya debajo (p. ej. la fila).
+function Avatar({ name, src, size = 36, onZoom, ring }) {
+  const initial = (name || "?").trim().charAt(0).toUpperCase();
+  const content = src ? (
+    <img src={src} alt={name} className="w-full h-full object-cover" />
+  ) : (
+    <span className="fl-display" style={{ fontSize: Math.round(size * 0.42), color: C.white }}>{initial}</span>
+  );
+  return (
+    <span onClick={src && onZoom ? (e) => { e.stopPropagation(); onZoom(); } : undefined}
+      className="rounded-full overflow-hidden flex items-center justify-center flex-shrink-0"
+      style={{ width: size, height: size, background: src ? C.navy700 : `linear-gradient(135deg, ${C.principal}, ${C.baby})`, border: `2px solid ${ring || C.line}`, cursor: src && onZoom ? "zoom-in" : "default" }}>
+      {content}
+    </span>
+  );
+}
+function AvatarZoom({ name, src, onClose }) {
+  if (!src) return null;
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col items-center justify-center p-8 fl-body" style={{ background: "rgba(5,8,14,0.88)" }} onClick={onClose}>
+      <img src={src} alt={name} className="rounded-full object-cover fl-pop" style={{ width: "min(78vw, 320px)", height: "min(78vw, 320px)", border: `3px solid ${C.baby}`, boxShadow: `0 0 40px ${C.baby}55` }} />
+      <div className="fl-display text-lg uppercase mt-4" style={{ color: C.white }}>{name}</div>
+      <div className="fl-mono text-[10px] mt-1" style={{ color: C.muted }}>Toca para cerrar</div>
+    </div>
+  );
+}
+
+// Pantalla "Mi perfil": foto (sí se puede cambiar) y nombre (NO se puede
+// cambiar: es la llave de equipo, pujas, ofertas y avisos).
+function MiPerfilScreen({ profile, onClose }) {
+  const avatars = useAvatars();
+  const src = avatars[profile?.name] || null;
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  const fileRef = useRef(null);
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true); setMsg(null);
+    try {
+      const dataUrl = await imageFileToAvatar(file);
+      const res = await saveMyAvatar(profile.name, dataUrl);
+      setMsg(res.ok ? { ok: true, text: "Foto actualizada ✓" } : { ok: false, text: res.error });
+    } catch (err) { setMsg({ ok: false, text: err.message || "No se pudo usar esa imagen" }); }
+    setBusy(false);
+  };
+  const removePhoto = async () => {
+    setBusy(true); setMsg(null);
+    const res = await saveMyAvatar(profile.name, null);
+    setMsg(res.ok ? { ok: true, text: "Foto quitada" } : { ok: false, text: res.error });
+    setBusy(false);
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Mi perfil</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-6 flex flex-col items-center">
+        <div className="relative">
+          <Avatar name={profile?.name} src={src} size={132} ring={C.baby} onZoom={() => setZoom(true)} />
+          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}
+            className="fl-tap absolute -bottom-1 -right-1 rounded-full flex items-center justify-center" style={{ width: 42, height: 42, background: C.baby, border: `3px solid ${C.navy900}` }}>
+            {busy ? <Loader2 size={18} className="animate-spin" color={C.ink} /> : <Camera size={18} color={C.ink} />}
+          </button>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFile} />
+        <div className="fl-display text-xl uppercase mt-5" style={{ color: C.white }}>{profile?.name}</div>
+        <div className="fl-mono text-[10px] mt-1 text-center" style={{ color: C.muted }}>El nombre de usuario no se puede cambiar.</div>
+        {msg && <div className="fl-mono text-xs mt-4" style={{ color: msg.ok ? C.positive : C.negative }}>{msg.text}</div>}
+        <div className="w-full max-w-xs mt-6 space-y-2">
+          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}
+            className="fl-tap w-full rounded-md py-2.5 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: C.baby, color: C.ink }}>
+            <Camera size={16} /> {src ? "Cambiar foto" : "Subir foto"}
+          </button>
+          {src && (
+            <button onClick={removePhoto} disabled={busy}
+              className="fl-tap w-full rounded-md py-2.5 text-sm font-medium" style={{ color: C.negative, border: `1px solid ${C.negative}` }}>
+              Quitar foto
+            </button>
+          )}
+        </div>
+        <p className="fl-body text-xs text-center mt-6 max-w-xs" style={{ color: C.muted }}>
+          Tu foto aparecerá en el Ranking de tus ligas. Se recorta en círculo y se reduce automáticamente.
+        </p>
+      </div>
+      {zoom && <AvatarZoom name={profile?.name} src={src} onClose={() => setZoom(false)} />}
+    </div>
+  );
+}
+
 // Ofertas del usuario disponibles en cualquier pantalla (la ficha de una
 // jugadora se abre desde muchos sitios distintos).
 const OffersContext = createContext({ offers: [], me: null, onEditOffer: null, onCancelOffer: null });
