@@ -1,0 +1,12 @@
+const noop = () => {};
+export const useState = (v) => [typeof v === "function" ? v() : v, noop];
+export const useEffect = noop, useLayoutEffect = noop;
+export const useCallback = (f) => f;
+export const useMemo = (f) => f();
+export const useRef = (v) => ({ current: v });
+export const createContext = (v) => ({ Provider: noop, Consumer: noop, _v: v });
+export const useContext = (c) => (c ? c._v : undefined);
+export const Fragment = "Fragment";
+export const createElement = () => null;
+export const jsx = () => null, jsxs = () => null, jsxDEV = () => null;
+export default { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, createContext, useContext, Fragment, createElement };
