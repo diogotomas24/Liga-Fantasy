@@ -1024,7 +1024,7 @@ function clientSkipsAutomation() { return !IS_SERVER && SERVER_AUTOMATION; }
 // simulador), en vez de esperar al siguiente minuto.
 async function runServerTick() {
   if (IS_SERVER || !SERVER_AUTOMATION) return;
-  try { await supabase.functions.invoke("fabtasy-cron", { body: { source: "app" } }); } catch {}
+  try { await supabase.functions.invoke("fabtasy-cron-v2", { body: { source: "app" } }); } catch {}
 }
 
 // --- realStandingsService ------------------------------------------------
