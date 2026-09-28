@@ -158,6 +158,19 @@ function courtRowsFor(formationKey, idsBy, needBy, gapCls = "gap-8") {
     row("BASE", fill("BASE", B, nB), `justify-center ${gapCls}`),
   ].filter((r) => r.cells.length > 0);
 }
+// Añade un punto al histórico de precios. Si el histórico está vacío, mete
+// antes el precio de partida (con fecha del día anterior) para que el gráfico
+// y el % de subida/bajada tengan siempre un punto de comparación.
+function appendPriceHistory(history, oldPrice, todayStr, newPrice) {
+  const h = Array.isArray(history) ? [...history] : [];
+  if (h.length === 0 && Number.isFinite(Number(oldPrice)) && Number(oldPrice) > 0) {
+    const d = new Date(`${todayStr}T12:00:00`); d.setDate(d.getDate() - 1);
+    const prevDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    h.push({ date: prevDate, value: Number(oldPrice) });
+  }
+  h.push({ date: todayStr, value: newPrice });
+  return h.slice(-60);
+}
 const BENCH_CAP_PER_POS = 1; // banquillo: máx. 1 base + 1 alero + 1 pívot
 
 const DEFAULT_MARKET_CONFIG = { openHour: "08:00", closeHour: "20:00" };
@@ -1681,7 +1694,7 @@ const marketPricingService = {
     return {
       basePrice: newPrice,
       prevBasePrice: player.basePrice,
-      priceHistory: [...(player.priceHistory || []), { date: ctx.todayStr, value: newPrice }].slice(-60),
+      priceHistory: appendPriceHistory(player.priceHistory, price, ctx.todayStr, newPrice),
       marketCycle: nextCycle,
     };
   },
@@ -1825,7 +1838,7 @@ const marketPricingService = {
     return {
       basePrice: newPrice,
       prevBasePrice: player.basePrice,
-      priceHistory: [...(player.priceHistory || []), { date: ctx.todayStr, value: newPrice }].slice(-60),
+      priceHistory: appendPriceHistory(player.priceHistory, player.basePrice, ctx.todayStr, newPrice),
       marketCycle: nextCycle,
     };
   },
@@ -2536,6 +2549,11 @@ async function writeJornada(jornada) {
         fecha: p.fecha || null, hora: p.hora || null,
         marcador_local: (p.marcadorLocal === "" || p.marcadorLocal == null) ? null : Number(p.marcadorLocal),
         marcador_visitante: (p.marcadorVisitante === "" || p.marcadorVisitante == null) ? null : Number(p.marcadorVisitante),
+        // Parciales: antes no se reescribían y se perdían al guardar la jornada.
+        ...Object.fromEntries(["1","2","3","4"].flatMap((q) => [
+          [`marcador_local_p${q}`, (p[`p${q}Local`] === "" || p[`p${q}Local`] == null) ? null : Number(p[`p${q}Local`])],
+          [`marcador_visitante_p${q}`, (p[`p${q}Visitante`] === "" || p[`p${q}Visitante`] == null) ? null : Number(p[`p${q}Visitante`])],
+        ])),
       }));
       const r3 = await supabase.from("partidos").insert(rows);
       if (r3.error) { console.error("writeJornada: error insertando partidos", r3.error); return { ok: false, error: r3.error.message }; }
@@ -3882,7 +3900,7 @@ export default function App() {
             } else {
               updates.push({
                 id: mvpId, basePrice: newPrice, prevBasePrice: basePlayer.basePrice,
-                priceHistory: [...(basePlayer.priceHistory || []), { date: todayStr, value: newPrice }].slice(-60),
+                priceHistory: appendPriceHistory(basePlayer.priceHistory, basePlayer.basePrice, todayStr, newPrice),
                 marketCycle: basePlayer.marketCycle || {},
               });
             }
@@ -6470,7 +6488,8 @@ function aggregateTeamShooting(teamName, jornada, players) {
     if (!p || p.team !== teamName) return;
     totals.t2m += s.t2 || 0; totals.t2a += s.t2Intentados || 0;
     totals.t3m += s.t3 || 0; totals.t3a += s.t3Intentados || 0;
-    totals.tlm += s.tlibre || 0; totals.tla += s.tlibreIntentados || 0;
+    // tlibre = tiros libres FALLADOS → metidos = intentados − fallados
+    totals.tlm += Math.max(0, (s.tlibreIntentados || 0) - (s.tlibre || 0)); totals.tla += s.tlibreIntentados || 0;
   });
   return totals;
 }
@@ -8163,9 +8182,21 @@ const VALOR_TIMEFRAMES = [
 // evolución real de su valor (un punto por cada jornada resuelta).
 function ValorHistoricoModal({ player, onClose }) {
   const [timeframe, setTimeframe] = useState("temporada");
-  const fullHistory = player.priceHistory && player.priceHistory.length > 0
-    ? player.priceHistory
-    : [{ label: "Actual", value: player.basePrice || 0 }]; // sin histórico todavía: un único punto plano
+  // El histórico solo guarda los precios DESPUÉS de cada cambio. Si solo hay un
+  // punto (o ninguno), se añade delante el precio anterior (prevBasePrice) para
+  // que el gráfico y el % reflejen la subida/bajada real en vez de "0 %".
+  const rawHistory = (player.priceHistory || []).filter(h => h && Number.isFinite(Number(h.value)))
+    .map(h => ({ ...h, value: Number(h.value) }));
+  const prevP = Number(player.prevBasePrice);
+  const fullHistory = rawHistory.length >= 2
+    ? rawHistory
+    : rawHistory.length === 1
+      ? (Number.isFinite(prevP) && prevP > 0 && Math.abs(prevP - rawHistory[0].value) > 1e-9
+          ? [{ label: "Anterior", value: prevP }, rawHistory[0]]
+          : rawHistory)
+      : (Number.isFinite(prevP) && prevP > 0 && Math.abs(prevP - (player.basePrice || 0)) > 1e-9
+          ? [{ label: "Anterior", value: prevP }, { label: "Actual", value: player.basePrice || 0 }]
+          : [{ label: "Actual", value: player.basePrice || 0 }]);
 
   const windowSize = timeframe === "u3" ? 3 : timeframe === "u5" ? 5 : fullHistory.length;
   const points = fullHistory.slice(-windowSize);
@@ -9069,8 +9100,8 @@ function CaptainPickerScreen({ rows, myJugadoras, captainId, onSelect, onBack, t
       <p className="fl-body text-[11px] mb-3" style={{ color: C.muted }}>La capitana duplica (x2) los puntos que consiga en la jornada.</p>
       <div className="rounded-2xl mb-4 p-4" style={{ background: C.navy700, border: `1px solid ${C.line}` }}>
         <div className="flex flex-col gap-4">
-          {rows.map(({ pos, ids }) => (
-            <div key={pos.key} className="flex items-start justify-center gap-3 flex-wrap">
+          {rows.map(({ key: rowKey, ids }) => (
+            <div key={rowKey} className="flex items-start justify-center gap-3 flex-wrap">
               {ids.map(id => {
                 const p = myJugadoras.find(x => x.id === id);
                 if (!p) return null;
