@@ -214,8 +214,13 @@ function fmtHMS(ms) {
 // pérdidas, tapones). Los rebotes puntuables son SIEMPRE los rebotes totales
 // (ofensivos + defensivos). La lógica vive aquí, separada de la interfaz,
 // para poder ajustar las reglas sin tocar ninguna pantalla.
+// Jornadas que se puntúan con las reglas ANTIGUAS (tapones de pívot cada 2 y
+// sin puntos por robos). A partir de la J2: tapón = +1 siempre y robos +1 cada 2.
+const LEGACY_SCORING_JORNADAS = new Set(["j1"]);
 function calcSwishPoints(stats, position) {
   const s = stats || {};
+  const legacy = LEGACY_SCORING_JORNADAS.has(s._jornada);
+  const robos = s.robos || 0;
   const isPivot = position === "PIVOT";
   const minutos = s.minutos || 0;
   const puntos = s.puntos || 0;
@@ -231,7 +236,7 @@ function calcSwishPoints(stats, position) {
   // ninguna otra estadística.
   const noPlayed = minutos <= 0;
 
-  const pf = noPlayed ? { minutos: 0, puntos: 0, asist: 0, tlibre: 0, t3: 0, rebotes: 0, pd: 0, tap: 0, faltas: 0, valoracion: 0 } : {
+  const pf = noPlayed ? { minutos: 0, puntos: 0, asist: 0, tlibre: 0, t3: 0, rebotes: 0, pd: 0, tap: 0, robos: 0, faltas: 0, valoracion: 0 } : {
     minutos: minutos >= 20 ? 2 : 1, // ≥20 min = +2; de 1 a 19 min = +1; 0 min = 0 (arriba)
     puntos: Math.floor(puntos / 4),
     asist: Math.floor(asist / 2),
@@ -239,7 +244,8 @@ function calcSwishPoints(stats, position) {
     t3: isPivot ? t3 * 2 : t3 * 1,
     rebotes: isPivot ? Math.floor(rebotes / 3) : Math.floor(rebotes / 2),
     pd: isPivot ? -Math.floor(pd / 3) : -Math.floor(pd / 2),
-    tap: isPivot ? Math.floor(tap / 2) : tap,
+    tap: legacy ? (isPivot ? Math.floor(tap / 2) : tap) : tap, // desde J2: +1 por tapón en todas las posiciones
+    robos: legacy ? 0 : Math.floor(robos / 2),                  // desde J2: +1 cada 2 robos
     faltas: faltas >= 5 ? -3 : -Math.floor(faltas / 3),
     valoracion: valoracion <= 0 ? 0 : valoracion <= 5 ? 1 : valoracion <= 10 ? 2 : valoracion <= 15 ? 3 : 4,
   };
@@ -253,6 +259,7 @@ function calcSwishPoints(stats, position) {
     { key: "rebotes", label: "Rebotes totales", cantidad: rebotes, pts: pf.rebotes },
     { key: "pd", label: "Pérdidas", cantidad: pd, pts: pf.pd },
     { key: "tap", label: "Tapones", cantidad: tap, pts: pf.tap },
+    ...(legacy ? [] : [{ key: "robos", label: "Robos", cantidad: robos, pts: pf.robos }]),
     { key: "faltas", label: "Faltas", cantidad: faltas, pts: pf.faltas },
     { key: "valoracion", label: "Puntos SWISH", cantidad: valoracion, pts: pf.valoracion },
   ];
@@ -2447,6 +2454,7 @@ async function readJornadas() {
         rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
+        _jornada: s.jornada_id,
       };
     });
     return (jRows || [])
@@ -5214,11 +5222,546 @@ export default function App() {
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "mercado_global" && <MercadoGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "calendario" && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
       )}
     </div>
     </OffersContext.Provider>
+  );
+}
+
+/* =============================================================================
+   MERCADO (menú lateral): subidas y bajadas de valor de todas las jugadoras,
+   al estilo "Fútbol Fantasy Analytics". Lupa → histórico de valor → Puntos.
+   ========================================================================== */
+const fmtEurosPlain = (m) => Math.round((m || 0) * 1000000).toLocaleString("es-ES");
+const fmtEurosSigned = (m) => `${m > 0 ? "+" : m < 0 ? "−" : ""}${Math.abs(Math.round((m || 0) * 1000000)).toLocaleString("es-ES")}`;
+const fmtPctSigned = (p) => `${p > 0 ? "+" : p < 0 ? "−" : ""}${Math.abs(p).toFixed(2).replace(".", ",")}%`;
+const fmtDDMM = (iso) => { const [, m, d] = (iso || "").split("-"); return d && m ? `${d}/${m}` : ""; };
+const fmtDDMMYYYY = (iso) => { const [y, m, d] = (iso || "").split("-"); return d && m && y ? `${d}/${m}/${y}` : ""; };
+const MONTHS_ES_SHORT = ["ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sept.", "oct.", "nov.", "dic."];
+const fmtDayMonth = (iso) => { const [, m, d] = (iso || "").split("-"); return d && m ? `${Number(d)} ${MONTHS_ES_SHORT[Number(m) - 1] || ""}` : ""; };
+
+// Serie limpia de valores de una jugadora: [{date, value}] ordenada por fecha.
+function playerValueSeries(p) {
+  const h = (p.priceHistory || [])
+    .filter((x) => x && x.date && Number.isFinite(Number(x.value)))
+    .map((x) => ({ date: x.date, value: Number(x.value) }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // Un solo punto: se completa con el precio anterior para tener comparación.
+  if (h.length === 1 && Number.isFinite(Number(p.prevBasePrice)) && Math.abs(Number(p.prevBasePrice) - h[0].value) > 1e-9) {
+    const d = new Date(`${h[0].date}T12:00:00`); d.setDate(d.getDate() - 1);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    h.unshift({ date: iso, value: Number(p.prevBasePrice) });
+  }
+  return h;
+}
+
+// Métricas de mercado de una jugadora respecto al ÚLTIMO mercado (latestDate).
+function marketMetrics(p, latestDate) {
+  const series = playerValueSeries(p);
+  const value = p.basePrice || (series.length ? series[series.length - 1].value : 0);
+  const n = series.length;
+  const changedToday = n >= 2 && series[n - 1].date === latestDate;
+  const dif = changedToday ? series[n - 1].value - series[n - 2].value : 0;
+  const ant = value - dif;
+  const pct = ant > 0 ? (dif / ant) * 100 : 0;
+  // Aceleración: ¿el último cambio es mayor o menor que el anterior?
+  let acel = 0;
+  if (changedToday && n >= 3) {
+    const prevDif = series[n - 2].value - series[n - 3].value;
+    const thr = Math.max(0.0025 * value, 0.005);
+    if (dif - prevDif > thr) acel = 1; else if (dif - prevDif < -thr) acel = -1;
+  }
+  // Tendencia: cuántos cambios seguidos en la misma dirección (con signo).
+  let tend = 0;
+  for (let i = n - 1; i >= 1; i--) {
+    const d = series[i].value - series[i - 1].value;
+    if (d === 0) break;
+    if (tend === 0) tend = d > 0 ? 1 : -1;
+    else if ((d > 0 && tend > 0)) tend++;
+    else if ((d < 0 && tend < 0)) tend--;
+    else break;
+  }
+  return { series, value, dif, ant, pct, acel, tend };
+}
+
+// Próxima jornada (la primera que aún no ha empezado) → rival de cada equipo.
+function nextRivalsByTeam(jornadas) {
+  const regular = playoffService.regularJornadas(jornadas);
+  const next = regular.find((j) => !hasJornadaEffectivelyStarted(j));
+  const out = {};
+  if (!next) return out;
+  const num = jornadaNumberFromName(next.name);
+  (next.partidos || []).forEach((m) => {
+    if (m.local) out[m.local] = { jornadaNum: num, rival: m.visitante, home: true };
+    if (m.visitante) out[m.visitante] = { jornadaNum: num, rival: m.local, home: false };
+  });
+  return out;
+}
+
+function AcelIcon({ acel, size = 16 }) {
+  if (acel > 0) return <ChevronUp size={size} color={C.positive} strokeWidth={3} />;
+  if (acel < 0) return <ChevronDown size={size} color={C.negative} strokeWidth={3} />;
+  return <Minus size={size} color={C.muted} strokeWidth={3} />;
+}
+
+function MercadoGlobalScreen({ onClose, players, jornadas, teamCrests }) {
+  const [query, setQuery] = useState("");
+  const [team, setTeam] = useState("");
+  const [pos, setPos] = useState("");
+  const [mode, setMode] = useState("subidas"); // "subidas" | "bajadas"
+  const [sort, setSort] = useState({ key: "dif", dir: "desc" });
+  const [openPlayer, setOpenPlayer] = useState(null);
+
+  const latestDate = useMemo(() => {
+    let max = "";
+    (players || []).forEach((p) => (p.priceHistory || []).forEach((h) => { if (h?.date && h.date > max) max = h.date; }));
+    return max;
+  }, [players]);
+
+  // Tope del rango: el valor MÁS ALTO que ha llegado a tener cualquier jugadora.
+  const maxEver = useMemo(() => {
+    let max = 0;
+    (players || []).forEach((p) => {
+      max = Math.max(max, p.basePrice || 0);
+      (p.priceHistory || []).forEach((h) => { const v = Number(h?.value); if (Number.isFinite(v)) max = Math.max(max, v); });
+    });
+    return Math.ceil(max * 10) / 10 || 1;
+  }, [players]);
+  const [range, setRange] = useState([0, null]);
+  const rangeMax = range[1] == null ? maxEver : Math.min(range[1], maxEver);
+  const rangeMin = Math.min(range[0], rangeMax);
+
+  const rivals = useMemo(() => nextRivalsByTeam(jornadas), [jornadas]);
+  const teamsList = useMemo(() => [...new Set((players || []).map((p) => p.team).filter(Boolean))].sort(), [players]);
+
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = (players || [])
+      .filter((p) => !q || (p.name || "").toLowerCase().includes(q))
+      .filter((p) => !team || p.team === team)
+      .filter((p) => !pos || p.position === pos)
+      .map((p) => ({ p, ...marketMetrics(p, latestDate) }))
+      .filter((r) => r.value >= rangeMin - 1e-9 && r.value <= rangeMax + 1e-9)
+      .filter((r) => (mode === "subidas" ? r.dif > 0 : r.dif < 0));
+    const val = (r) => {
+      switch (sort.key) {
+        case "name": return (r.p.name || "").toLowerCase();
+        case "pct": return r.pct;
+        case "acel": return r.acel;
+        case "tend": return r.tend;
+        case "valor": return r.value;
+        case "ant": return r.ant;
+        default: return r.dif;
+      }
+    };
+    return list.sort((a, b) => {
+      const va = val(a), vb = val(b);
+      const c = va < vb ? -1 : va > vb ? 1 : 0;
+      return sort.dir === "asc" ? c : -c;
+    });
+  }, [players, query, team, pos, mode, sort, latestDate, rangeMin, rangeMax]);
+
+  const switchMode = (m) => { setMode(m); setSort({ key: "dif", dir: m === "subidas" ? "desc" : "asc" }); };
+  const toggleSort = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "name" ? "asc" : "desc" }));
+
+  if (openPlayer) {
+    return <MercadoPlayerScreen player={openPlayer} jornadas={jornadas} teamCrests={teamCrests} latestDate={latestDate} onClose={() => setOpenPlayer(null)} />;
+  }
+
+  const SortHead = ({ k, label, align = "right" }) => (
+    <th onClick={() => toggleSort(k)} className="fl-tap px-2 py-2.5 fl-mono text-[11px] font-bold whitespace-nowrap select-none"
+      style={{ color: C.white, textAlign: align, cursor: "pointer" }}>
+      {label} <span style={{ color: sort.key === k ? C.baby : C.muted }}>{sort.key === k ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+    </th>
+  );
+  const selectStyle = { background: C.navy800, color: C.white, border: `1px solid ${C.line}` };
+  const stickyBg = C.navy800;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <style>{`
+        .fl-range { position:absolute; left:0; right:0; top:0; width:100%; height:28px; margin:0; background:none; pointer-events:none; -webkit-appearance:none; appearance:none; }
+        .fl-range::-webkit-slider-thumb { pointer-events:auto; -webkit-appearance:none; width:26px; height:26px; border-radius:50%; background:#fff; border:none; box-shadow:0 1px 6px rgba(0,0,0,.45); cursor:pointer; }
+        .fl-range::-moz-range-thumb { pointer-events:auto; width:26px; height:26px; border-radius:50%; background:#fff; border:none; box-shadow:0 1px 6px rgba(0,0,0,.45); cursor:pointer; }
+        .fl-range::-webkit-slider-runnable-track { background:transparent; }
+        .fl-range::-moz-range-track { background:transparent; }
+      `}</style>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Mercado</div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto fl-scrollbar">
+        <div className="px-4 pt-3 flex flex-col gap-2.5">
+          <div className="relative">
+            <Search size={15} color={C.muted} className="absolute left-3 top-1/2 -translate-y-1/2" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nombre"
+              className="w-full rounded-full pl-9 pr-3 py-2.5 text-sm outline-none" style={selectStyle} />
+          </div>
+          <select value={team} onChange={(e) => setTeam(e.target.value)} className="w-full rounded-xl px-3 py-2.5 text-sm outline-none" style={selectStyle}>
+            <option value="">Todos los equipos</option>
+            {teamsList.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select value={pos} onChange={(e) => setPos(e.target.value)} className="w-full rounded-xl px-3 py-2.5 text-sm outline-none" style={selectStyle}>
+            <option value="">Todas las posiciones</option>
+            <option value="BASE">Bases</option>
+            <option value="ALERO">Aleros</option>
+            <option value="PIVOT">Pívots</option>
+            <option value="DT">Entrenadores/as</option>
+          </select>
+
+          <div className="pt-1">
+            <div className="text-center fl-mono text-[12px] mb-2" style={{ color: C.white }}>
+              Rango de precio: {fmtEurosPlain(rangeMin)} - {fmtEurosPlain(rangeMax)}
+            </div>
+            <div className="relative mx-2" style={{ height: 28 }}>
+              <div className="absolute left-0 right-0 rounded-full" style={{ top: 11, height: 6, background: C.navy700 }} />
+              <div className="absolute rounded-full" style={{ top: 11, height: 6, background: C.positive, left: `${(rangeMin / maxEver) * 100}%`, right: `${100 - (rangeMax / maxEver) * 100}%` }} />
+              <input type="range" className="fl-range" min={0} max={maxEver} step={maxEver / 200} value={rangeMin}
+                onChange={(e) => setRange([Math.min(Number(e.target.value), rangeMax), range[1]])} />
+              <input type="range" className="fl-range" min={0} max={maxEver} step={maxEver / 200} value={rangeMax}
+                onChange={(e) => setRange([range[0], Math.max(Number(e.target.value), rangeMin)])} />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button onClick={() => switchMode("subidas")} className="fl-tap flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold"
+              style={{ background: mode === "subidas" ? C.navy600 : C.navy800, color: mode === "subidas" ? C.white : C.muted, border: `1px solid ${mode === "subidas" ? C.positive : C.line}` }}>
+              <TrendingUp size={15} color={C.positive} /> Subidas
+            </button>
+            <button onClick={() => switchMode("bajadas")} className="fl-tap flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold"
+              style={{ background: mode === "bajadas" ? C.navy600 : C.navy800, color: mode === "bajadas" ? C.white : C.muted, border: `1px solid ${mode === "bajadas" ? C.negative : C.line}` }}>
+              <TrendingDown size={15} color={C.negative} /> Bajadas
+            </button>
+          </div>
+          <div className="fl-mono text-[11px]" style={{ color: C.muted }}>
+            Última actualización: {latestDate ? fmtDDMMYYYY(latestDate) : "—"}
+          </div>
+        </div>
+
+        <div className="mt-2 mx-2 mb-6 rounded-xl overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+          <div className="overflow-x-auto fl-scrollbar">
+            <table className="w-full" style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: 720 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th onClick={() => toggleSort("name")} className="fl-tap px-3 py-2.5 fl-mono text-[11px] font-bold text-left whitespace-nowrap select-none"
+                    style={{ color: C.white, position: "sticky", left: 0, zIndex: 2, background: C.ink, minWidth: 170, cursor: "pointer" }}>
+                    Jugadora <span style={{ color: sort.key === "name" ? C.baby : C.muted }}>{sort.key === "name" ? (sort.dir === "asc" ? "▲" : "▼") : "⇅"}</span>
+                  </th>
+                  <th className="px-1 py-2.5" style={{ width: 28 }} />
+                  <SortHead k="dif" label="Dif." />
+                  <SortHead k="pct" label="% Dif" />
+                  <SortHead k="acel" label="Acel." align="center" />
+                  <SortHead k="tend" label="Tend." align="center" />
+                  <th className="px-2 py-2.5 fl-mono text-[11px] font-bold text-center whitespace-nowrap" style={{ color: C.white }}>Rival</th>
+                  <SortHead k="valor" label="Valor" />
+                  <SortHead k="ant" label="Ant." />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr><td colSpan={9} className="px-4 py-8 text-center fl-body text-xs" style={{ color: C.muted, background: C.navy800 }}>
+                    No hay jugadoras con {mode === "subidas" ? "subidas" : "bajadas"} en el último mercado con estos filtros.
+                  </td></tr>
+                )}
+                {rows.map((r) => {
+                  const p = r.p;
+                  const color = r.dif > 0 ? C.positive : r.dif < 0 ? C.negative : C.muted;
+                  const rv = rivals[p.team];
+                  return (
+                    <tr key={p.id} style={{ background: C.navy800 }}>
+                      <td className="px-2.5 py-2" style={{ position: "sticky", left: 0, zIndex: 1, background: stickyBg, borderBottom: `1px solid ${C.lineSoft}` }}>
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <PlayerPhoto url={p.photo} size={42} rounded={8} focusTop />
+                            <div className="absolute -bottom-1 -left-1"><PositionBadge posKey={p.position} /></div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="fl-body text-[13px] font-bold truncate" style={{ color: C.white, maxWidth: 110 }}>{p.name}</div>
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <TeamCrest name={p.team} photo={teamCrests?.[p.team]} size={14} />
+                              <span className="fl-body text-[10px] truncate" style={{ color: C.muted, maxWidth: 92 }}>{p.team}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-1 py-2 text-center" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                        <button onClick={() => setOpenPlayer(p)} className="fl-tap p-1" aria-label="Ver histórico"><Search size={16} color={C.baby} /></button>
+                      </td>
+                      <td className="px-2 py-2 text-right fl-mono text-[13px] font-bold whitespace-nowrap" style={{ color, borderBottom: `1px solid ${C.lineSoft}` }}>{fmtEurosSigned(r.dif)}</td>
+                      <td className="px-2 py-2 text-right fl-mono text-[12px] whitespace-nowrap" style={{ color, borderBottom: `1px solid ${C.lineSoft}` }}>{fmtPctSigned(r.pct)}</td>
+                      <td className="px-2 py-2" style={{ borderBottom: `1px solid ${C.lineSoft}` }}><div className="flex justify-center"><AcelIcon acel={r.acel} /></div></td>
+                      <td className="px-2 py-2 text-center fl-mono text-[12px] whitespace-nowrap" style={{ color: r.tend > 0 ? C.positive : r.tend < 0 ? C.negative : C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>
+                        {r.tend === 0 ? "—" : `${r.tend > 0 ? "▲" : "▼"} ${Math.abs(r.tend)}d`}
+                      </td>
+                      <td className="px-2 py-2" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                        {rv ? (
+                          <div className="flex items-center justify-center gap-1">
+                            <span className="fl-mono text-[10px] font-bold" style={{ color: C.white }}>J{rv.jornadaNum}</span>
+                            <TeamCrest name={rv.rival} photo={teamCrests?.[rv.rival]} size={18} />
+                            <span className="text-[13px]">{rv.home ? "🏠" : "✈️"}</span>
+                          </div>
+                        ) : <div className="text-center fl-mono text-[11px]" style={{ color: C.muted }}>—</div>}
+                      </td>
+                      <td className="px-2 py-2 text-right fl-mono text-[13px] font-bold whitespace-nowrap" style={{ color: C.white, borderBottom: `1px solid ${C.lineSoft}` }}>{fmtEurosPlain(r.value)}</td>
+                      <td className="px-2 py-2 text-right fl-mono text-[12px] whitespace-nowrap" style={{ color: C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>{fmtEurosPlain(r.ant)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Gráfico de línea con ejes (valores en M y fechas), para el histórico de valor.
+function ValueLineChart({ points }) {
+  const W = 340, H = 210, L = 40, R = 8, T = 10, B = 42;
+  if (!points || points.length < 2) {
+    return <div className="py-10 text-center fl-body text-xs" style={{ color: C.muted }}>Todavía no hay suficiente historial para dibujar la evolución.</div>;
+  }
+  const vals = points.map((p) => p.value);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (max - min < 1e-6) { max += 0.5; min = Math.max(0, min - 0.5); }
+  const pad = (max - min) * 0.08; min = Math.max(0, min - pad); max += pad;
+  const x = (i) => L + (i / (points.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - min) / (max - min)) * (H - T - B);
+  const ticks = 5;
+  const yTicks = Array.from({ length: ticks }, (_, i) => min + ((max - min) * i) / (ticks - 1));
+  const fmtM = (v) => (max - min < 5 ? `${v.toFixed(1).replace(".", ",")}M` : `${Math.round(v)}M`);
+  const labelEvery = Math.max(1, Math.ceil(points.length / 8));
+  const d = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+  const up = points[points.length - 1].value >= points[0].value;
+  const stroke = up ? C.positive : C.negative;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 220 }}>
+      {yTicks.map((v, i) => (
+        <g key={i}>
+          <line x1={L} x2={W - R} y1={y(v)} y2={y(v)} stroke={C.line} strokeWidth="1" />
+          <text x={L - 4} y={y(v) + 3} textAnchor="end" fontSize="9" fill={C.muted} fontFamily="monospace">{fmtM(v)}</text>
+        </g>
+      ))}
+      {points.map((p, i) => (i % labelEvery === 0 || i === points.length - 1) && (
+        <g key={p.date}>
+          <line x1={x(i)} x2={x(i)} y1={T} y2={H - B} stroke={C.lineSoft} strokeWidth="1" />
+          <text x={x(i)} y={H - B + 14} textAnchor="end" fontSize="9" fill={C.muted} fontFamily="monospace" transform={`rotate(-40 ${x(i)} ${H - B + 14})`}>{fmtDDMM(p.date)}</text>
+        </g>
+      ))}
+      <path d={d} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      {points.length <= 40 && points.map((p, i) => <circle key={i} cx={x(i)} cy={y(p.value)} r="2.4" fill={stroke} />)}
+    </svg>
+  );
+}
+
+// Color de la puntuación de una jornada (barra y cuadrito).
+function pointsColor(pts) {
+  if (pts >= 12) return "#3B82F6";
+  if (pts >= 8) return C.positive;
+  if (pts >= 4) return C.gold;
+  return C.negative;
+}
+
+function MercadoPlayerScreen({ player, jornadas, teamCrests, latestDate, onClose }) {
+  const [view, setView] = useState("mercado"); // "mercado" | "puntos"
+  const [span, setSpan] = useState("30"); // "30" | "temporada"
+  const [selBar, setSelBar] = useState(null);
+  const m = useMemo(() => marketMetrics(player, latestDate), [player, latestDate]);
+  const series = m.series.length ? m.series : [{ date: latestDate || "", value: m.value }];
+
+  const maxP = series.reduce((a, b) => (b.value > a.value ? b : a), series[0]);
+  const minP = series.reduce((a, b) => (b.value < a.value ? b : a), series[0]);
+
+  const chartPoints = useMemo(() => {
+    if (span === "temporada") return series;
+    const last = series[series.length - 1]?.date;
+    if (!last) return series;
+    const from = new Date(`${last}T12:00:00`); from.setDate(from.getDate() - 30);
+    const fromIso = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, "0")}-${String(from.getDate()).padStart(2, "0")}`;
+    return series.filter((p) => p.date >= fromIso);
+  }, [series, span]);
+
+  const tableRows = useMemo(() => {
+    const out = [];
+    for (let i = series.length - 1; i >= 1; i--) {
+      const dif = series[i].value - series[i - 1].value;
+      out.push({ date: series[i].date, dif, pct: series[i - 1].value > 0 ? (dif / series[i - 1].value) * 100 : 0, value: series[i].value });
+    }
+    return out;
+  }, [series]);
+
+  // Puntos por jornada (regulares con partido de su equipo ya jugado).
+  const puntos = useMemo(() => {
+    const regular = playoffService.regularJornadas(jornadas);
+    const out = [];
+    regular.forEach((j) => {
+      const partido = (j.partidos || []).find((mm) => mm.local === player.team || mm.visitante === player.team);
+      if (!partido) return;
+      const played = partido.marcadorLocal !== "" && partido.marcadorLocal != null && partido.marcadorVisitante !== "" && partido.marcadorVisitante != null;
+      if (!played) return;
+      const st = j.stats?.[player.id];
+      const pts = player.position === "DT"
+        ? calcCoachPoints(null, resolveCoachWin(j, player.team)).total
+        : calcPlayerPoints(st, player.position);
+      out.push({ j, num: jornadaNumberFromName(j.name), partido, pts, jugo: player.position === "DT" ? true : !!(st && (st.minutos || 0) > 0) });
+    });
+    return out;
+  }, [jornadas, player]);
+  const totalPts = puntos.reduce((s, r) => s + r.pts, 0);
+  const jugadas = puntos.filter((r) => r.jugo).length;
+  const media = jugadas ? totalPts / jugadas : 0;
+
+  const header = (
+    <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+      <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+      <div className="flex-1 flex items-center justify-center gap-2 pr-6">
+        <TeamCrest name={player.team} photo={teamCrests?.[player.team]} size={22} />
+        <span className="fl-display text-sm uppercase" style={{ color: C.white }}>{player.name}</span>
+      </div>
+    </div>
+  );
+
+  if (view === "puntos") {
+    const maxBar = Math.max(4, ...puntos.map((r) => r.pts));
+    const minBar = Math.min(0, ...puntos.map((r) => r.pts));
+    const BH = 170;
+    const zeroY = (maxBar / (maxBar - minBar)) * BH;
+    return (
+      <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+        {header}
+        <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <PlayerPhoto url={player.photo} size={64} rounded={10} focusTop />
+              <div className="absolute -bottom-1 -left-1"><PositionBadge posKey={player.position} /></div>
+            </div>
+            <div className="flex-1">
+              <div className="fl-body text-sm font-bold" style={{ color: C.white }}>Total Puntos: {totalPts}</div>
+              <div className="fl-body text-sm mt-0.5" style={{ color: C.muted }}>Media Puntos: {media.toFixed(1).replace(".", ",").replace(",0", "")}</div>
+            </div>
+          </div>
+          <button onClick={() => setView("mercado")} className="fl-tap mx-auto mt-4 flex items-center gap-2 rounded-lg px-6 py-2.5 text-sm font-semibold"
+            style={{ background: C.ink, color: C.white, border: `1px solid ${C.line}` }}>
+            <TrendingUp size={16} color={C.baby} /> Mercado
+          </button>
+
+          {puntos.length === 0 ? (
+            <div className="py-10 text-center fl-body text-xs" style={{ color: C.muted }}>Todavía no hay jornadas jugadas de su equipo.</div>
+          ) : (
+            <>
+              <div className="mt-5 rounded-xl p-3" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+                <div className="relative flex items-end gap-1.5" style={{ height: BH }}>
+                  <div className="absolute left-0 right-0" style={{ top: zeroY, height: 1, background: C.line }} />
+                  {puntos.map((r) => {
+                    const hgt = (Math.abs(r.pts) / (maxBar - minBar)) * BH;
+                    const top = r.pts >= 0 ? zeroY - hgt : zeroY;
+                    const sel = selBar === r.j.id;
+                    return (
+                      <button key={r.j.id} onClick={() => setSelBar(sel ? null : r.j.id)} className="fl-tap relative flex-1 h-full" style={{ minWidth: 0 }}>
+                        <div className="absolute left-0 right-0 rounded-sm" style={{ top, height: Math.max(hgt, 2), background: pointsColor(r.pts), opacity: selBar && !sel ? 0.55 : 1 }} />
+                        {sel && (
+                          <div className="absolute left-1/2 -translate-x-1/2 rounded-md px-2 py-1 fl-mono text-[10px] whitespace-nowrap z-10"
+                            style={{ top: Math.max(0, top - 36), background: C.ink, color: C.white, border: `1px solid ${C.line}` }}>
+                            J{r.num} · {r.pts} pts
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-1.5 mt-1.5">
+                  {puntos.map((r) => <div key={r.j.id} className="flex-1 text-center fl-mono text-[10px]" style={{ color: C.muted, minWidth: 0 }}>J{r.num}</div>)}
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <div className="flex items-center px-2 pb-2 fl-mono text-[11px] font-bold" style={{ color: C.white }}>
+                  <span style={{ width: 32 }}>J</span><span className="flex-1">Partido</span><span>Pts</span>
+                </div>
+                {[...puntos].reverse().map((r) => (
+                  <div key={r.j.id} className="flex items-center px-2 py-2.5" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                    <span className="fl-mono text-sm font-bold" style={{ width: 32, color: C.white }}>{r.num}</span>
+                    <div className="flex-1 flex items-center gap-1.5">
+                      <TeamCrest name={r.partido.local} photo={teamCrests?.[r.partido.local]} size={20} />
+                      <span className="fl-mono text-sm font-bold" style={{ color: C.white }}>{r.partido.marcadorLocal}-{r.partido.marcadorVisitante}</span>
+                      <TeamCrest name={r.partido.visitante} photo={teamCrests?.[r.partido.visitante]} size={20} />
+                    </div>
+                    <span className="fl-mono text-sm font-bold rounded-md px-2.5 py-1" style={{ background: pointsColor(r.pts), color: C.ink, minWidth: 38, textAlign: "center" }}>
+                      {r.jugo ? r.pts : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const difColor = m.dif > 0 ? C.positive : m.dif < 0 ? C.negative : C.muted;
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      {header}
+      <div className="flex-1 overflow-y-auto fl-scrollbar p-4">
+        <div className="flex items-start gap-3">
+          <div className="relative">
+            <PlayerPhoto url={player.photo} size={72} rounded={10} focusTop />
+            <div className="absolute -bottom-1 -left-1"><PositionBadge posKey={player.position} /></div>
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center flex-wrap gap-1 fl-body text-[13px] font-bold" style={{ color: C.white }}>
+              Valor act: {fmtEurosPlain(m.value)} <span style={{ color: difColor }}>({fmtEurosSigned(m.dif)})</span> <AcelIcon acel={m.acel} size={14} />
+            </div>
+            <div className="fl-body text-[12px] mt-1" style={{ color: C.muted }}>Valor máx: {fmtEurosPlain(maxP.value)} ({fmtDayMonth(maxP.date)})</div>
+            <div className="fl-body text-[12px] mt-0.5" style={{ color: C.muted }}>Valor mín: {fmtEurosPlain(minP.value)} ({fmtDayMonth(minP.date)})</div>
+          </div>
+        </div>
+
+        <button onClick={() => setView("puntos")} className="fl-tap w-full mt-4 flex items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-semibold"
+          style={{ background: C.ink, color: C.white, border: `1px solid ${C.line}` }}>
+          <BarChart3 size={16} color={C.baby} /> Puntos
+        </button>
+        <div className="flex gap-2 mt-2">
+          {[{ k: "30", l: "30 días" }, { k: "temporada", l: "Temporada" }].map((t) => (
+            <button key={t.k} onClick={() => setSpan(t.k)} className="fl-tap flex-1 rounded-lg py-2 text-sm font-semibold"
+              style={{ background: span === t.k ? C.navy600 : C.ink, color: span === t.k ? C.white : C.muted, border: `1px solid ${span === t.k ? C.baby : C.line}` }}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3 rounded-xl p-2" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+          <ValueLineChart points={chartPoints} />
+        </div>
+
+        <div className="mt-4">
+          <div className="flex px-2 pb-2 fl-mono text-[11px] font-bold" style={{ color: C.white }}>
+            <span style={{ width: 56 }}>Fecha</span><span className="flex-1 text-center">Subida/Bajada</span><span style={{ width: 96, textAlign: "right" }}>Valor</span>
+          </div>
+          {tableRows.length === 0 && (
+            <div className="py-6 text-center fl-body text-xs" style={{ color: C.muted }}>Todavía no hay cambios de valor.</div>
+          )}
+          {tableRows.map((r) => {
+            const c = r.dif > 0 ? C.positive : r.dif < 0 ? C.negative : C.muted;
+            return (
+              <div key={r.date} className="flex items-center px-2 py-2" style={{ borderTop: `1px solid ${C.lineSoft}` }}>
+                <span className="fl-mono text-[12px]" style={{ width: 56, color: C.white }}>{fmtDDMM(r.date)}</span>
+                <span className="flex-1 text-center fl-mono text-[12px]" style={{ color: c }}>
+                  {fmtEurosSigned(r.dif)} <span style={{ color: C.muted }}>({r.pct.toFixed(2).replace(".", ",")}%)</span>
+                </span>
+                <span className="fl-mono text-[12px] font-semibold" style={{ width: 96, textAlign: "right", color: C.white }}>{fmtEurosPlain(r.value)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -5230,6 +5773,7 @@ function SideMenu({ profile, onClose, onNavigate }) {
   const items = [
     { key: "mi_perfil", icon: UserCircle2, label: "Mi perfil" },
     { key: "mis_ligas", icon: Trophy, label: "Mis ligas" },
+    { key: "mercado_global", icon: TrendingUp, label: "Mercado" },
     { key: "tienda", icon: Store, label: "Tienda" },
     { key: "ranking", icon: Crown, label: "Ranking" },
     { key: "calendario", icon: Calendar, label: "Calendario" },
@@ -5643,7 +6187,8 @@ function FuncionamientoScreen({ onClose }) {
         "Puntos anotados: +1 por cada 4 · Asistencias: +1 por cada 2.",
         "Triples: +1 por triple (pívots: +2 por triple).",
         "Rebotes totales: +1 por cada 2 (pívots: +1 por cada 3).",
-        "Tapones: +1 por tapón (pívots: +1 por cada 2).",
+        "Tapones: +1 por tapón, en todas las posiciones (desde la J2; en la J1 los pívots sumaban +1 cada 2).",
+        "Robos: +1 por cada 2 robos (desde la J2).",
         "Pérdidas: −1 por cada 2 (pívots: −1 por cada 3) · Tiros libres fallados: −1 por cada 2.",
         "Faltas: −1 por cada 3; con 5 faltas, −3.",
         "Valoración del partido: 1 a 5 → +1 · 6 a 10 → +2 · 11 a 15 → +3 · más de 15 → +4 · 0 o negativa → 0.",
@@ -6112,6 +6657,7 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "mercado_global" && <MercadoGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "calendario" && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
       )}
