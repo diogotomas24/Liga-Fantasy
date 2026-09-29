@@ -8908,6 +8908,40 @@ function ActionSheet({ title, onClose, children }) {
     </div>
   );
 }
+// Ventana de confirmación centrada (estilo alerta del móvil): título, mensaje y
+// Cancelar / Aceptar. Se usa antes de vender (venta inmediata) y antes de
+// aceptar una oferta (de la liga o de otro mánager). onConfirm puede devolver
+// { ok, error }: si falla, el error se muestra dentro de la propia ventana.
+function ConfirmDialog({ title, children, onCancel, onConfirm, confirmLabel = "Aceptar" }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    const res = await onConfirm();
+    setBusy(false);
+    if (res && res.ok === false) setError(res.error || "No se pudo completar la operación.");
+  };
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center px-10" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => !busy && onCancel()}>
+      <div className="w-full max-w-xs rounded-2xl overflow-hidden fl-pop" style={{ background: C.navy800, border: `1px solid ${C.line}` }} onClick={e => e.stopPropagation()}>
+        <div className="px-5 pt-5 pb-4 text-center">
+          <div className="fl-display text-base uppercase mb-2" style={{ color: C.white }}>{title}</div>
+          <div className="fl-body text-sm leading-snug" style={{ color: C.white }}>{children}</div>
+          {error && <div className="fl-body text-xs mt-2" style={{ color: C.negative }}>{error}</div>}
+        </div>
+        <div className="grid grid-cols-2" style={{ borderTop: `1px solid ${C.line}` }}>
+          <button onClick={onCancel} disabled={busy} className="fl-tap py-3.5 text-sm font-semibold disabled:opacity-40" style={{ color: C.muted, borderRight: `1px solid ${C.line}` }}>
+            Cancelar
+          </button>
+          <button onClick={confirm} disabled={busy} className="fl-tap py-3.5 text-sm font-semibold flex items-center justify-center disabled:opacity-60" style={{ color: C.positive }}>
+            {busy ? <Loader2 size={15} className="animate-spin" /> : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function ActionSheetItem({ label, subtitle, onClick, disabled, danger }) {
   return (
     <button onClick={onClick} disabled={disabled} className="fl-tap w-full px-4 py-3.5 text-center disabled:opacity-40"
@@ -9197,22 +9231,18 @@ function PlayerDetailScreen({ player, entry, jornadas, isFavorite, onToggleFavor
         )}
 
         {confirmSell && (
-          <ActionSheet onClose={() => setConfirmSell(false)} title="Venta inmediata">
-            <div className="px-4 pb-3">
-              <p className="fl-body text-sm" style={{ color: C.white }}>
-                Recibirás <span className="font-semibold">{fmtCredits(Math.max(0.01, (player.basePrice || 0) * 0.5))}</span> (50% del valor de mercado) al instante.
-              </p>
-            </div>
-            <ActionSheetItem
-              label={busyAction === "sell" ? "Vendiendo…" : "Confirmar venta"}
-              danger
-              onClick={async () => {
-                setBusyAction("sell"); setActionMsg("");
-                const res = await onSellImmediate(player.id);
-                setBusyAction(null); setConfirmSell(false);
-                if (res.ok) onClose(); else setActionMsg(res.error);
-              }} />
-          </ActionSheet>
+          <ConfirmDialog title="Venta inmediata" onCancel={() => setConfirmSell(false)}
+            onConfirm={async () => {
+              setBusyAction("sell"); setActionMsg("");
+              const res = await onSellImmediate(player.id);
+              setBusyAction(null);
+              if (res.ok) { setConfirmSell(false); onClose(); }
+              return res;
+            }}>
+            Vas a vender a <span className="font-semibold">{player.name}</span> de forma inmediata por{" "}
+            <span className="font-semibold">{fmtCredits(Math.max(0.01, (player.basePrice || 0) * 0.5))}</span>.{" "}
+            <span className="font-semibold">Se abonará el 50% del valor de mercado.</span> ¿Estás seguro?
+          </ConfirmDialog>
         )}
 
         {showHistorico && <ValorHistoricoModal player={player} onClose={() => setShowHistorico(false)} />}
@@ -10364,6 +10394,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
   const [opSub, setOpSub] = useState("venta"); // dentro de "Mis operaciones": compra | venta
   const [clauseTarget, setClauseTarget] = useState(null); // { sellerName, asset }
   const [offerTarget, setOfferTarget] = useState(null); // { sellerName, asset }
+  const [confirmLeagueOffer, setConfirmLeagueOffer] = useState(null); // { asset, amount }
   const [detailPlayer, setDetailPlayer] = useState(null);
   const [showSearch, setShowSearch] = useState(false);
   const ownedInLeague = auctionService.ownedIdsOf(teams);
@@ -10511,7 +10542,7 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
                               </div>
                             </button>
                             <div className="flex flex-col gap-1.5 flex-shrink-0">
-                              <button onClick={() => onAcceptSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ background: C.positive, color: C.ink }}>
+                              <button onClick={() => setConfirmLeagueOffer({ asset, amount: entry.saleOffer.amount })} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ background: C.positive, color: C.ink }}>
                                 Aceptar
                               </button>
                               <button onClick={() => onRejectSaleOffer(asset.id)} className="fl-tap fl-mono text-[11px] font-semibold rounded-md px-2.5 py-1.5" style={{ border: `1px solid ${C.negative}`, color: C.negative }}>
@@ -10551,6 +10582,19 @@ function MercadoTab({ market, players, bids, marketHistory, activity, profile, m
           favoritos={favoritos} onToggleFavorite={onToggleFavorite}
           onSellImmediate={onSellImmediate} onToggleForSale={onToggleForSale} onAcceptSaleOffer={onAcceptSaleOffer} onRaiseClause={onRaiseClause}
           onClose={() => setShowSearch(false)} />
+      )}
+
+      {confirmLeagueOffer && (
+        <ConfirmDialog title="Aceptar oferta" onCancel={() => setConfirmLeagueOffer(null)}
+          onConfirm={async () => {
+            const res = await onAcceptSaleOffer(confirmLeagueOffer.asset.id);
+            if (!res || res.ok !== false) setConfirmLeagueOffer(null);
+            return res;
+          }}>
+          Vas a aceptar la oferta realizada por <span className="font-semibold">la liga</span> de{" "}
+          <span className="font-semibold">{fmtCredits(confirmLeagueOffer.amount)}</span> por{" "}
+          <span className="font-semibold">{confirmLeagueOffer.asset.name}</span>.
+        </ConfirmDialog>
       )}
     </div>
   );
@@ -10961,7 +11005,8 @@ function OfferAmountLines({ amount, value, prefix }) {
 function OfertasRecibidasList({ offers, players, me, onRespond }) {
   const [busyId, setBusyId] = useState(null);
   const received = offers.filter(o => o.status === "pending" && o.toUser === me);
-  const respond = async (id, action) => { setBusyId(id); await onRespond(id, action); setBusyId(null); };
+  const [confirmOffer, setConfirmOffer] = useState(null); // oferta pendiente de confirmar
+  const respond = async (id, action) => { setBusyId(id); const res = await onRespond(id, action); setBusyId(null); return res; };
   return (
     <div>
       <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>OFERTAS RECIBIDAS</div>
@@ -10987,7 +11032,7 @@ function OfertasRecibidasList({ offers, players, me, onRespond }) {
                     className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ border: `1px solid ${C.line}`, color: C.white }}>
                     Rechazar
                   </button>
-                  <button disabled={busyId === o.id} onClick={() => respond(o.id, "accept")}
+                  <button disabled={busyId === o.id} onClick={() => setConfirmOffer(o)}
                     className="fl-tap rounded-md py-1.5 text-xs font-semibold" style={{ background: C.positive, color: C.ink }}>
                     {busyId === o.id ? <Loader2 size={13} className="animate-spin mx-auto" /> : "Aceptar"}
                   </button>
@@ -10997,6 +11042,21 @@ function OfertasRecibidasList({ offers, players, me, onRespond }) {
           })}
         </div>
       )}
+      {confirmOffer && (() => {
+        const asset = players.find(p => p.id === confirmOffer.assetId);
+        return (
+          <ConfirmDialog title="Aceptar oferta" onCancel={() => setConfirmOffer(null)}
+            onConfirm={async () => {
+              const res = await respond(confirmOffer.id, "accept");
+              if (!res || res.ok !== false) setConfirmOffer(null);
+              return res;
+            }}>
+            Vas a aceptar la oferta realizada por <span className="font-semibold">{confirmOffer.fromUser}</span> de{" "}
+            <span className="font-semibold">{fmtCredits(confirmOffer.amount)}</span> por{" "}
+            <span className="font-semibold">{asset?.name || "esta jugadora"}</span>.
+          </ConfirmDialog>
+        );
+      })()}
     </div>
   );
 }
