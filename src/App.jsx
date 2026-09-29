@@ -9481,9 +9481,21 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
     return id === usedLineup?.captainId ? pts * 2 : pts;
   };
 
-  const req = FORMATIONS[usedLineup?.formation || "2-2-1"];
   const byPos = (posKey) => (usedLineup?.starters || []).filter(id => findPlayer(id)?.position === posKey);
-  const rows = courtRowsFor(usedLineup?.formation || "2-2-1", { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") }, req);
+  // La pista se dibuja con las titulares REALES de esa jornada. Si la
+  // formación guardada no cuadra con sus posiciones (p. ej. se cambió la
+  // posición de una jugadora después), se usa la formación que sí encaja
+  // con ellas, para que ninguna titular desaparezca ni salga un "Vacío".
+  const starterIds = { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") };
+  const savedFormation = usedLineup?.formation || "2-2-1";
+  const fitsFormation = (key) => { const f = FORMATIONS[key]; return f && ["BASE", "ALERO", "PIVOT"].every(k => starterIds[k].length === f[k]); };
+  const shownFormation = fitsFormation(savedFormation)
+    ? savedFormation
+    : (Object.keys(FORMATIONS).find(fitsFormation) || null);
+  const req = shownFormation
+    ? FORMATIONS[shownFormation]
+    : { BASE: starterIds.BASE.length, ALERO: starterIds.ALERO.length, PIVOT: starterIds.PIVOT.length };
+  const rows = courtRowsFor(shownFormation || "custom", starterIds, req);
   const bench = usedLineup?.bench || { BASE: null, ALERO: null, PIVOT: null };
   const coachId = usedLineup?.titularCoach || null;
   const swaps = useMemo(() => computeLineupSwaps(usedLineup, jornada, players), [usedLineup, jornada, players]);
