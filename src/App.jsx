@@ -8402,15 +8402,16 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
   }, [squadPlayers]);
 
   const values = points.map(p => p.value);
-  const max = Math.max(...values, 1), min = Math.min(...values, 0);
-  const range = Math.max(max - min, 1);
-  const w = 300, h = 120, padY = 16; // margen vertical para que los picos no se corten contra el borde
-  const yFor = (v) => padY + (h - 2 * padY) - ((v - min) / range) * (h - 2 * padY);
-  const xFor = (i) => points.length > 1 ? (i / (points.length - 1)) * w : w / 2;
-  const pathD = points.length > 1
-    ? points.map((p, i) => `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${yFor(p.value).toFixed(1)}`).join(" ")
-    : ""; // con un solo punto no hay línea que trazar: se dibuja un punto suelto más abajo, no un path vacío
-  const areaD = points.length > 1 ? `${pathD} L ${xFor(points.length - 1).toFixed(1)} ${h - padY} L ${xFor(0).toFixed(1)} ${h - padY} Z` : "";
+  const first = values[0] ?? 0, last = values[values.length - 1] ?? 0;
+  const diffTotal = last - first;
+  const pctTotal = first > 0 ? (diffTotal / first) * 100 : 0;
+  // Tabla día a día (más reciente arriba): valor y cuánto cambió respecto al día anterior.
+  const dayRows = [];
+  for (let k = points.length - 1; k >= 1; k--) {
+    const dif = points[k].value - points[k - 1].value;
+    dayRows.push({ date: points[k].date, value: points[k].value, dif, pct: points[k - 1].value > 0 ? (dif / points[k - 1].value) * 100 : 0 });
+  }
+  const fmtPct = (v) => `${v >= 0 ? "+" : ""}${v.toFixed(2).replace(".", ",")}%`;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
@@ -8424,27 +8425,34 @@ function ValorPlantillaChartModal({ myTeam, players, onClose }) {
         ) : (
           <>
             <div className="fl-mono text-2xl font-bold mb-1" style={{ color: C.white }}>{fmtCredits(values[values.length - 1])}</div>
-            <div className="fl-row p-4">
-              <div className="relative">
-                {/* Valores de referencia (máximo y mínimo) a la izquierda del gráfico */}
-                <div className="absolute left-0 top-0 fl-mono text-[9px]" style={{ color: C.muted }}>{fmtCredits(max)}</div>
-                <div className="absolute left-0 bottom-0 fl-mono text-[9px]" style={{ color: C.muted }}>{fmtCredits(min)}</div>
-                <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none">
-                  {/* líneas de referencia discretas arriba/abajo */}
-                  <line x1={0} y1={padY} x2={w} y2={padY} stroke={C.line} strokeWidth={1} strokeDasharray="3 3" />
-                  <line x1={0} y1={h - padY} x2={w} y2={h - padY} stroke={C.line} strokeWidth={1} strokeDasharray="3 3" />
-                  {areaD && <path d={areaD} fill={C.principal} opacity={0.12} stroke="none" />}
-                  {pathD && <path d={pathD} fill="none" stroke={C.principal} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />}
-                  {points.map((p, i) => (
-                    <circle key={i} cx={xFor(i)} cy={yFor(p.value)} r={points.length === 1 ? 4 : 3} fill={C.principal} />
-                  ))}
-                </svg>
+            {points.length > 1 && (
+              <div className="fl-mono text-xs mb-3" style={{ color: diffTotal >= 0 ? C.positive : C.negative }}>
+                {diffTotal >= 0 ? "▲" : "▼"} {diffTotal >= 0 ? "+" : "−"}{fmtCredits(Math.abs(diffTotal))} ({fmtPct(pctTotal)}) desde {fmtDDMM(points[0].date) || "el inicio"}
               </div>
-              <div className="flex items-center justify-between mt-2">
-                <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[0]?.date}</span>
-                <span className="fl-mono text-[9px]" style={{ color: C.muted }}>{points[points.length - 1]?.date}</span>
-              </div>
+            )}
+            {/* Mismo gráfico que el del mercado: eje vertical ajustado a los
+                valores (no desde 0, para que se vean las subidas y bajadas),
+                con cifras de referencia en millones y la fecha de cada punto. */}
+            <div className="fl-row p-3">
+              <ValueLineChart points={points} />
             </div>
+            {dayRows.length > 0 && (
+              <div className="mt-4">
+                <div className="fl-mono text-[10px] mb-1.5" style={{ color: C.muted }}>DÍA A DÍA</div>
+                <div className="fl-row overflow-hidden">
+                  <div className="grid grid-cols-3 px-3 py-2 fl-mono text-[10px]" style={{ color: C.muted, borderBottom: `1px solid ${C.lineSoft}` }}>
+                    <span>FECHA</span><span className="text-right">CAMBIO</span><span className="text-right">VALOR</span>
+                  </div>
+                  {dayRows.map((r) => (
+                    <div key={r.date} className="grid grid-cols-3 px-3 py-2 fl-mono text-[11px]" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                      <span style={{ color: C.white }}>{fmtDDMM(r.date) || r.date}</span>
+                      <span className="text-right" style={{ color: r.dif >= 0 ? C.positive : C.negative }}>{r.dif >= 0 ? "+" : "−"}{fmtCredits(Math.abs(r.dif))}</span>
+                      <span className="text-right" style={{ color: C.white }}>{fmtCredits(r.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -11278,9 +11286,9 @@ function AuctionCard({ asset, market, bids, profile, myTeam, isMarketOpen, budge
               <span className="fl-display text-base uppercase truncate" style={{ color: C.white }}>{asset.name}</span>
             </div>
             <div className="fl-mono text-xs mt-0.5" style={{ color: C.muted }}>{asset.team}</div>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className="fl-mono text-sm font-semibold" style={{ color: C.baby }}>{fmtCredits(asset.basePrice || 1)}</span>
-              <span className="fl-mono text-[11px]" style={{ color: C.muted }}>· {bidCount} {bidCount === 1 ? "puja" : "pujas"}</span>
+            <div className="flex items-baseline gap-1.5 mt-1.5 whitespace-nowrap">
+              <span className="fl-mono text-[13px] font-semibold whitespace-nowrap" style={{ color: C.baby }}>{fmtCredits(asset.basePrice || 1)}</span>
+              <span className="fl-mono text-[10px] whitespace-nowrap" style={{ color: C.muted }}>· {bidCount} {bidCount === 1 ? "puja" : "pujas"}</span>
             </div>
             <div className="mt-1.5"><BidStatusPill status={status} /></div>
           </div>
