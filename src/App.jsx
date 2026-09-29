@@ -5221,7 +5221,15 @@ export default function App() {
       {menuScreen === "soporte" && <SoporteScreen profile={profile} leagues={myLeagues} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "ranking" && <GlobalRankingScreen players={players} jornadas={jornadas} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "cinco_ideal" && <IdealFiveGlobalScreen players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
-      {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
+      {menuScreen === "partidos" && <PartidosGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)}
+        renderPlayerDetail={(p, close) => (
+          <PlayerDetailScreen player={p} entry={(myTeam?.squad || []).find(e => e.id === p.id)}
+            jornadas={jornadas} isFavorite={(favoritos || []).includes(p.id)} onToggleFavorite={() => toggleFavorito(p.id)}
+            isOwned={myTeam ? teamService.squadIds(myTeam).includes(p.id) : false}
+            onSellImmediate={sellImmediate} onToggleForSale={toggleForSale} onAcceptSaleOffer={acceptSaleOffer} onRaiseClause={raiseClause}
+            teams={teams} me={profile.name} budgetAvailable={budgetAvailable} onBuyClause={buyClause} onSendOffer={sendOffer}
+            onClose={close} />
+        )} />}
       {menuScreen === "mercado_global" && <MercadoGlobalScreen jornadas={jornadas} players={players} teamCrests={teamCrests} onClose={() => setMenuScreen(null)} />}
       {menuScreen === "calendario" && (
         <CalendarioModal jornadas={jornadas} teamCrests={teamCrests} players={players} onClose={() => setMenuScreen(null)} />
@@ -5914,7 +5922,7 @@ function GlobalRankingScreen({ onClose, players, jornadas }) {
 // "Partidos": lista de partidos de una jornada (con su estado: FINALIZADO /
 // EN JUEGO / SIN EMPEZAR), y al entrar en uno, los puntos Fantasy de cada
 // jugadora de ese partido lado a lado.
-function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
+function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests, renderPlayerDetail }) {
   const regularJ = useMemo(() => playoffService.regularJornadas(jornadas), [jornadas]);
   const [idx, setIdx] = useState(() => {
     const current = findCurrentJornada(regularJ);
@@ -5923,9 +5931,19 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests }) {
   });
   const jornada = regularJ[idx];
   const [openPartido, setOpenPartido] = useState(null);
+  const [detailPlayer, setDetailPlayer] = useState(null); // jugadora abierta desde "Puntos del partido"
 
   if (openPartido) {
-    return <PartidoPuntosScreen partido={openPartido} jornada={jornada} players={players} teamCrests={teamCrests} onClose={() => setOpenPartido(null)} />;
+    return (
+      <>
+        <PartidoPuntosScreen partido={openPartido} jornada={jornada} players={players} teamCrests={teamCrests} onClose={() => setOpenPartido(null)}
+          onOpenPlayer={setDetailPlayer} />
+        {detailPlayer && (renderPlayerDetail
+          ? renderPlayerDetail(detailPlayer, () => setDetailPlayer(null))
+          : <PlayerDetailScreen player={detailPlayer} entry={null} jornadas={jornadas} isOwned={false}
+              isFavorite={false} onToggleFavorite={() => {}} onClose={() => setDetailPlayer(null)} />)}
+      </>
+    );
   }
 
   const partidos = jornada ? realBracketService.projectedPartidos(jornadas, jornada) : [];
@@ -5995,7 +6013,7 @@ function PointsSquare({ pts }) {
   );
 }
 
-function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose }) {
+function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose, onOpenPlayer }) {
   const rosterFor = (teamName) => players.filter((p) => p.team === teamName && p.position !== "DT");
   const localRoster = rosterFor(partido.local);
   const visitanteRoster = rosterFor(partido.visitante);
@@ -6020,14 +6038,21 @@ function PartidoPuntosScreen({ partido, jornada, players, teamCrests, onClose })
           const vPts = vp ? calcPlayerPoints(jornada?.stats?.[vp.id], vp.position) : null;
           return (
             <div key={i} className="flex items-center px-2.5 py-2 gap-1.5" style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
-              <PlayerPhoto url={lp?.photo} size={38} rounded={999} />
-              {lp && <PositionBadge posKey={lp.position} size="sm" />}
-              <span className="fl-body text-[11px] flex-1 min-w-0 truncate" style={{ color: C.white }}>{lp?.name || ""}</span>
-              <PointsSquare pts={lPts} />
-              <PointsSquare pts={vPts} />
-              <span className="fl-body text-[11px] flex-1 min-w-0 truncate text-right" style={{ color: C.white }}>{vp?.name || ""}</span>
-              {vp && <PositionBadge posKey={vp.position} size="sm" />}
-              <PlayerPhoto url={vp?.photo} size={38} rounded={999} />
+              {/* Cada mitad (jugadora local / visitante) abre su perfil al tocarla. */}
+              <button type="button" disabled={!lp || !onOpenPlayer} onClick={() => lp && onOpenPlayer?.(lp)}
+                className="fl-tap flex items-center gap-1.5 flex-1 min-w-0 text-left">
+                <PlayerPhoto url={lp?.photo} size={38} rounded={999} />
+                {lp && <PositionBadge posKey={lp.position} size="sm" />}
+                <span className="fl-body text-[11px] flex-1 min-w-0 truncate" style={{ color: C.white }}>{lp?.name || ""}</span>
+                <PointsSquare pts={lPts} />
+              </button>
+              <button type="button" disabled={!vp || !onOpenPlayer} onClick={() => vp && onOpenPlayer?.(vp)}
+                className="fl-tap flex items-center gap-1.5 flex-1 min-w-0 text-right">
+                <PointsSquare pts={vPts} />
+                <span className="fl-body text-[11px] flex-1 min-w-0 truncate text-right" style={{ color: C.white }}>{vp?.name || ""}</span>
+                {vp && <PositionBadge posKey={vp.position} size="sm" />}
+                <PlayerPhoto url={vp?.photo} size={38} rounded={999} />
+              </button>
             </div>
           );
         })}
