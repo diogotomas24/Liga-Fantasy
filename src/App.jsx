@@ -7761,19 +7761,21 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
             <rect x="28" y="6" width="52" height="30" rx="3" fill="none" stroke="#FF8A00" strokeWidth="2" transform="rotate(6 54 21)" />
             <circle cx="54" cy="21" r="9" fill="none" stroke="#FF8A00" strokeWidth="1.5" transform="rotate(6 54 21)" />
           </svg>
+          {/* Mismas 4 filas y alturas que la tarjeta de VALOR DE PLANTILLA, para que
+              icono, título, importe y línea inferior queden a la misma altura. */}
           <div className="relative z-10">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-shrink-0" style={{ width: 24, height: 19 }}>
-                <div style={{ position: "absolute", left: 0, bottom: 0, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
-                <div style={{ position: "absolute", left: 5, bottom: 3, width: 17, height: 10, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
+            <div className="flex items-center justify-between mb-0.5" style={{ height: 20 }}>
+              <div className="relative flex-shrink-0" style={{ width: 22, height: 17 }}>
+                <div style={{ position: "absolute", left: 0, bottom: 0, width: 16, height: 9, borderRadius: "50%", background: "linear-gradient(180deg, #FFC83D, #E67300)", border: "1.5px solid #FFE0A0" }} />
+                <div style={{ position: "absolute", left: 5, bottom: 3, width: 16, height: 9, borderRadius: "50%", background: "linear-gradient(180deg, #FFDD66, #FF8A00)", border: "1.5px solid #FFECC0" }} />
               </div>
-              <div>
-                <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
-                <div className="fl-mono text-base font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
-              </div>
-              <ChevronRight size={14} color={C.muted} style={{ marginLeft: "auto", alignSelf: "flex-start" }} />
+              <ChevronRight size={14} color={C.muted} />
             </div>
-            <div className="fl-mono text-[8px] mt-1" style={{ color: C.muted }}>Ver mis estadísticas</div>
+            <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.muted }}>DINERO DISPONIBLE</div>
+            <div className="fl-mono text-base font-bold mt-0.5 whitespace-nowrap" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
+            <div className="flex items-center gap-1 mt-0.5" style={{ height: 14 }}>
+              <span className="fl-mono text-[9px]" style={{ color: C.muted }}>Ver mis estadísticas</span>
+            </div>
           </div>
         </button>
         <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 8px ${C.principal}33` }}>
@@ -7787,22 +7789,26 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
             <rect x="84" y="4" width="10" height="56" fill={C.principal} />
           </svg>
           <div className="relative z-10">
-            <div className="flex items-center justify-between mb-0.5">
+            <div className="flex items-center justify-between mb-0.5" style={{ height: 20 }}>
               <div className="rounded-full flex items-center justify-center" style={{ width: 20, height: 20, background: `${C.principal}22` }}>
                 <TrendingUp size={11} color={C.principal} />
               </div>
               <ChevronRight size={14} color={C.muted} />
             </div>
             <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.muted }}>VALOR DE PLANTILLA</div>
-            <div className="fl-mono text-base font-bold mt-0.5" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
-            {cambioValor !== 0 && (
-              <div className="flex items-center gap-1 mt-0.5">
-                {cambioValor > 0 ? <TrendingUp size={10} color={C.positive} /> : <TrendingDown size={10} color={C.negative} />}
-                <span className="fl-mono text-[9px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
-                  {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
-                </span>
-              </div>
-            )}
+            <div className="fl-mono text-base font-bold mt-0.5 whitespace-nowrap" style={{ color: C.white }}>{fmtCredits(valorHoy)}</div>
+            <div className="flex items-center gap-1 mt-0.5 whitespace-nowrap" style={{ height: 14 }}>
+              {cambioValor !== 0 ? (
+                <>
+                  {cambioValor > 0 ? <TrendingUp size={10} color={C.positive} /> : <TrendingDown size={10} color={C.negative} />}
+                  <span className="fl-mono text-[9px] font-semibold" style={{ color: cambioValor > 0 ? C.positive : C.negative }}>
+                    {cambioValor > 0 ? "+" : ""}{fmtCredits(cambioValor)} ({cambioValor > 0 ? "+" : ""}{cambioPct.toFixed(1)}%)
+                  </span>
+                </>
+              ) : (
+                <span className="fl-mono text-[9px]" style={{ color: C.muted }}>Sin cambios</span>
+              )}
+            </div>
           </div>
         </button>
       </div>
@@ -8479,10 +8485,15 @@ function MisEstadisticasScreen({ me, leagueId, players, jornadas, teamCrests, on
   const findP = (id) => players.find((p) => p.id === id) || null;
   const dateOf = (ts) => (ts ? fmtDDMM(toDateStr(new Date(ts))) : "");
   const money = (v) => `${v >= 0 ? "+" : "−"}${fmtCredits(Math.abs(v))}`;
+  const shortM = (v) => `${(Number(v) || 0).toFixed(2).replace(/\.?0+$/, "").replace(".", ",")}M`; // 16.5 → "16,5M"
 
   const Section = ({ title, children }) => (
     <div className="mb-5">
-      <div className="fl-mono text-[10px] mb-1.5 tracking-wide" style={{ color: C.muted }}>{title}</div>
+      <div className="fl-display text-sm uppercase mb-2 tracking-wide" style={{
+        background: `linear-gradient(90deg, #FF8A00, ${C.principal})`,
+        WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent", color: "transparent",
+        display: "inline-block",
+      }}>{title}</div>
       <div className="space-y-1.5">{children}</div>
     </div>
   );
@@ -8530,7 +8541,7 @@ function MisEstadisticasScreen({ me, leagueId, players, jornadas, teamCrests, on
                 ? <Empty text="Todavía no has vendido ninguna jugadora con beneficio." />
                 : stats.bestSales.map((s, i) => (
                   <PlayerRow key={`${s.assetId}_${s.ts}`} id={s.assetId} rank={i + 1}
-                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${fmtCredits(s.paid)} → venta ${fmtCredits(s.amount)} · ${dateOf(s.ts)}`}
+                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${shortM(s.paid)} → venta ${shortM(s.amount)} · ${dateOf(s.ts)}`}
                     right={money(s.profit)} rightColor={s.profit >= 0 ? C.positive : C.negative} />
                 ))}
             </Section>
@@ -8539,7 +8550,7 @@ function MisEstadisticasScreen({ me, leagueId, players, jornadas, teamCrests, on
               <Section title="VENTAS CON MENOS BENEFICIO">
                 {stats.worstSales.map((s, i) => (
                   <PlayerRow key={`${s.assetId}_${s.ts}`} id={s.assetId} rank={i + 1}
-                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${fmtCredits(s.paid)} → venta ${fmtCredits(s.amount)} · ${dateOf(s.ts)}`}
+                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${shortM(s.paid)} → venta ${shortM(s.amount)} · ${dateOf(s.ts)}`}
                     right={money(s.profit)} rightColor={s.profit >= 0 ? C.positive : C.negative} />
                 ))}
               </Section>
