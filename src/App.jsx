@@ -1989,6 +1989,16 @@ async function readPlayers() {
 }
 
 
+// Historial PERMANENTE de movimientos de una liga (tabla activity_log, que
+// la base de datos rellena sola con cada entrada nueva de la actividad).
+async function readActivityLog(leagueId) {
+  try {
+    const { data, error } = await supabase.from("activity_log").select("entry, ts, type").eq("league_id", leagueId).order("ts", { ascending: true }).limit(5000);
+    if (error) throw error;
+    return (data || []).map((r) => ({ ...r.entry, ts: r.entry?.ts ?? r.ts, type: r.entry?.type ?? r.type }));
+  } catch { return null; }
+}
+
 async function readShared(key, fallback) {
   try {
     const { data, error } = await supabase.from("kv_store").select("value").eq("key", key).maybeSingle();
@@ -4948,6 +4958,7 @@ export default function App() {
       buyerName: profile.name, buyerTeam, sellerName, sellerTeam, players, asset, amount, bids, marketId: market?.id,
     });
     if (!check.ok) return check;
+    const sellerEntryBefore = teamService.getSquadEntry(sellerTeam, asset.id);
     const { buyerTeam: nextBuyer, sellerTeam: nextSeller } = clauseService.execute(buyerTeam, sellerTeam, asset, amount);
     await Promise.all([writeTeam(activeLeagueId, profile.name, nextBuyer), writeTeam(activeLeagueId, sellerName, nextSeller)]);
     setTeams(t => ({ ...t, [profile.name]: nextBuyer, [sellerName]: nextSeller }));
@@ -4957,7 +4968,8 @@ export default function App() {
     if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
       sendPushNotification(activeLeagueId, profile.name, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
     }
-    await logActivity({ type: "clausula", buyerName: profile.name, sellerName, assetId: asset.id, amount });
+    await logActivity({ type: "clausula", buyerName: profile.name, sellerName, assetId: asset.id, amount,
+      sellerPricePaid: sellerEntryBefore?.pricePaid ?? null, sellerInitial: !!sellerEntryBefore?.initial });
     return { ok: true };
   }, [profile, players, bids, market, activeLeagueId, logActivity]);
 
@@ -4966,10 +4978,12 @@ export default function App() {
     const player = players.find(p => p.id === assetId);
     if (!player) return { ok: false, error: "Jugadora no encontrada." };
     const amount = Math.max(0.01, (player.basePrice || 0) * 0.5);
+    const soldEntry = teamService.getSquadEntry(fresh, assetId);
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
-    await logActivity({ type: "venta", userId: profile.name, assetId, amount });
+    await logActivity({ type: "venta", userId: profile.name, assetId, amount, via: "inmediata",
+      pricePaid: soldEntry?.pricePaid ?? null, initial: !!soldEntry?.initial });
     return { ok: true, amount };
   }, [profile, players, activeLeagueId, logActivity]);
 
@@ -4992,7 +5006,8 @@ export default function App() {
     const nextTeam = teamService.receiveSaleProceeds(fresh, assetId, amount);
     await writeTeam(activeLeagueId, profile.name, nextTeam);
     setTeams(t => ({ ...t, [profile.name]: nextTeam }));
-    await logActivity({ type: "venta", userId: profile.name, assetId, amount });
+    await logActivity({ type: "venta", userId: profile.name, assetId, amount, via: "oferta_liga",
+      pricePaid: entry.pricePaid ?? null, initial: !!entry.initial });
     return { ok: true };
   }, [profile, activeLeagueId, logActivity]);
 
@@ -5118,7 +5133,8 @@ export default function App() {
       if (((nextBuyer.budgetTotal || 0) - (nextBuyer.budgetSpent || 0)) < 0) {
         sendPushNotification(activeLeagueId, offer.fromUser, "⚠️ Te has quedado en negativo", "Ese fichaje te ha dejado con el presupuesto en negativo. Recuerda que si sigues endeudada/o cuando empiece la jornada, no puntuarás.");
       }
-      await logActivity({ type: "oferta", buyerName: offer.fromUser, sellerName: offer.toUser, assetId: asset.id, amount: offer.amount });
+      await logActivity({ type: "oferta", buyerName: offer.fromUser, sellerName: offer.toUser, assetId: asset.id, amount: offer.amount,
+        sellerPricePaid: entry.pricePaid ?? null, sellerInitial: !!entry.initial });
     } else if (action === "reject") {
       const asset = players.find(p => p.id === offer.assetId);
       sendPushNotification(activeLeagueId, offer.fromUser, "❌ Te han rechazado la oferta", `${offer.toUser} ha rechazado tu oferta de ${fmtCredits(offer.amount)} por ${asset?.name || "esa jugadora"}.`);
@@ -7609,6 +7625,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
   const [showCalendar, setShowCalendar] = useState(false);
   const [showTriple, setShowTriple] = useState(false);
   const [showValorChart, setShowValorChart] = useState(false);
+  const [showMisStats, setShowMisStats] = useState(false);
   const [showAllMovers, setShowAllMovers] = useState(false);
   const [showClasificacion, setShowClasificacion] = useState(false);
   const [showPlayoffIntro, setShowPlayoffIntro] = useState(false);
@@ -7736,7 +7753,7 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       {!isPlayoffMode && (
       <div className="grid grid-cols-2 gap-2.5">
-        <div className="relative overflow-hidden rounded-2xl px-3 py-2" style={{ background: C.navy800, border: `2px solid #FF8A00`, boxShadow: `0 0 8px #FF8A0033` }}>
+        <button onClick={() => setShowMisStats(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid #FF8A00`, boxShadow: `0 0 8px #FF8A0033` }}>
           {/* Billetes translúcidos de fondo */}
           <svg viewBox="0 0 100 60" style={{ position: "absolute", right: -10, bottom: -8, width: 92, height: 56, opacity: 0.14 }}>
             <rect x="10" y="18" width="52" height="30" rx="3" fill="none" stroke="#FF8A00" strokeWidth="2" transform="rotate(-8 36 33)" />
@@ -7754,9 +7771,11 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
                 <div className="fl-mono text-[8px] font-bold tracking-wide" style={{ color: C.white }}>DINERO DISPONIBLE</div>
                 <div className="fl-mono text-base font-bold mt-0.5" style={{ color: "#FF8A00" }}>{fmtCredits(budgetAvailable)}</div>
               </div>
+              <ChevronRight size={14} color={C.muted} style={{ marginLeft: "auto", alignSelf: "flex-start" }} />
             </div>
+            <div className="fl-mono text-[8px] mt-1" style={{ color: C.muted }}>Ver mis estadísticas</div>
           </div>
-        </div>
+        </button>
         <button onClick={() => setShowValorChart(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid ${C.principal}`, boxShadow: `0 0 8px ${C.principal}33` }}>
           {/* Diagrama de barras translúcido de fondo, en el mismo color que el borde */}
           <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ position: "absolute", right: 0, bottom: 0, width: "70%", height: "80%", opacity: 0.16 }}>
@@ -7948,6 +7967,10 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
 
       {showValorChart && (
         <ValorPlantillaChartModal myTeam={myTeam} players={players} onClose={() => setShowValorChart(false)} />
+      )}
+
+      {showMisStats && (
+        <MisEstadisticasScreen me={profile.name} leagueId={leagueId} players={players} jornadas={jornadas} teamCrests={teamCrests} onClose={() => setShowMisStats(false)} />
       )}
 
       {detailPlayer && (
@@ -8374,6 +8397,182 @@ function SingleTeamRow({ team, score, isWinner, pending, teamCrests }) {
 // Gráfico de la evolución del valor total de la plantilla, día a día, sumando
 // el valor histórico de cada jugadora que tienes en cada fecha (se apoya en
 // el price_history de cada una, que ya guarda el motor de precios diario).
+// ---------------------------------------------------------------------------
+// MIS ESTADÍSTICAS (solo las tuyas): compras más caras, ventas con más y menos
+// beneficio, y la jugadora y el equipo real que más puntos te han dado.
+// - Compras: fichajes del mercado, cláusulas pagadas y ofertas aceptadas por
+//   otro mánager. Las del reparto inicial NO cuentan como compras.
+// - Ventas: solo las ya confirmadas (venta a la liga, cláusula que te pagaron
+//   u oferta que aceptaste). Beneficio = precio de venta − precio de compra.
+//   Si la vendida era del reparto, su precio de compra es su valor al empezar.
+// - Puntos: solo los que te sumaron de verdad (titulares, con el doble de la
+//   capitana, la del banquillo cuando entró por el cambio automático, y la
+//   entrenadora/or titular).
+function computeMyStats({ me, log, players, jornadas, leagueId }) {
+  const findP = (id) => players.find((p) => p.id === id) || null;
+  const purchases = [];
+  const sales = [];
+  (log || []).forEach((e) => {
+    if (!e || !e.assetId) return;
+    if (e.type === "fichaje" && e.userId === me) purchases.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, via: "Mercado" });
+    else if (e.type === "clausula" && e.buyerName === me) purchases.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, via: `Cláusula a ${e.sellerName}` });
+    else if (e.type === "oferta" && e.buyerName === me) purchases.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, via: `Oferta a ${e.sellerName}` });
+
+    if (e.type === "venta" && e.userId === me) sales.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, paid: e.pricePaid, initial: e.initial, via: e.via === "inmediata" ? "Venta inmediata" : e.via === "oferta_liga" ? "Oferta de la liga" : "Venta a la liga" });
+    else if (e.type === "clausula" && e.sellerName === me) sales.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, paid: e.sellerPricePaid, initial: e.sellerInitial, via: `Cláusula de ${e.buyerName}` });
+    else if (e.type === "oferta" && e.sellerName === me) sales.push({ assetId: e.assetId, amount: e.amount, ts: e.ts, paid: e.sellerPricePaid, initial: e.sellerInitial, via: `Oferta de ${e.buyerName}` });
+  });
+
+  // Precio de compra de cada venta: el guardado en la propia venta; si no
+  // (ventas antiguas), la última compra tuya de esa jugadora antes de
+  // venderla; y si no hubo compra, era del reparto → su valor inicial.
+  const initialValue = (p) => {
+    const h = (p?.priceHistory || []).filter((x) => x && Number.isFinite(Number(x.value)));
+    return h.length ? Number(h[0].value) : (p?.basePrice || 0);
+  };
+  const salesWithProfit = sales.map((s) => {
+    let paid = Number.isFinite(Number(s.paid)) && s.paid != null ? Number(s.paid) : null;
+    let fromReparto = !!s.initial;
+    if (paid == null) {
+      const prev = purchases.filter((b) => b.assetId === s.assetId && (b.ts || 0) <= (s.ts || 0)).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+      if (prev) paid = prev.amount;
+      else { paid = initialValue(findP(s.assetId)); fromReparto = true; }
+    }
+    return { ...s, paid, fromReparto, profit: (s.amount || 0) - (paid || 0) };
+  });
+
+  const topPurchases = [...purchases].sort((a, b) => (b.amount || 0) - (a.amount || 0)).slice(0, 3);
+  // "Más beneficio" = solo ventas con ganancia; las pérdidas van siempre a "menos beneficio".
+  const bestSales = salesWithProfit.filter((x) => x.profit > 0).sort((a, b) => b.profit - a.profit).slice(0, 3);
+  const bestKeys = new Set(bestSales.map((x) => `${x.assetId}_${x.ts}`));
+  const worstSales = [...salesWithProfit].sort((a, b) => a.profit - b.profit).filter((x) => !bestKeys.has(`${x.assetId}_${x.ts}`)).slice(0, 3);
+
+  // Puntos que te sumó cada jugadora / cada equipo real.
+  const byPlayer = {}; // id -> { pts, jornadas }
+  const byClub = {};   // club -> pts
+  const lineupKey = `${leagueId}::${me}`;
+  startedJornadas(playoffService.regularJornadas(jornadas)).forEach((j) => {
+    const contributing = resolveContributingPlayerIds(j, lineupKey, null, players);
+    if (!contributing) return;
+    const captainId = j.lineups?.[lineupKey]?.captainId;
+    contributing.forEach((id) => {
+      const p = findP(id);
+      if (!p) return;
+      const pts = p.position === "DT"
+        ? calcPlayerPoints(j.stats?.[id], "DT", resolveCoachWin(j, p.team))
+        : calcPlayerPoints(j.stats?.[id], p.position) * (id === captainId ? 2 : 1);
+      byPlayer[id] = byPlayer[id] || { pts: 0, jornadas: 0 };
+      byPlayer[id].pts += pts; byPlayer[id].jornadas += 1;
+      byClub[p.team] = (byClub[p.team] || 0) + pts;
+    });
+  });
+  const topPlayers = Object.entries(byPlayer).map(([id, v]) => ({ id, ...v })).filter((x) => x.pts > 0).sort((a, b) => b.pts - a.pts).slice(0, 3);
+  const topClubs = Object.entries(byClub).map(([team, pts]) => ({ team, pts })).filter((x) => x.pts > 0).sort((a, b) => b.pts - a.pts).slice(0, 3);
+
+  return { topPurchases, bestSales, worstSales, topPlayers, topClubs, hasSales: salesWithProfit.length > 0 };
+}
+
+function MisEstadisticasScreen({ me, leagueId, players, jornadas, teamCrests, onClose }) {
+  const [log, setLog] = useState(undefined); // undefined = cargando, null = error
+  useEffect(() => { let alive = true; readActivityLog(leagueId).then((l) => { if (alive) setLog(l); }); return () => { alive = false; }; }, [leagueId]);
+  const stats = useMemo(() => computeMyStats({ me, log: log || [], players, jornadas, leagueId }), [me, log, players, jornadas, leagueId]);
+  const findP = (id) => players.find((p) => p.id === id) || null;
+  const dateOf = (ts) => (ts ? fmtDDMM(toDateStr(new Date(ts))) : "");
+  const money = (v) => `${v >= 0 ? "+" : "−"}${fmtCredits(Math.abs(v))}`;
+
+  const Section = ({ title, children }) => (
+    <div className="mb-5">
+      <div className="fl-mono text-[10px] mb-1.5 tracking-wide" style={{ color: C.muted }}>{title}</div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+  const PlayerRow = ({ id, rank, sub, right, rightColor }) => {
+    const p = findP(id);
+    return (
+      <div className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+        <span className="fl-mono text-xs font-bold w-4 text-center" style={{ color: rank === 1 ? C.gold : C.muted }}>{rank}</span>
+        <PlayerPhoto url={p?.photo} size={36} />
+        <div className="flex-1 min-w-0">
+          <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p?.name || "Jugadora"}</div>
+          <div className="fl-mono text-[10px] truncate" style={{ color: C.muted }}>{sub}</div>
+        </div>
+        <span className="fl-mono text-sm font-bold whitespace-nowrap" style={{ color: rightColor || C.white }}>{right}</span>
+      </div>
+    );
+  };
+  const Empty = ({ text }) => <div className="fl-row px-3 py-3 fl-body text-xs" style={{ color: C.muted }}>{text}</div>;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col fl-body" style={{ background: C.navy900 }}>
+      <div className="flex items-center px-4 pb-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1 -ml-1"><ChevronLeft size={22} color={C.white} /></button>
+        <div className="flex-1 text-center fl-display text-sm uppercase pr-6" style={{ color: C.white }}>Mis estadísticas</div>
+      </div>
+      <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-4">
+        {log === undefined ? (
+          <div className="flex justify-center py-10"><Loader2 size={22} className="animate-spin" color={C.muted} /></div>
+        ) : (
+          <>
+            {log === null && <div className="fl-row px-3 py-2.5 mb-4 fl-body text-xs" style={{ color: C.negative }}>No se pudo cargar tu historial de fichajes. Los puntos sí están al día.</div>}
+
+            <Section title="TUS 3 COMPRAS MÁS CARAS">
+              {stats.topPurchases.length === 0
+                ? <Empty text="Todavía no has comprado ninguna jugadora (las del reparto inicial no cuentan)." />
+                : stats.topPurchases.map((b, i) => (
+                  <PlayerRow key={`${b.assetId}_${b.ts}`} id={b.assetId} rank={i + 1} sub={`${b.via} · ${dateOf(b.ts)}`} right={fmtCredits(b.amount)} rightColor={C.baby} />
+                ))}
+            </Section>
+
+            <Section title="VENTAS CON MÁS BENEFICIO">
+              {!stats.hasSales
+                ? <Empty text="Cuando vendas alguna jugadora verás aquí cuánto le has sacado." />
+                : stats.bestSales.length === 0
+                ? <Empty text="Todavía no has vendido ninguna jugadora con beneficio." />
+                : stats.bestSales.map((s, i) => (
+                  <PlayerRow key={`${s.assetId}_${s.ts}`} id={s.assetId} rank={i + 1}
+                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${fmtCredits(s.paid)} → venta ${fmtCredits(s.amount)} · ${dateOf(s.ts)}`}
+                    right={money(s.profit)} rightColor={s.profit >= 0 ? C.positive : C.negative} />
+                ))}
+            </Section>
+
+            {stats.worstSales.length > 0 && (
+              <Section title="VENTAS CON MENOS BENEFICIO">
+                {stats.worstSales.map((s, i) => (
+                  <PlayerRow key={`${s.assetId}_${s.ts}`} id={s.assetId} rank={i + 1}
+                    sub={`${s.fromReparto ? "Reparto" : "Compra"} ${fmtCredits(s.paid)} → venta ${fmtCredits(s.amount)} · ${dateOf(s.ts)}`}
+                    right={money(s.profit)} rightColor={s.profit >= 0 ? C.positive : C.negative} />
+                ))}
+              </Section>
+            )}
+
+            <Section title="JUGADORAS QUE MÁS PUNTOS TE HAN DADO">
+              {stats.topPlayers.length === 0
+                ? <Empty text="Cuando se juegue una jornada con tu alineación, verás aquí quién te ha dado más puntos." />
+                : stats.topPlayers.map((t, i) => (
+                  <PlayerRow key={t.id} id={t.id} rank={i + 1} sub={`${findP(t.id)?.team || ""} · ${t.jornadas} ${t.jornadas === 1 ? "jornada" : "jornadas"}`} right={`${t.pts} pts`} rightColor={i === 0 ? C.gold : C.white} />
+                ))}
+            </Section>
+
+            <Section title="EQUIPOS QUE MÁS PUNTOS TE HAN DADO">
+              {stats.topClubs.length === 0
+                ? <Empty text="Todavía no hay puntos que repartir por equipos." />
+                : stats.topClubs.map((c, i) => (
+                  <div key={c.team} className="fl-row flex items-center gap-2.5 px-3 py-2.5">
+                    <span className="fl-mono text-xs font-bold w-4 text-center" style={{ color: i === 0 ? C.gold : C.muted }}>{i + 1}</span>
+                    <TeamCrest name={c.team} photo={teamCrests?.[c.team]} size={32} />
+                    <span className="fl-body text-sm font-medium flex-1 min-w-0 truncate" style={{ color: C.white }}>{c.team}</span>
+                    <span className="fl-mono text-sm font-bold whitespace-nowrap" style={{ color: i === 0 ? C.gold : C.white }}>{c.pts} pts</span>
+                  </div>
+                ))}
+            </Section>
+            <p className="fl-body text-[10px] text-center mt-2" style={{ color: C.muted }}>Solo tú ves estas estadísticas.</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ValorPlantillaChartModal({ myTeam, players, onClose }) {
   const squadPlayers = (myTeam.squad || []).map(e => players.find(p => p.id === e.id)).filter(Boolean);
   const points = useMemo(() => {
