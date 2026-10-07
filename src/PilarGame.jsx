@@ -96,7 +96,7 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
     if (g.score % 5 === 0) g.rockets = Math.min(MAX_ROCKETS, g.rockets + 1);
     if (g.score % 10 === 0) g.lives = Math.min(START_LIVES, g.lives + 1);
     popup(g, viaRocket ? "¡COHETE!" : CHEERS[(g.score - 1) % CHEERS.length], "ok");
-    spawnConfetti(g.confetti, g.level.hoop.x, g.level.hoop.y, viaRocket ? 40 : 70);
+    spawnConfetti(g.confetti, g.level.hoop.x, g.level.hoop.y - 40, viaRocket ? 30 : 45);
     g.net.swing = 1; g.net.stretch = 1;
     g.state = "celebrate"; g.until = g.t + (viaRocket ? 0.9 : 1.35);
     g.next = () => loadLevel(g, g.levelNo + 1);
@@ -179,8 +179,8 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
         drawBallShadow(ctx, g.ball.x, g.ball.y);
         drawTrail(ctx, g.trail);
         drawBall(ctx, g.ball.x, g.ball.y, g.ball.rot, g.squash);
-        drawHoopFront(ctx, lv, g.t, g.net);
         drawConfetti(ctx, g.confetti);
+        drawHoopFront(ctx, lv, g.t, g.net);
         if (g.state === "aim" && g.drag && g.drag.len > 6) {
           const { vx, vy } = launchFromDrag(g.drag.dx, g.drag.dy);
           drawAim(ctx, g.ball.x, g.ball.y, vx, vy, MAX_SPEED);
@@ -191,7 +191,12 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
           for (const [txt, y] of [["Arrastra el dedo hacia donde quieras lanzar", 92], ["y suelta. ¡Más largo = más fuerte!", 112]]) { ctx.strokeText(txt, W / 2, y); ctx.fillText(txt, W / 2, y); }
           ctx.restore();
         }
-        if (g.popup) drawPopup(ctx, g.popup.text, g.t - g.popup.t0, g.popup.kind);
+        if (g.popup) {
+          // el texto nunca tapa la canasta: si el aro está arriba, sale abajo (y al revés)
+          const hy = lv.hoop.y;
+          const py = hy < 250 ? Math.min(FLOOR - 70, hy + 150) : Math.max(110, hy - 150);
+          drawPopup(ctx, g.popup.text, g.t - g.popup.t0, g.popup.kind, py);
+        }
         drawHud(ctx, g.lives, g.score, g.bump);
         drawLevelTag(ctx, g.levelNo, lv.scene);
       } else {

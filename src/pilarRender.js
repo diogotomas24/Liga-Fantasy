@@ -488,13 +488,13 @@ export function drawConfetti(ctx, list) {
     ctx.restore();
   }
 }
-export function drawPopup(ctx, text, age, color) {
+export function drawPopup(ctx, text, age, color, baseY = 170) {
   if (age < 0 || age > 1.3) return;
   const pop = age < 0.18 ? 0.4 + (age / 0.18) * 0.75 : age < 0.3 ? 1.15 - ((age - 0.18) / 0.12) * 0.15 : 1;
   const alpha = age > 1.0 ? 1 - (age - 1.0) / 0.3 : 1;
-  ctx.save(); ctx.translate(W / 2, 170 - Math.max(0, age - 0.3) * 20); ctx.rotate(-0.08); ctx.scale(pop, pop); ctx.globalAlpha = alpha;
-  ctx.font = `46px ${GAME_FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.lineJoin = "round"; ctx.lineWidth = 9; ctx.strokeStyle = "#FFFFFF"; ctx.strokeText(text, 0, 0);
+  ctx.save(); ctx.translate(W / 2, baseY - Math.max(0, age - 0.3) * 20); ctx.rotate(-0.08); ctx.scale(pop, pop); ctx.globalAlpha = alpha;
+  ctx.font = `42px ${GAME_FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineJoin = "round"; ctx.lineWidth = 8; ctx.strokeStyle = "#FFFFFF"; ctx.strokeText(text, 0, 0);
   const g = ctx.createLinearGradient(-110, 0, 110, 0);
   if (color === "miss") { g.addColorStop(0, "#5B5F75"); g.addColorStop(1, "#2B2F45"); }
   else { g.addColorStop(0, PAL.pink); g.addColorStop(0.5, PAL.purple); g.addColorStop(1, PAL.orange); }
