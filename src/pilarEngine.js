@@ -12,13 +12,13 @@
 export const W = 360;
 export const H = 480;
 export const FLOOR = 440;
-export const BALL_R = 11;
+export const BALL_R = 12;
 export const GRAVITY = 1400;
 export const DT = 1 / 120;
 export const MAX_SPEED = 1300;
 export const POWER_PER_PX = 5.2; // velocidad por píxel (mundo) de arrastre
 export const MAX_FLIGHT = 8; // segundos
-const E_WALL = 0.6, E_OBS = 0.55, E_FLOOR = 0.45, ROLL = 0.992, OBS_FRICTION = 0.08;
+const E_WALL = 0.78, E_OBS = 0.74, E_FLOOR = 0.72, ROLL = 0.993, OBS_FRICTION = 0.06; // bola de goma: bota bastante
 export const JAR_W = 66, JAR_H = 60, JAR_T = 7;
 
 export function mulberry32(a) {
@@ -106,7 +106,7 @@ export function stepBall(ball, level, t) {
   if (ball.y > FLOOR - BALL_R) {
     ball.y = FLOOR - BALL_R;
     if (ball.vy > 0) ball.vy = -ball.vy * E_FLOOR;
-    if (Math.abs(ball.vy) < 60) ball.vy = 0;
+    if (Math.abs(ball.vy) < 90) ball.vy = 0;
     ball.vx *= ROLL;
     ball.supported = true;
   }

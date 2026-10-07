@@ -36,7 +36,7 @@ function getLevel(n) {
 }
 
 /* ---------- dibujos de fondo (estilo boceto, como en Tigerball) ---------- */
-function sketchStyle(ctx, w = 2.2) {
+function sketchStyle(ctx, w = 2.8) {
   ctx.strokeStyle = INK; ctx.lineWidth = w; ctx.lineJoin = "round"; ctx.lineCap = "round";
 }
 function dome(ctx, x, y, r, lantern = true) {
@@ -168,7 +168,7 @@ function drawPuente(ctx) {
   ctx.strokeRect(160, 200, 40, 30);
 }
 function drawViva(ctx) {
-  ctx.save(); ctx.globalAlpha = 0.55;
+  ctx.save(); ctx.globalAlpha = 0.95;
   ctx.fillStyle = ARAGON_YELLOW; ctx.fillRect(60, 70, 240, 160);
   ctx.fillStyle = ARAGON_RED; for (let i = 0; i < 4; i++) ctx.fillRect(60, 70 + 18 + i * 36, 240, 16);
   ctx.restore();
@@ -179,67 +179,194 @@ function drawViva(ctx) {
 }
 const SCENE_DRAW = [drawPilar, drawCachirulo, drawBaturro, drawOfrenda, drawCabezudo, drawFuegos, drawJota, drawPuente, drawViva];
 
-/* ---------- escenario, obstáculos, cesto y bola ---------- */
+/* ---------- escenario, obstáculos, cesto y bola (estilo Tigerball: tela, relieve y brillo) ---------- */
+let FABRIC = null;
+function fabricPattern(ctx) {
+  if (FABRIC) return FABRIC;
+  const c = document.createElement("canvas"); c.width = 160; c.height = 160;
+  const x = c.getContext("2d");
+  const rnd = (() => { let s = 7; return () => ((s = (s * 16807) % 2147483647) / 2147483647); })();
+  x.fillStyle = "#808080"; x.fillRect(0, 0, 160, 160);
+  for (let i = 0; i < 1400; i++) { // hilos horizontales y verticales
+    const v = 90 + Math.floor(rnd() * 80);
+    x.fillStyle = `rgb(${v},${v},${v})`;
+    if (rnd() < 0.5) x.fillRect(Math.floor(rnd() * 160), Math.floor(rnd() * 160), 2 + rnd() * 10, 1);
+    else x.fillRect(Math.floor(rnd() * 160), Math.floor(rnd() * 160), 1, 2 + rnd() * 10);
+  }
+  for (let y = 0; y < 160; y += 3) { x.fillStyle = "rgba(0,0,0,0.10)"; x.fillRect(0, y, 160, 1); }
+  for (let xx = 0; xx < 160; xx += 3) { x.fillStyle = "rgba(255,255,255,0.06)"; x.fillRect(xx, 0, 1, 160); }
+  FABRIC = ctx.createPattern(c, "repeat");
+  return FABRIC;
+}
+function shade(hex, f) { // f<0 oscurece, f>0 aclara
+  const n = parseInt(hex.slice(1), 16); let r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  const t = f < 0 ? 0 : 255, p = Math.abs(f);
+  r = Math.round((t - r) * p + r); g = Math.round((t - g) * p + g); b = Math.round((t - b) * p + b);
+  return `rgb(${r},${g},${b})`;
+}
+function texture(ctx, alpha) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.globalCompositeOperation = "multiply";
+  ctx.fillStyle = fabricPattern(ctx); ctx.fill(); ctx.restore();
+}
+const DEPTH_X = 7, DEPTH_Y = -7; // relieve: las caras de detrás asoman arriba a la derecha
+function boxCorners(b, pose) {
+  const c = Math.cos(pose.ang), s = Math.sin(pose.ang);
+  return [[-b.hw, -b.hh], [b.hw, -b.hh], [b.hw, b.hh], [-b.hw, b.hh]].map(([x, y]) => [pose.cx + x * c - y * s, pose.cy + x * s + y * c]);
+}
+function poly(ctx, pts) { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); }
 function drawBox(ctx, b, pose) {
-  ctx.save(); ctx.translate(pose.cx, pose.cy); ctx.rotate(pose.ang);
-  ctx.fillStyle = b.color || "#FFD60A";
-  ctx.fillRect(-b.hw, -b.hh, b.hw * 2, b.hh * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.28)"; ctx.fillRect(-b.hw, -b.hh, b.hw * 2, Math.min(5, b.hh));
-  ctx.fillStyle = "rgba(0,0,0,0.12)"; ctx.fillRect(-b.hw, b.hh - Math.min(4, b.hh), b.hw * 2, Math.min(4, b.hh));
-  ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1.2; ctx.strokeRect(-b.hw, -b.hh, b.hw * 2, b.hh * 2);
-  if (b.kind === "block" && b.hw > 10 && b.hh > 10) cachiruloMini(ctx);
+  const col = b.color || "#FFD60A";
+  const front = boxCorners(b, pose);
+  const back = front.map(([x, y]) => [x + DEPTH_X, y + DEPTH_Y]);
+  // sombra en el suelo si toca el suelo
+  const lowest = Math.max(...front.map((p) => p[1]));
+  if (lowest > FLOOR - 4) {
+    const xs = front.map((p) => p[0]);
+    ctx.save(); ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.beginPath();
+    ctx.ellipse((Math.min(...xs) + Math.max(...xs)) / 2 + 3, FLOOR + 3, (Math.max(...xs) - Math.min(...xs)) / 2 + 8, 5, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+  // caras laterales (de la más oscura a la más clara)
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4;
+    const ex = front[j][0] - front[i][0], ey = front[j][1] - front[i][1];
+    const nx = ey, ny = -ex; // normal hacia fuera (orden horario en pantalla)
+    if (nx * DEPTH_X + ny * DEPTH_Y <= 0) continue;
+    const light = ny < 0 ? 0.28 : -0.28;
+    poly(ctx, [front[i], front[j], back[j], back[i]]);
+    ctx.fillStyle = shade(col, light); ctx.fill(); texture(ctx, 0.35);
+    ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = 1; ctx.stroke();
+  }
+  // cara frontal con degradado y tela
+  poly(ctx, front);
+  const g = ctx.createLinearGradient(pose.cx, pose.cy - b.hh, pose.cx, pose.cy + b.hh);
+  g.addColorStop(0, shade(col, 0.12)); g.addColorStop(1, shade(col, -0.12));
+  ctx.fillStyle = g; ctx.fill(); texture(ctx, 0.45);
+  ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = 1.1; ctx.stroke();
+  if (b.kind === "block" && b.hw > 11 && b.hh > 11) {
+    ctx.save(); ctx.translate(pose.cx, pose.cy); ctx.rotate(pose.ang);
+    const s = Math.min(b.hw, b.hh, 22) * 0.75;
+    cachirulo(ctx, 0, -s * 0.35, s, 0); ctx.restore();
+  }
+}
+function drawJar(ctx, jar, sceneIdx) {
+  const x0 = jar.x - JAR_W / 2, x1 = jar.x + JAR_W / 2, top = jar.y - JAR_H, rx = JAR_W / 2, ry = 9;
+  const bodyCol = ["#E8E23A", "#F2D33B", "#D9F04A"][sceneIdx % 3];
+  const rimCol = ["#2E86C1", "#2FA866", "#D7262C"][sceneIdx % 3];
+  ctx.save(); ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(jar.x + 4, jar.y + 2, rx + 8, 6, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  // cuerpo cilíndrico
+  ctx.beginPath(); ctx.moveTo(x0, top); ctx.lineTo(x0, jar.y - 6);
+  ctx.quadraticCurveTo(x0, jar.y + 2, jar.x, jar.y + 2); ctx.quadraticCurveTo(x1, jar.y + 2, x1, jar.y - 6); ctx.lineTo(x1, top); ctx.closePath();
+  const g = ctx.createLinearGradient(x0, 0, x1, 0);
+  g.addColorStop(0, shade(bodyCol, -0.35)); g.addColorStop(0.3, shade(bodyCol, 0.25)); g.addColorStop(0.55, bodyCol); g.addColorStop(1, shade(bodyCol, -0.45));
+  ctx.fillStyle = g; ctx.fill(); texture(ctx, 0.4);
+  ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1.2; ctx.stroke();
+  // dibujo en tinta (cachirulo + flor)
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, top, JAR_W, JAR_H); ctx.clip();
+  ctx.strokeStyle = INK; ctx.lineWidth = 2.4; ctx.lineJoin = "round";
+  const cy = top + JAR_H * 0.6;
+  ctx.beginPath(); ctx.moveTo(jar.x - 18, cy - 10); ctx.lineTo(jar.x + 18, cy - 10); ctx.lineTo(jar.x, cy + 12); ctx.closePath(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(jar.x - 9, cy - 10); ctx.lineTo(jar.x, cy + 1); ctx.lineTo(jar.x + 9, cy - 10); ctx.stroke();
+  ctx.restore();
+  // borde (tapa abierta): anillo de color + interior oscuro
+  ctx.beginPath(); ctx.ellipse(jar.x, top, rx + 3, ry + 2, 0, 0, Math.PI * 2);
+  const rg = ctx.createLinearGradient(0, top - ry, 0, top + ry);
+  rg.addColorStop(0, shade(rimCol, 0.3)); rg.addColorStop(1, shade(rimCol, -0.3));
+  ctx.fillStyle = rg; ctx.fill(); ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(jar.x, top + 1, rx - 5, ry - 3, 0, 0, Math.PI * 2);
+  const ig = ctx.createLinearGradient(0, top - ry, 0, top + ry);
+  ig.addColorStop(0, "#1b1b1b"); ig.addColorStop(1, shade(bodyCol, -0.55));
+  ctx.fillStyle = ig; ctx.fill();
+}
+// Parte delantera del borde: se pinta DESPUÉS de la bola para que parezca que entra dentro
+function drawJarFront(ctx, jar, sceneIdx) {
+  const top = jar.y - JAR_H, rx = JAR_W / 2, ry = 9;
+  const rimCol = ["#2E86C1", "#2FA866", "#D7262C"][sceneIdx % 3];
+  ctx.save(); ctx.beginPath(); ctx.rect(jar.x - rx - 4, top, JAR_W + 8, ry + 4); ctx.clip();
+  ctx.beginPath(); ctx.ellipse(jar.x, top, rx + 3, ry + 2, 0, 0, Math.PI); ctx.ellipse(jar.x, top + 1, rx - 5, ry - 3, 0, Math.PI, 0, true);
+  ctx.fillStyle = shade(rimCol, -0.1); ctx.fill(); ctx.restore();
+}
+function drawBall(ctx, x, y, rot, groundShadow = true) {
+  const R = BALL_R;
+  if (groundShadow) {
+    const h = Math.max(0, FLOOR - R - y), k = Math.max(0.35, 1 - h / 320);
+    ctx.save(); ctx.fillStyle = `rgba(0,0,0,${0.3 * k})`; ctx.beginPath(); ctx.ellipse(x + 3, FLOOR + 2, R * 1.2 * k, 3.5 * k, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+  ctx.save(); ctx.translate(x, y);
+  ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.save(); ctx.clip();
+  // base amarilla (Aragón) + franjas rojas curvas que giran con la bola
+  ctx.fillStyle = "#F7D21E"; ctx.fillRect(-R, -R, 2 * R, 2 * R);
+  ctx.save(); ctx.rotate(rot);
+  ctx.strokeStyle = "#C8102E"; ctx.lineWidth = R * 0.32; ctx.lineCap = "round";
+  for (let k = -2; k <= 2; k++) { ctx.beginPath(); ctx.arc(k * R * 0.62, -R * 1.6, R * 1.75, Math.PI * 0.32, Math.PI * 0.68); ctx.stroke(); }
+  ctx.restore();
+  // volumen: sombra abajo-derecha y brillo arriba-izquierda
+  const sg = ctx.createRadialGradient(-R * 0.35, -R * 0.4, R * 0.1, 0, 0, R * 1.05);
+  sg.addColorStop(0, "rgba(255,255,255,0.0)"); sg.addColorStop(0.6, "rgba(0,0,0,0.05)"); sg.addColorStop(1, "rgba(0,0,0,0.45)");
+  ctx.fillStyle = sg; ctx.fillRect(-R, -R, 2 * R, 2 * R);
+  ctx.restore();
+  ctx.fillStyle = "rgba(255,255,255,0.85)"; ctx.beginPath(); ctx.ellipse(-R * 0.38, -R * 0.45, R * 0.28, R * 0.18, -0.6, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "rgba(60,30,0,0.45)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
 }
-function cachiruloMini(ctx) {
-  ctx.save(); ctx.globalAlpha = 0.5; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.moveTo(-6, -3); ctx.lineTo(6, -3); ctx.lineTo(0, 5); ctx.closePath(); ctx.stroke(); ctx.restore();
-}
-function drawJar(ctx, jar) {
-  const x0 = jar.x - JAR_W / 2, y0 = jar.y - JAR_H;
-  // cesto de mimbre
-  ctx.fillStyle = "#C98B4B"; ctx.fillRect(x0, y0, JAR_W, JAR_H);
-  ctx.strokeStyle = "#7a4b1e"; ctx.lineWidth = 1.4;
-  for (let yy = y0 + 8; yy < jar.y; yy += 8) { ctx.beginPath(); ctx.moveTo(x0, yy); ctx.lineTo(x0 + JAR_W, yy); ctx.stroke(); }
-  for (let xx = x0 + 6; xx < x0 + JAR_W; xx += 9) { ctx.beginPath(); ctx.moveTo(xx, y0); ctx.lineTo(xx, jar.y); ctx.stroke(); }
-  // hueco interior (oscuro) para que se lea que es un recipiente
-  ctx.fillStyle = "rgba(60,30,10,0.55)"; ctx.fillRect(x0 + 7, y0, JAR_W - 14, 10);
-  ctx.strokeStyle = "#5a3412"; ctx.lineWidth = 2.5; ctx.strokeRect(x0, y0, JAR_W, JAR_H);
-  // flores en el borde
-  const cols = ["#ff5d8f", "#e63946", "#f8f9fa", "#ff9f1c"];
-  [x0 + 4, x0 + JAR_W - 4].forEach((fx, i) => { flower(ctx, fx, y0 - 2, 3.5, cols[i]); flower(ctx, fx + (i ? -7 : 7), y0 - 6, 3, cols[i + 2]); });
-  // cinta de Aragón
-  ctx.fillStyle = ARAGON_YELLOW; ctx.fillRect(x0, y0 + JAR_H * 0.55, JAR_W, 9);
-  ctx.fillStyle = ARAGON_RED; ctx.fillRect(x0, y0 + JAR_H * 0.55 + 2, JAR_W, 2); ctx.fillRect(x0, y0 + JAR_H * 0.55 + 6, JAR_W, 2);
-}
-function drawBall(ctx, x, y, rot) {
-  ctx.save(); ctx.translate(x, y);
-  ctx.fillStyle = "rgba(0,0,0,0.18)"; ctx.beginPath(); ctx.ellipse(0, FLOOR - y + 2, BALL_R * 1.1, 3, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.rotate(rot);
-  const g = ctx.createRadialGradient(-4, -4, 2, 0, 0, BALL_R);
-  g.addColorStop(0, "#ffb15c"); g.addColorStop(1, "#e2620d");
-  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, BALL_R, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = "#3b1d06"; ctx.lineWidth = 1.3;
-  ctx.beginPath(); ctx.arc(0, 0, BALL_R, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(-BALL_R, 0); ctx.lineTo(BALL_R, 0); ctx.moveTo(0, -BALL_R); ctx.lineTo(0, BALL_R); ctx.stroke();
-  ctx.beginPath(); ctx.arc(-BALL_R * 1.25, 0, BALL_R * 0.9, -0.9, 0.9); ctx.stroke();
-  ctx.beginPath(); ctx.arc(BALL_R * 1.25, 0, BALL_R * 0.9, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
+function drawTrail(ctx, trail) {
+  if (trail.length < 2) return;
+  ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const [off, w, col] of [[0, 5, "rgba(255,240,120,0.35)"], [-2, 1.6, "rgba(255,230,60,0.95)"], [2, 1.6, "rgba(255,230,60,0.95)"]]) {
+    ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath();
+    trail.forEach(([x, y], i) => (i ? ctx.lineTo(x, y + off * (i / trail.length)) : ctx.moveTo(x, y)));
+    ctx.stroke();
+  }
   ctx.restore();
 }
 function drawStage(ctx, scene, t) {
-  ctx.fillStyle = SCENES[scene].bg; ctx.fillRect(0, 0, W, H);
-  // textura de tela
-  ctx.save(); ctx.globalAlpha = 0.06; ctx.fillStyle = "#000";
-  for (let y = 0; y < FLOOR; y += 4) ctx.fillRect(0, y, W, 1);
+  // pared del fondo: color + tela
+  ctx.fillStyle = SCENES[scene].bg; ctx.fillRect(0, 0, W, FLOOR);
+  ctx.beginPath(); ctx.rect(0, 0, W, FLOOR); texture(ctx, 0.28);
+  // dibujo de tinta con doble trazo (efecto sello)
+  ctx.save(); ctx.globalAlpha = 0.18; ctx.translate(1.5, 1.5); SCENE_DRAW[scene](ctx, t); ctx.restore();
+  ctx.save(); ctx.globalAlpha = 0.92; SCENE_DRAW[scene](ctx, t); ctx.restore();
+  // estante de madera: cara de arriba y cara frontal
+  ctx.fillStyle = "#F7A440"; ctx.fillRect(0, FLOOR, W, 14);
+  ctx.beginPath(); ctx.rect(0, FLOOR, W, 14); texture(ctx, 0.25);
+  const g = ctx.createLinearGradient(0, FLOOR + 14, 0, H);
+  g.addColorStop(0, "#C66A12"); g.addColorStop(1, "#7A3E0B");
+  ctx.fillStyle = g; ctx.fillRect(0, FLOOR + 14, W, H - FLOOR - 14);
+  ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.fillRect(0, FLOOR, W, 1.5);
+  ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.fillRect(0, FLOOR + 14, W, 1.5);
+}
+// Cristales de la caja (se pintan por encima de todo, como en Tigerball)
+function drawGlass(ctx) {
+  ctx.save();
+  for (const side of [0, 1]) {
+    const x = side ? W - 16 : 0;
+    const g = ctx.createLinearGradient(x, 0, x + 16, 0);
+    g.addColorStop(side ? 1 : 0, "rgba(255,255,255,0.38)"); g.addColorStop(side ? 0 : 1, "rgba(255,255,255,0.12)");
+    ctx.fillStyle = g; ctx.fillRect(x, 0, 16, FLOOR + 14);
+    ctx.fillStyle = "rgba(0,0,0,0.12)"; ctx.fillRect(side ? W - 16 : 15, 0, 1.2, FLOOR + 14);
+  }
   ctx.restore();
-  ctx.save(); ctx.globalAlpha = 0.9; SCENE_DRAW[scene](ctx, t); ctx.restore();
-  // cristal lateral (la caja de Tigerball)
-  ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.fillRect(0, 0, 14, FLOOR); ctx.fillRect(W - 14, 0, 14, FLOOR);
-  ctx.strokeStyle = "rgba(0,0,0,0.12)"; ctx.lineWidth = 1; ctx.strokeRect(14, 0, W - 28, FLOOR);
-  // suelo de madera
-  const g = ctx.createLinearGradient(0, FLOOR, 0, H);
-  g.addColorStop(0, "#F59E2B"); g.addColorStop(0.35, "#E07B14"); g.addColorStop(1, "#8A4A10");
-  ctx.fillStyle = g; ctx.fillRect(0, FLOOR, W, H - FLOOR);
-  ctx.fillStyle = "rgba(255,255,255,0.25)"; ctx.fillRect(0, FLOOR, W, 2);
+}
+function drawHud(ctx, lives, score) {
+  // corazón con vidas
+  ctx.save(); ctx.translate(34, 30);
+  ctx.beginPath(); ctx.moveTo(0, 9); ctx.bezierCurveTo(-22, -6, -12, -22, 0, -10); ctx.bezierCurveTo(12, -22, 22, -6, 0, 9);
+  ctx.fillStyle = "#E3262E"; ctx.fill(); ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = "#BFF7F0"; ctx.font = "900 15px Impact, 'Arial Black', sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.strokeText(String(lives), 0, -3); ctx.fillText(String(lives), 0, -3);
+  ctx.restore();
+  // bocadillo cómic con la puntuación
+  ctx.save(); ctx.translate(W - 58, 32);
+  ctx.beginPath();
+  const spikes = 11;
+  for (let i = 0; i <= spikes * 2; i++) {
+    const a = (i / (spikes * 2)) * Math.PI * 2, r = i % 2 ? 22 : 31 + (i % 4 === 0 ? 4 : 0);
+    const px = Math.cos(a) * r * 1.1, py = Math.sin(a) * r * 0.74;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath(); ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 2.2; ctx.stroke();
+  ctx.fillStyle = INK; ctx.font = "900 22px Impact, 'Arial Black', sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(String(score), 0, 1);
+  ctx.restore();
 }
 
 /* ---------- componente ---------- */
@@ -363,13 +490,13 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
         }
         const lv = g.level;
         drawStage(ctx, lv.scene, g.t);
+        drawJar(ctx, lv.jar, lv.scene);
         for (const b of lv.bodies) drawBox(ctx, b, bodyPose(b, g.t));
-        drawJar(ctx, lv.jar);
-        if (g.trail.length > 1) {
-          ctx.strokeStyle = "rgba(255,214,10,0.85)"; ctx.lineWidth = 3; ctx.lineCap = "round";
-          ctx.beginPath(); g.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke();
-        }
+        drawTrail(ctx, g.trail);
         drawBall(ctx, g.ball.x, g.ball.y, g.ball.rot);
+        drawJarFront(ctx, lv.jar, lv.scene);
+        drawGlass(ctx);
+        drawHud(ctx, g.lives, g.score);
         if (g.state === "aim" && g.drag && g.drag.len > 6) {
           const { dx, dy } = g.drag;
           const { vx, vy } = launchFromDrag(dx, dy);
@@ -384,12 +511,16 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
           ctx.fillText("Arrastra el dedo hacia donde quieras lanzar y suelta", W / 2, 60);
           ctx.fillText("(más largo = más fuerte)", W / 2, 78);
         }
-        ctx.fillStyle = "rgba(29,29,31,0.55)"; ctx.font = "600 11px system-ui, sans-serif"; ctx.textAlign = "left";
-        ctx.fillText(`Nivel ${g.levelNo} · ${SCENES[lv.scene].name}`, 20, FLOOR + 24);
+        ctx.fillStyle = "rgba(255,235,200,0.85)"; ctx.font = "700 11px system-ui, sans-serif"; ctx.textAlign = "left";
+        ctx.fillText(`Nivel ${g.levelNo} · ${SCENES[lv.scene].name}`, 22, FLOOR + 31);
       } else {
         menuT += 1 / 60;
-        drawStage(ctx, Math.floor(menuT / 3) % SCENES.length, menuT);
-        drawBall(ctx, W / 2, FLOOR - BALL_R, menuT);
+        const sc = Math.floor(menuT / 3) % SCENES.length;
+        drawStage(ctx, sc, menuT);
+        const by = FLOOR - BALL_R - Math.abs(Math.sin(menuT * 3.2)) * 70;
+        drawBall(ctx, W / 2, by, menuT * 2);
+        drawGlass(ctx);
+        drawHud(ctx, START_LIVES, 0);
       }
       raf = requestAnimationFrame(loop);
     };
@@ -452,13 +583,12 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
         <div className="px-3 pb-8 mx-auto" style={{ maxWidth: 500 }} ref={wrapRef}>
           <div className="flex items-center justify-between px-1 mb-2" style={{ color: "#fff" }}>
             <div className="flex items-center gap-3">
-              <span style={{ fontSize: 15 }}>❤️ <b>{phase === "menu" ? START_LIVES : hud.lives}</b></span>
               <button onClick={skipWithRocket} disabled={phase !== "playing" || hud.rockets <= 0}
                 style={{ fontSize: 13, padding: "3px 8px", borderRadius: 999, background: hud.rockets > 0 && phase === "playing" ? "rgba(252,221,9,0.18)" : "rgba(255,255,255,0.06)", border: `1px solid ${hud.rockets > 0 && phase === "playing" ? ARAGON_YELLOW : "rgba(255,255,255,0.12)"}`, color: "#fff" }}>
                 🚀 {hud.rockets} <span style={{ fontSize: 10, opacity: 0.8 }}>saltar nivel</span>
               </button>
             </div>
-            <div style={{ fontFamily: "'Bebas Neue', Impact, sans-serif", fontSize: 26 }}>{phase === "menu" ? 0 : hud.score}</div>
+            <div style={{ fontSize: 11, color: "rgba(168,181,199,0.85)" }}>Nivel {phase === "menu" ? 1 : hud.level}</div>
           </div>
           <div className="relative" style={{ borderRadius: 14, overflow: "hidden", touchAction: "none", boxShadow: "0 8px 30px rgba(0,0,0,0.4)" }}>
             <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
