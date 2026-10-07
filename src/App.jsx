@@ -7,6 +7,7 @@ import {
   Store, Calendar, Layers, Megaphone, HelpCircle, LifeBuoy, Share2,
 } from "lucide-react";
 import { supabase } from "./lib/supabaseClient";
+import PilarGame, { PILAR_EVENT, PILAR_ENDS_AT } from "./PilarGame.jsx";
 
 /* =============================================================================
    IDENTIDAD VISUAL
@@ -2024,7 +2025,7 @@ async function writeShared(key, value) {
    fechas, para poder revisarla antes de que empiece.
    ----------------------------------------------------------------------- */
 const FEATURE_DEFS = [
-  { key: "pilar", label: "Fiestas del Pilar", desc: "Decoración y cuestionario diario (5–12 oct)" },
+  { key: "pilar", label: "Fiestas del Pilar", desc: "Minijuego Bola del Pilar en Inicio (hasta el 12 oct, 23:59)" },
 ];
 function isFeatureOn(flags, key, isAdmin, todayStr) {
   const f = flags?.[key];
@@ -2045,6 +2046,69 @@ async function readIsAdmin(name) {
     const { data } = await supabase.from("profiles").select("is_admin").eq("name", name).maybeSingle();
     return !!data?.is_admin;
   } catch { return false; }
+}
+
+async function submitPilarScore(leagueId, score) {
+  try {
+    const { data, error } = await supabase.rpc("submit_minigame_score", { p_event: PILAR_EVENT, p_league: leagueId, p_score: score });
+    if (error) {
+      const m = (error.message || "").toLowerCase();
+      if (m.includes("terminado")) return { error: "El evento ya ha terminado: esta partida no cuenta." };
+      if (m.includes("sesión")) return { error: "Inicia sesión de nuevo para guardar tu puntuación." };
+      return { error: "No se pudo guardar la puntuación." };
+    }
+    return data || {};
+  } catch { return { error: "No se pudo guardar la puntuación." }; }
+}
+async function loadPilarRanking(leagueId) {
+  try {
+    const { data, error } = await supabase.from("minigame_scores").select("user_name, best, plays, best_at")
+      .eq("event", PILAR_EVENT).eq("league_id", leagueId).order("best", { ascending: false }).order("best_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  } catch { return null; }
+}
+
+// Tarjeta del evento del Pilar en Inicio (solo si el interruptor "pilar" está activo para esta cuenta).
+function PilarEventCard({ leagueId, me }) {
+  const on = useFeature("pilar");
+  const { isAdmin } = useContext(FeatureContext);
+  const [open, setOpen] = useState(false);
+  const [mine, setMine] = useState(null);
+  useEffect(() => {
+    if (!on) return;
+    loadPilarRanking(leagueId).then((rows) => {
+      if (!rows) return;
+      const i = rows.findIndex((r) => r.user_name === me);
+      setMine(i >= 0 ? { pos: i + 1, best: rows[i].best } : null);
+    });
+  }, [on, leagueId, me, open]);
+  if (!on) return null;
+  const ended = Date.now() > PILAR_ENDS_AT;
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="fl-tap relative w-full overflow-hidden rounded-2xl text-left"
+        style={{ background: "linear-gradient(135deg, #D7262C 0%, #FF8A00 100%)", boxShadow: "0 0 24px rgba(215,38,44,0.35)" }}>
+        <div style={{ height: 6, background: "repeating-linear-gradient(90deg, #D7262C 0 10px, #1d1d1f 10px 20px, #f4f1ea 20px 30px)" }} />
+        <span style={{ position: "absolute", right: -6, bottom: -14, fontSize: 84, opacity: 0.2, lineHeight: 1 }}>💐</span>
+        <div className="px-4 py-3 relative">
+          <div className="fl-mono text-[10px] tracking-[0.18em]" style={{ color: "#FCDD09" }}>FIESTAS DEL PILAR{isAdmin ? " · PRUEBAS" : ""}</div>
+          <div className="fl-display text-2xl uppercase" style={{ color: C.white, lineHeight: 1.05 }}>Bola del Pilar</div>
+          <div className="fl-body text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.9)" }}>
+            {ended ? "Evento terminado · mira el ranking final" : "Minijuego: los 3 mejores de la liga se llevan 7,5M · 5M · 2,5M"}
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            <span className="fl-mono text-[11px] font-bold rounded-full px-3 py-1" style={{ background: C.white, color: "#D7262C" }}>{ended ? "VER RANKING" : "¡JUGAR!"}</span>
+            {mine && <span className="fl-mono text-[10px]" style={{ color: C.white }}>Tu récord: {mine.best} · #{mine.pos}</span>}
+          </div>
+        </div>
+      </button>
+      {open && (
+        <PilarGame me={me} leagueId={leagueId} isAdmin={isAdmin} onClose={() => setOpen(false)}
+          submitScore={(score) => submitPilarScore(leagueId, score)} loadRanking={() => loadPilarRanking(leagueId)} />
+      )}
+    </>
+  );
 }
 
 function AdminFlagsScreen({ flags, onSave, onClose }) {
@@ -7888,6 +7952,8 @@ function InicioTab({ profile, teams, players, jornadas, leagueId, myTeam, budget
         </div>
       </div>
 
+      <PilarEventCard leagueId={leagueId} me={profile.name} />
+
       {!isPlayoffMode && (
       <div className="grid grid-cols-2 gap-2.5">
         <button onClick={() => setShowMisStats(true)} className="fl-tap relative overflow-hidden rounded-2xl px-3 py-2 text-left" style={{ background: C.navy800, border: `2px solid #FF8A00`, boxShadow: `0 0 8px #FF8A0033` }}>
@@ -11739,6 +11805,10 @@ function ActividadFeed({ activity, players }) {
         if (a.type === "venta") {
           text = <>
             <span style={{ color: C.baby }}>{a.userId}</span> ha vendido a <span className="font-medium">{asset?.name || "una jugadora"}</span> a la liga por {fmtCredits(a.amount)}
+          </>;
+        } else if (a.type === "minijuego") {
+          text = <>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha quedado {a.pos}º en la 💐 Bola del Pilar ({a.score} niveles) y gana <span className="font-medium">{fmtCredits(a.amount)}</span>
           </>;
         } else if (a.type === "triple") {
           text = <>
