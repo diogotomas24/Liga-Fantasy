@@ -11808,7 +11808,7 @@ function ActividadFeed({ activity, players }) {
           </>;
         } else if (a.type === "minijuego") {
           text = <>
-            <span style={{ color: C.baby }}>{a.userId}</span> ha quedado {a.pos}º en la 💐 Bola del Pilar ({a.score} niveles) y gana <span className="font-medium">{fmtCredits(a.amount)}</span>
+            <span style={{ color: C.baby }}>{a.userId}</span> ha quedado {a.pos}º en la 🏀 Bola del Pilar ({a.score} canastas) y gana <span className="font-medium">{fmtCredits(a.amount)}</span>
           </>;
         } else if (a.type === "triple") {
           text = <>
