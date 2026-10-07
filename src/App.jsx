@@ -2013,6 +2013,108 @@ async function writeShared(key, value) {
     return true;
   } catch { return false; }
 }
+/* -----------------------------------------------------------------------
+   FUNCIONES EN PRUEBAS (feature flags). Cada novedad (evento del Pilar,
+   Halloween, Navidad...) tiene un interruptor guardado en kv_store
+   ("featureFlags") con tres modos:
+     · "off"   → nadie la ve
+     · "admin" → solo las cuentas de pruebas (profiles.is_admin = true)
+     · "all"   → todo el mundo, dentro de sus fechas (from/to, opcionales)
+   Las cuentas de pruebas la ven siempre que no esté en "off", sin mirar las
+   fechas, para poder revisarla antes de que empiece.
+   ----------------------------------------------------------------------- */
+const FEATURE_DEFS = [
+  { key: "pilar", label: "Fiestas del Pilar", desc: "Decoración y cuestionario diario (5–12 oct)" },
+];
+function isFeatureOn(flags, key, isAdmin, todayStr) {
+  const f = flags?.[key];
+  if (!f || !f.mode || f.mode === "off") return false;
+  if (isAdmin) return true;
+  if (f.mode !== "all") return false;
+  if (f.from && todayStr < f.from) return false;
+  if (f.to && todayStr > f.to) return false;
+  return true;
+}
+const FeatureContext = createContext({ isAdmin: false, flags: {}, isOn: () => false });
+function useFeature(key) {
+  return useContext(FeatureContext).isOn(key);
+}
+async function readIsAdmin(name) {
+  if (!name) return false;
+  try {
+    const { data } = await supabase.from("profiles").select("is_admin").eq("name", name).maybeSingle();
+    return !!data?.is_admin;
+  } catch { return false; }
+}
+
+function AdminFlagsScreen({ flags, onSave, onClose }) {
+  const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(flags || {})));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const setField = (key, field, value) => setDraft((d) => ({ ...d, [key]: { mode: "off", ...(d[key] || {}), [field]: value } }));
+  const MODES = [
+    { v: "off", label: "Apagado" },
+    { v: "admin", label: "Solo pruebas" },
+    { v: "all", label: "Todos" },
+  ];
+  const save = async () => {
+    setBusy(true); setMsg("");
+    const ok = await onSave(draft);
+    setBusy(false);
+    setMsg(ok ? "Guardado ✓" : "No se pudo guardar");
+  };
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto fl-body" style={{ background: C.navy900 }}>
+      <header className="px-4 pb-3 flex items-center gap-3" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <button onClick={onClose} className="fl-tap p-1"><ChevronLeft size={20} color={C.white} /></button>
+        <div>
+          <div className="fl-mono text-[10px] tracking-[0.2em]" style={{ color: C.gold }}>CUENTA DE PRUEBAS</div>
+          <h1 className="fl-display text-xl uppercase" style={{ color: C.white }}>Funciones en pruebas</h1>
+        </div>
+      </header>
+      <div className="px-4 pt-4 pb-10 max-w-sm mx-auto space-y-3">
+        <p className="text-xs" style={{ color: C.muted }}>
+          "Solo pruebas": solo la ven las cuentas de pruebas. "Todos": la ve todo el mundo entre las fechas (si las pones).
+        </p>
+        {FEATURE_DEFS.map((def) => {
+          const f = draft[def.key] || { mode: "off" };
+          return (
+            <div key={def.key} className="rounded-xl p-3" style={{ background: C.navy800, border: `1px solid ${C.line}` }}>
+              <div className="fl-display text-base uppercase" style={{ color: C.white }}>{def.label}</div>
+              <div className="text-[11px] mb-2" style={{ color: C.muted }}>{def.desc}</div>
+              <div className="grid grid-cols-3 gap-1 mb-2">
+                {MODES.map((m) => {
+                  const active = (f.mode || "off") === m.v;
+                  return (
+                    <button key={m.v} onClick={() => setField(def.key, "mode", m.v)} className="fl-tap rounded-lg py-2 fl-mono text-[10px] uppercase"
+                      style={{ background: active ? C.principal : C.navy700, color: active ? C.white : C.muted }}>
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-[10px] fl-mono" style={{ color: C.muted }}>DESDE
+                  <input type="date" value={f.from || ""} onChange={(e) => setField(def.key, "from", e.target.value || null)}
+                    className="w-full mt-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.navy700, color: C.white, border: `1px solid ${C.line}` }} />
+                </label>
+                <label className="text-[10px] fl-mono" style={{ color: C.muted }}>HASTA
+                  <input type="date" value={f.to || ""} onChange={(e) => setField(def.key, "to", e.target.value || null)}
+                    className="w-full mt-1 rounded-lg px-2 py-1.5 text-xs" style={{ background: C.navy700, color: C.white, border: `1px solid ${C.line}` }} />
+                </label>
+              </div>
+            </div>
+          );
+        })}
+        <button onClick={save} disabled={busy} className="fl-tap w-full rounded-xl py-3 fl-display uppercase" style={{ background: C.principal, color: C.white, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Guardando…" : "Guardar"}
+        </button>
+        {msg && <div className="text-center text-xs" style={{ color: msg.includes("✓") ? C.positive : C.negative }}>{msg}</div>}
+      </div>
+    </div>
+  );
+}
+
 async function deleteShared(key) {
   try {
     const { error } = await supabase.from("kv_store").delete().eq("key", key);
@@ -3538,7 +3640,31 @@ function ChooseNameScreen({ onSubmit, onSignOut }) {
    APP PRINCIPAL
    ========================================================================== */
 export default function App() {
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [flags, setFlags] = useState({});
+  useEffect(() => { readShared("featureFlags", {}).then((f) => setFlags(f || {})); }, []);
+  const value = useMemo(() => ({
+    isAdmin,
+    flags,
+    isOn: (key) => isFeatureOn(flags, key, isAdmin, toDateStr(getEffectiveToday())),
+    setAdminName: async (name) => setIsAdmin(await readIsAdmin(name)),
+    saveFlags: async (next) => {
+      const ok = await writeShared("featureFlags", next);
+      if (ok) setFlags(next);
+      return ok;
+    },
+  }), [isAdmin, flags]);
+  return (
+    <FeatureContext.Provider value={value}>
+      <AppInner />
+    </FeatureContext.Provider>
+  );
+}
+
+function AppInner() {
+  const featureCtx = useContext(FeatureContext);
   const [profile, setProfile] = useState(undefined);
+  useEffect(() => { featureCtx.setAdminName(profile?.name || null); }, [profile?.name]);
   const [pendingUser, setPendingUser] = useState(null); // { userId } cuando hay sesión (típicamente de Google) pero falta elegir nombre
   const [players, setPlayers] = useState([]);
   const [jornadas, setJornadas] = useState([]);
@@ -6531,6 +6657,8 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
   const [adminLeague, setAdminLeague] = useState(null); // liga cuya administración está abierta
   const [showSideMenu, setShowSideMenu] = useState(false);
   const [menuScreen, setMenuScreen] = useState(null);
+  const featureCtx = useContext(FeatureContext);
+  const [showAdminFlags, setShowAdminFlags] = useState(false);
   const openMenuScreen = (key) => { setShowSideMenu(false); if (key !== "mis_ligas") setMenuScreen(key); };
 
   const currentJornada = useMemo(() => findCurrentJornada(jornadas), [jornadas]);
@@ -6573,7 +6701,16 @@ function MisLigasScreen({ leagues, onSelect, onCreate, onJoin, jornadas, teamCre
           <span className="fl-mono text-[10px]" style={{ color: C.muted }}>{profile?.name}</span>
           <button onClick={onSignOut} className="fl-tap fl-mono text-[10px]" style={{ color: C.principal }}>· Cerrar sesión</button>
         </div>
+        {featureCtx.isAdmin && (
+          <button onClick={() => setShowAdminFlags(true)} className="fl-tap inline-flex items-center gap-1.5 mt-2 rounded-full px-3 py-1 fl-mono text-[10px] uppercase tracking-wider"
+            style={{ background: "rgba(255,200,61,0.14)", color: C.gold, border: `1px solid ${C.gold}` }}>
+            <FlaskConical size={12} /> Cuenta de pruebas · Funciones
+          </button>
+        )}
       </header>
+      {showAdminFlags && featureCtx.isAdmin && (
+        <AdminFlagsScreen flags={featureCtx.flags} onSave={featureCtx.saveFlags} onClose={() => setShowAdminFlags(false)} />
+      )}
 
       <div className="px-4 pt-4 pb-10 max-w-sm mx-auto">
         <div className="grid grid-cols-2 gap-2 mb-4">
