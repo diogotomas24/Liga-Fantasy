@@ -65,7 +65,7 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
     g.state = "aim"; g.flight = 0; g.still = 0; g.trail = []; g.drag = null; g.squash = 0;
   };
   const loadLevel = (g, n) => {
-    g.level = getLevel(n); g.levelNo = n;
+    g.level = getLevel(n); g.levelNo = n; g.levelIntro = g.t;
     g.net = { swing: 0, stretch: 0 };
     resetBall(g);
   };
@@ -98,7 +98,7 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
     popup(g, viaRocket ? "¡COHETE!" : CHEERS[(g.score - 1) % CHEERS.length], "ok");
     spawnConfetti(g.confetti, g.level.hoop.x, g.level.hoop.y - 40, viaRocket ? 30 : 45);
     g.net.swing = 1; g.net.stretch = 1;
-    g.state = "celebrate"; g.until = g.t + (viaRocket ? 0.9 : 1.35);
+    g.state = "celebrate"; g.until = g.t + (viaRocket ? 0.9 : 1.6);
     g.next = () => loadLevel(g, g.levelNo + 1);
     setHud({ lives: g.lives, score: g.score, rockets: g.rockets, level: g.levelNo + 1 });
   };
@@ -136,7 +136,23 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
     resize();
     window.addEventListener("resize", resize);
     let menuT = 0, menuBall = { x: W * 0.32, y: 200, vx: 140, vy: 0, rot: 0 };
+    // Cada parte del dibujo va protegida: si una falla en algún móvil, el
+    // resto se sigue dibujando (antes un fallo dejaba la pantalla sin aro ni bola).
+    let lastErr = null;
+    const safe = (name, fn) => {
+      try { ctx.save(); fn(); } catch (e) { lastErr = `${name}: ${e && e.message}`; if (window.console) console.warn("pilar", lastErr); }
+      finally { try { ctx.restore(); } catch {} }
+    };
     const loop = (ts) => {
+      try { frame(ts); } catch (e) { lastErr = `frame: ${e && e.message}`; }
+      if (lastErr && isAdmin) {
+        ctx.setTransform(canvas.width / W, 0, 0, canvas.width / W, 0, 0);
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(0, H - 16, W, 16);
+        ctx.fillStyle = "#fff"; ctx.font = "9px monospace"; ctx.textAlign = "left"; ctx.fillText(String(lastErr).slice(0, 70), 4, H - 5);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    const frame = (ts) => {
       const g = G.current;
       const scale = canvas.width / W;
       ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -172,18 +188,18 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
           stepConfetti(g.confetti, DT);
         }
         const lv = g.level;
-        drawBackground(ctx, lv.scene, g.t);
-        for (const b of lv.bodies) drawBodyShadow(ctx, b, bodyPose(b, g.t));
-        drawHoopBack(ctx, lv, g.t, g.net);
-        for (const b of lv.bodies) drawBody(ctx, b, bodyPose(b, g.t));
-        drawBallShadow(ctx, g.ball.x, g.ball.y);
-        drawTrail(ctx, g.trail);
-        drawBall(ctx, g.ball.x, g.ball.y, g.ball.rot, g.squash);
-        drawConfetti(ctx, g.confetti);
-        drawHoopFront(ctx, lv, g.t, g.net);
+        safe("drawBackground", () => drawBackground(ctx, lv.scene, g.t));
+        for (const b of lv.bodies) safe("drawBodyShadow", () => drawBodyShadow(ctx, b, bodyPose(b, g.t)));
+        safe("drawHoopBack", () => drawHoopBack(ctx, lv, g.t, g.net));
+        for (const b of lv.bodies) safe("drawBody", () => drawBody(ctx, b, bodyPose(b, g.t)));
+        safe("drawBallShadow", () => drawBallShadow(ctx, g.ball.x, g.ball.y));
+        safe("drawTrail", () => drawTrail(ctx, g.trail));
+        safe("drawBall", () => drawBall(ctx, g.ball.x, g.ball.y, g.ball.rot, g.squash));
+        safe("drawConfetti", () => drawConfetti(ctx, g.confetti));
+        safe("drawHoopFront", () => drawHoopFront(ctx, lv, g.t, g.net));
         if (g.state === "aim" && g.drag && g.drag.len > 6) {
           const { vx, vy } = launchFromDrag(g.drag.dx, g.drag.dy);
-          drawAim(ctx, g.ball.x, g.ball.y, vx, vy, MAX_SPEED);
+          safe("drawAim", () => drawAim(ctx, g.ball.x, g.ball.y, vx, vy, MAX_SPEED));
         }
         if (g.state === "aim" && !g.drag && g.levelNo <= 2 && g.score === 0) {
           ctx.save(); ctx.font = `15px ${GAME_FONT}`; ctx.textAlign = "center"; ctx.lineJoin = "round";
@@ -195,10 +211,29 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
           // el texto nunca tapa la canasta: si el aro está arriba, sale abajo (y al revés)
           const hy = lv.hoop.y;
           const py = hy < 250 ? Math.min(FLOOR - 70, hy + 150) : Math.max(110, hy - 150);
-          drawPopup(ctx, g.popup.text, g.t - g.popup.t0, g.popup.kind, py);
+          safe("drawPopup", () => drawPopup(ctx, g.popup.text, g.t - g.popup.t0, g.popup.kind, py));
         }
-        drawHud(ctx, g.lives, g.score, g.bump);
-        drawLevelTag(ctx, g.levelNo, lv.scene);
+        // transición entre niveles: se funde al acabar la celebración y el nuevo
+        // nivel entra con su cartel, para que se entienda que la canasta cambia de sitio
+        safe("transition", () => {
+          let a = 0;
+          if (g.state === "celebrate" && g.until - g.t < 0.3) a = 1 - (g.until - g.t) / 0.3;
+          const since = g.t - (g.levelIntro ?? -9);
+          if (since >= 0 && since < 0.35) a = Math.max(a, 1 - since / 0.35);
+          if (a > 0) { ctx.globalAlpha = Math.min(1, a); ctx.fillStyle = "#FFF3E2"; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
+          if (since >= 0 && since < 1.3 && g.levelNo > 1) {
+            const k = since < 0.2 ? since / 0.2 : since > 1.0 ? 1 - (since - 1.0) / 0.3 : 1;
+            ctx.globalAlpha = Math.max(0, k);
+            ctx.fillStyle = "rgba(26,30,46,0.75)"; ctx.fillRect(0, 200, W, 64);
+            ctx.font = `30px ${GAME_FONT}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#FFFFFF";
+            ctx.fillText(`NIVEL ${g.levelNo}`, W / 2, 222);
+            ctx.font = `14px ${GAME_FONT}`; ctx.fillStyle = PAL.yellow;
+            ctx.fillText(SCENES[g.level.scene].name.toUpperCase(), W / 2, 248);
+            ctx.globalAlpha = 1;
+          }
+        });
+        safe("drawHud", () => drawHud(ctx, g.lives, g.score, g.bump));
+        safe("drawLevelTag", () => drawLevelTag(ctx, g.levelNo, lv.scene));
       } else {
         // menú: la bola bota sola sobre el escenario
         menuT += 1 / 60;
@@ -211,7 +246,6 @@ export default function PilarGame({ me, leagueId, onClose, submitScore, loadRank
         drawBall(ctx, menuBall.x, menuBall.y, menuBall.rot);
         drawHud(ctx, START_LIVES, 0, 0);
       }
-      raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
