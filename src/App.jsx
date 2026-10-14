@@ -232,12 +232,13 @@ function calcSwishPoints(stats, position) {
   const pd = s.pd || 0;                                 // pérdidas
   const tap = s.tap || 0;                               // tapones
   const faltas = s.faltas || 0;
+  const tecnicas = (s.tecnicas || 0) + (s.antideportivas || 0); // técnicas + antideportivas: −1 cada una
   const valoracion = s.valoracion || 0;
   // Si NO ha jugado (0 minutos), no puntúa NADA: ni el +1 de minutos ni
   // ninguna otra estadística.
   const noPlayed = minutos <= 0;
 
-  const pf = noPlayed ? { minutos: 0, puntos: 0, asist: 0, tlibre: 0, t3: 0, rebotes: 0, pd: 0, tap: 0, robos: 0, faltas: 0, valoracion: 0 } : {
+  const pf = noPlayed ? { minutos: 0, puntos: 0, asist: 0, tlibre: 0, t3: 0, rebotes: 0, pd: 0, tap: 0, robos: 0, faltas: 0, tecnicas: 0, valoracion: 0 } : {
     minutos: minutos >= 20 ? 2 : 1, // ≥20 min = +2; de 1 a 19 min = +1; 0 min = 0 (arriba)
     puntos: Math.floor(puntos / 4),
     asist: Math.floor(asist / 2),
@@ -248,6 +249,7 @@ function calcSwishPoints(stats, position) {
     tap: legacy ? (isPivot ? Math.floor(tap / 2) : tap) : tap, // desde J2: +1 por tapón en todas las posiciones
     robos: legacy ? 0 : Math.floor(robos / 2),                  // desde J2: +1 cada 2 robos
     faltas: faltas >= 5 ? -3 : -Math.floor(faltas / 3),
+    tecnicas: -tecnicas,
     valoracion: valoracion <= 0 ? 0 : valoracion <= 5 ? 1 : valoracion <= 10 ? 2 : valoracion <= 15 ? 3 : 4,
   };
 
@@ -262,6 +264,7 @@ function calcSwishPoints(stats, position) {
     { key: "tap", label: "Tapones", cantidad: tap, pts: pf.tap },
     ...(legacy ? [] : [{ key: "robos", label: "Robos", cantidad: robos, pts: pf.robos }]),
     { key: "faltas", label: "Faltas", cantidad: faltas, pts: pf.faltas },
+    ...(tecnicas > 0 ? [{ key: "tecnicas", label: "Técnicas y antideportivas", cantidad: tecnicas, pts: pf.tecnicas }] : []),
     { key: "valoracion", label: "Puntos SWISH", cantidad: valoracion, pts: pf.valoracion },
   ];
   return { breakdown, total: breakdown.reduce((sum, b) => sum + b.pts, 0) };
@@ -2635,6 +2638,7 @@ async function readJornadas() {
         t2: s.t2 || 0, t2Intentados: s.t2_intentados || 0, t3Intentados: s.t3_intentados || 0, tlibreIntentados: s.tlibre_intentados || 0,
         rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
+        tecnicas: s.tecnicas || 0, antideportivas: s.antideportivas || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
         _jornada: s.jornada_id,
       };
@@ -2757,6 +2761,7 @@ async function writeJornada(jornada) {
         t2: s.t2 || 0, t2_intentados: s.t2Intentados || 0, t3_intentados: s.t3Intentados || 0, tlibre_intentados: s.tlibreIntentados || 0,
         rebofen: s.rebofen || 0, rebdefe: s.rebdefe || 0, asist: s.asist || 0, pd: s.pd || 0,
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
+        tecnicas: s.tecnicas || 0, antideportivas: s.antideportivas || 0,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
       }));
       const r4 = await supabase.from("jornada_stats").upsert(rows, { onConflict: "jornada_id,player_id" });
@@ -6437,6 +6442,7 @@ function FuncionamientoScreen({ onClose }) {
         "Robos: +1 por cada 2 robos (desde la J2).",
         "Pérdidas: −1 por cada 2 (pívots: −1 por cada 3) · Tiros libres fallados: −1 por cada 2.",
         "Faltas: −1 por cada 3; con 5 faltas, −3.",
+        "Técnicas y antideportivas: −1 por cada una (desde la J3).",
         "Valoración del partido: 1 a 5 → +1 · 6 a 10 → +2 · 11 a 15 → +3 · más de 15 → +4 · 0 o negativa → 0.",
         "Ejemplo: una base con 32 min, 16 puntos, 7 asistencias, 3 rebotes, 2 pérdidas, 3 faltas y 18 de valoración suma 2+4+3+1−1−1+4 = 12 puntos (24 si es tu capitana).",
       ],
@@ -11998,7 +12004,7 @@ function JornadaDetail({ jornada, players }) {
               <th className="px-1 text-center">Reb.of.</th><th className="px-1 text-center">Reb.def.</th>
               <th className="px-1 text-center">Asist.</th><th className="px-1 text-center">Pérd.</th>
               <th className="px-1 text-center">Robos</th><th className="px-1 text-center">Tap.</th>
-              <th className="px-1 text-center">Faltas</th><th className="px-1 text-center">Valor.</th>
+              <th className="px-1 text-center">Faltas</th><th className="px-1 text-center">Téc.</th><th className="px-1 text-center">Antid.</th><th className="px-1 text-center">Valor.</th>
               <th className="px-1 text-right">SWISH</th>
             </tr></thead>
             <tbody>
@@ -12009,7 +12015,7 @@ function JornadaDetail({ jornada, players }) {
                   <tr key={p.id} style={{ borderTop: `1px solid ${C.lineSoft}` }}>
                     <td className="py-1.5 pr-2" style={{ color: C.white }}><div className="font-medium">{p.name}</div><PositionBadge posKey={p.position} /></td>
                     {num("minutos")}{num("puntos")}{num("t3")}{num("tlibre")}{num("rebofen")}{num("rebdefe")}
-                    {num("asist")}{num("pd")}{num("robos")}{num("tap")}{num("faltas")}{num("valoracion")}
+                    {num("asist")}{num("pd")}{num("robos")}{num("tap")}{num("faltas")}{num("tecnicas")}{num("antideportivas")}{num("valoracion")}
                     <td className="text-right fl-mono font-semibold" style={{ color: pts >= 0 ? C.positive : C.negative }}>{pts}</td>
                   </tr>
                 );
