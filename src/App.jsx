@@ -218,6 +218,8 @@ function fmtHMS(ms) {
 // Jornadas que se puntúan con las reglas ANTIGUAS (tapones de pívot cada 2 y
 // sin puntos por robos). A partir de la J2: tapón = +1 siempre y robos +1 cada 2.
 const LEGACY_SCORING_JORNADAS = new Set(["j1"]);
+// Jornadas en las que todavía no se apuntaban técnicas ni antideportivas.
+const PRE_TECNICAS_JORNADAS = new Set(["j1", "j2"]);
 function calcSwishPoints(stats, position) {
   const s = stats || {};
   const legacy = LEGACY_SCORING_JORNADAS.has(s._jornada);
@@ -264,7 +266,8 @@ function calcSwishPoints(stats, position) {
     { key: "tap", label: "Tapones", cantidad: tap, pts: pf.tap },
     ...(legacy ? [] : [{ key: "robos", label: "Robos", cantidad: robos, pts: pf.robos }]),
     { key: "faltas", label: "Faltas", cantidad: faltas, pts: pf.faltas },
-    ...(tecnicas > 0 ? [{ key: "tecnicas", label: "Técnicas y antideportivas", cantidad: tecnicas, pts: pf.tecnicas }] : []),
+    // Desde la J3 es una estadística más (se ve siempre, aunque sea 0).
+    ...(tecnicas > 0 || !PRE_TECNICAS_JORNADAS.has(s._jornada) ? [{ key: "tecnicas", label: "Técnicas y antideportivas", cantidad: tecnicas, pts: pf.tecnicas }] : []),
     { key: "valoracion", label: "Puntos SWISH", cantidad: valoracion, pts: pf.valoracion },
   ];
   return { breakdown, total: breakdown.reduce((sum, b) => sum + b.pts, 0) };
