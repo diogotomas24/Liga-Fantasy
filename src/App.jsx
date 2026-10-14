@@ -7748,7 +7748,15 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
               {mvpChoice === p.id && <Check size={16} color={C.baby} />}
             </button>
           ))}
-          {otherSelected ? (
+          {/* Hasta la J3 se usa la regla antigua ("Otra jugadora" a secas, acierta si
+              la MVP no es ninguna de las 7). Desde la J4 hay que elegir cuál. */}
+          {(jornadaNumber || 0) < 4 ? (
+            <button onClick={() => setMvpChoice("otra")} className="fl-tap w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-center"
+              style={{ background: mvpChoice === "otra" ? C.babySoft : C.navy800, border: `1.5px solid ${mvpChoice === "otra" ? C.baby : C.line}` }}>
+              <span className="fl-body text-sm font-medium" style={{ color: C.white }}>Otra jugadora</span>
+              {mvpChoice === "otra" && <Check size={16} color={C.baby} />}
+            </button>
+          ) : otherSelected ? (
             <button onClick={() => setShowOtherMvp(true)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-left"
               style={{ background: C.babySoft, border: `1.5px solid ${C.baby}` }}>
               <PlayerPhoto url={otherSelected.photo} size={36} rounded={10} />
