@@ -7508,12 +7508,24 @@ function CalendarioModal({ jornadas, teamCrests, initialIndex, onClose, players 
 function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntry, budgetAvailable, teamCrests, profile, allEntries, onJoin, onClose }) {
   const [picks, setPicks] = useState({});
   const [mvpChoice, setMvpChoice] = useState(null);
+  const [showOtherMvp, setShowOtherMvp] = useState(false);
+  const [otherQuery, setOtherQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showHistory, setShowHistory] = useState(false);
 
   const mvpCandidates = useMemo(() => tripleFantasyService.computeMvpCandidates(players, jornadas), [players, jornadas]);
   const partidos = jornada?.partidos || [];
+  // "Otra jugadora": ahora hay que decir CUÁL. Solo jugadoras (no entrenadores)
+  // de equipos que juegan esta jornada (el que descansa no puede ser MVP).
+  const otherMvpPool = useMemo(() => {
+    const teamsPlaying = new Set();
+    partidos.forEach((p) => { if (!tripleFantasyService.byeSide(p)) { teamsPlaying.add(p.local); teamsPlaying.add(p.visitante); } });
+    const cand = new Set(mvpCandidates.map((p) => p.id));
+    return (players || []).filter((p) => p.position !== "DT" && teamsPlaying.has(p.team) && !cand.has(p.id))
+      .sort((a, b) => a.team.localeCompare(b.team) || a.name.localeCompare(b.name));
+  }, [players, partidos, mvpCandidates]);
+  const otherSelected = mvpChoice && mvpChoice !== "otra" && !mvpCandidates.some((p) => p.id === mvpChoice) ? players.find((p) => p.id === mvpChoice) : null;
   const allPicked = partidos.length > 0 && partidos.every(p => picks[p.id] || tripleFantasyService.byeSide(p)) && !!mvpChoice;
   // Una vez empezada la jornada ya no se puede entrar al Triple.
   const jornadaStarted = !!jornada && hasJornadaEffectivelyStarted(jornada);
@@ -7736,15 +7748,55 @@ function TripleFantasyScreen({ jornada, jornadaNumber, players, jornadas, myEntr
               {mvpChoice === p.id && <Check size={16} color={C.baby} />}
             </button>
           ))}
-          <button onClick={() => setMvpChoice("otra")} className="fl-tap w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-center"
-            style={{ background: mvpChoice === "otra" ? C.babySoft : C.navy800, border: `1.5px solid ${mvpChoice === "otra" ? C.baby : C.line}` }}>
-            <span className="fl-body text-sm font-medium" style={{ color: C.white }}>Otra jugadora</span>
-            {mvpChoice === "otra" && <Check size={16} color={C.baby} />}
-          </button>
+          {otherSelected ? (
+            <button onClick={() => setShowOtherMvp(true)} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-left"
+              style={{ background: C.babySoft, border: `1.5px solid ${C.baby}` }}>
+              <PlayerPhoto url={otherSelected.photo} size={36} rounded={10} />
+              <div className="flex-1 min-w-0">
+                <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{otherSelected.name}</div>
+                <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{otherSelected.team} · toca para cambiar</div>
+              </div>
+              <Check size={16} color={C.baby} />
+            </button>
+          ) : (
+            <button onClick={() => setShowOtherMvp(true)} className="fl-tap w-full flex items-center justify-center gap-2 px-3 py-3 rounded-md text-center"
+              style={{ background: C.navy800, border: `1.5px solid ${C.line}` }}>
+              <span className="fl-body text-sm font-medium" style={{ color: C.white }}>Otra jugadora…</span>
+              <span className="fl-mono text-[10px]" style={{ color: C.muted }}>elige cuál</span>
+            </button>
+          )}
         </div>
 
         {error && <div className="fl-mono text-xs mb-3 text-center" style={{ color: C.negative }}>{error}</div>}
       </div>
+      {showOtherMvp && (
+        <div className="fixed inset-0 z-[70] flex flex-col fl-body" style={{ background: C.navy900 }}>
+          <div className="flex items-center gap-2 px-3 pb-3 flex-shrink-0" style={{ borderBottom: `1px solid ${C.line}`, paddingTop: "calc(env(safe-area-inset-top, 0px) + 12px)" }}>
+            <button onClick={() => setShowOtherMvp(false)} className="fl-tap p-1.5 -ml-1"><ChevronLeft size={20} color={C.white} /></button>
+            <span className="fl-display text-base uppercase" style={{ color: C.white }}>Elige tu MVP</span>
+          </div>
+          <div className="px-4 pt-3">
+            <input value={otherQuery} onChange={(e) => setOtherQuery(e.target.value)} placeholder="Buscar jugadora o equipo"
+              className="w-full rounded-md px-3 py-2 text-sm outline-none" style={{ background: C.navy800, color: C.white, border: `1px solid ${C.line}` }} />
+          </div>
+          <div className="flex-1 overflow-y-auto fl-scrollbar px-4 py-3 space-y-1.5">
+            {otherMvpPool.filter((p) => {
+              const q = otherQuery.trim().toLowerCase();
+              return !q || p.name.toLowerCase().includes(q) || p.team.toLowerCase().includes(q);
+            }).map((p) => (
+              <button key={p.id} onClick={() => { setMvpChoice(p.id); setShowOtherMvp(false); }} className="fl-tap w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-left"
+                style={{ background: mvpChoice === p.id ? C.babySoft : C.navy800, border: `1.5px solid ${mvpChoice === p.id ? C.baby : C.line}` }}>
+                <PlayerPhoto url={p.photo} size={32} rounded={9} />
+                <div className="flex-1 min-w-0">
+                  <div className="fl-body text-sm font-medium truncate" style={{ color: C.white }}>{p.name}</div>
+                  <div className="fl-mono text-[10px]" style={{ color: C.muted }}>{p.team}</div>
+                </div>
+                {mvpChoice === p.id && <Check size={16} color={C.baby} />}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="px-4 pb-4 flex-shrink-0">
         <button disabled={!allPicked || busy} onClick={submit}
           className="fl-tap w-full rounded-md py-3 text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
