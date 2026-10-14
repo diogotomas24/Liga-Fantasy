@@ -2603,12 +2603,17 @@ async function readJornadas() {
     // "guarde" esa jornada incompleta (como el guardado de alineaciones)
     // podría dar por hecho que esos partidos "no existen" y acabar
     // borrándolos de verdad. Mejor un límite generoso que dejarlo al default.
-    const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }] = await Promise.all([
+    const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }, { data: aRows }] = await Promise.all([
       supabase.from("jornadas").select("*").limit(2000),
       supabase.from("partidos").select("*").limit(20000),
       supabase.from("jornada_stats").select("*").limit(50000),
+      // Partidos aplazados: siguen siendo de SU jornada (sus puntos cuentan en
+      // ella cuando se jueguen) pero se marcan para que se vea en la app.
+      supabase.from("partidos_aplazados").select("*").limit(2000).then((r) => r, () => ({ data: [] })),
     ]);
     if (e1) throw e1; if (e2) throw e2; if (e3) throw e3;
+    const aplazados = {};
+    (aRows || []).forEach((a) => { aplazados[a.partido_id] = a; });
 
     const partidosByJornada = {};
     (pRows || []).forEach((p) => {
@@ -2619,6 +2624,7 @@ async function readJornadas() {
         marcadorLocal: p.marcador_local ?? "", marcadorVisitante: p.marcador_visitante ?? "",
         p1Local: p.marcador_local_p1 ?? "", p2Local: p.marcador_local_p2 ?? "", p3Local: p.marcador_local_p3 ?? "", p4Local: p.marcador_local_p4 ?? "",
         p1Visitante: p.marcador_visitante_p1 ?? "", p2Visitante: p.marcador_visitante_p2 ?? "", p3Visitante: p.marcador_visitante_p3 ?? "", p4Visitante: p.marcador_visitante_p4 ?? "",
+        ...(aplazados[p.id] ? { aplazado: true, nuevaFecha: aplazados[p.id].nueva_fecha || "" } : {}),
       });
     });
     const statsByJornada = {};
@@ -3118,6 +3124,14 @@ function parseFechaDDMMYYYY(str) {
 // Fecha "de referencia" de una jornada: la más temprana entre TODOS sus
 // partidos (no solo el primero del array — si a ese en concreto le faltara
 // la fecha, antes se perdía la jornada entera aunque los demás sí la tuvieran).
+// Partido aplazado y todavía sin resultado.
+function isAplazadoPendiente(p) {
+  return !!p?.aplazado && (p.marcadorLocal === "" || p.marcadorLocal == null);
+}
+function aplazadoLabel(p) {
+  return p?.nuevaFecha ? `APLAZADO · ${p.nuevaFecha}` : "APLAZADO";
+}
+
 function jornadaDate(jornada) {
   let earliest = null;
   (jornada?.partidos || []).forEach((p) => {
@@ -6175,7 +6189,8 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests, renderPl
           const isDescanso = isDescansoPartido(p);
           const played = isDescanso || (p.marcadorLocal !== "" && p.marcadorLocal != null && p.marcadorVisitante !== "" && p.marcadorVisitante != null);
           const started = hasJornadaEffectivelyStarted(jornada);
-          const estado = played ? "FINALIZADO" : started ? "EN JUEGO" : "SIN EMPEZAR";
+          const aplazado = isAplazadoPendiente(p);
+          const estado = played ? "FINALIZADO" : aplazado ? aplazadoLabel(p) : started ? "EN JUEGO" : "SIN EMPEZAR";
           return (
             <button key={p.id} onClick={() => setOpenPartido(p)} className="fl-tap w-full fl-row p-3.5 text-left">
               <div className="flex items-center justify-between">
@@ -6191,7 +6206,7 @@ function PartidosGlobalScreen({ onClose, jornadas, players, teamCrests, renderPl
                   <TeamCrest name={p.visitante} photo={teamCrests?.[p.visitante]} size={26} />
                 </div>
               </div>
-              <div className="text-center mt-2 fl-mono text-[9px] font-semibold" style={{ color: played ? C.muted : started ? C.positive : C.muted }}>{estado}</div>
+              <div className="text-center mt-2 fl-mono text-[9px] font-semibold" style={{ color: played ? C.muted : aplazado ? C.baby : started ? C.positive : C.muted }}>{estado}</div>
             </button>
           );
         })}
@@ -7237,7 +7252,9 @@ function PartidoRow({ m, teamCrests, jornada, players }) {
                 <CircleCheck size={10} /> FINALIZADO
               </span>
             </>
-          ) : m.hora
+          ) : isAplazadoPendiente(m)
+            ? <span className="fl-mono text-[9px] font-semibold px-1.5 py-0.5 rounded-full text-center" style={{ color: C.baby, border: `1px solid ${C.baby}` }}>{aplazadoLabel(m)}</span>
+            : m.hora
             ? <span className="fl-mono text-xs font-semibold" style={{ color: C.baby }}>{m.hora}</span>
             : <span className="fl-mono text-[10px]" style={{ color: C.muted }}>VS</span>}
         </div>
@@ -7343,7 +7360,7 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
         <div className="flex items-center justify-between mb-3">
           <span className="fl-mono text-[11px]" style={{ color: C.muted }}>{[m.fecha, m.hora].filter(Boolean).join(" · ") || "Fecha por confirmar"}</span>
           <span className="fl-mono text-[10px] px-2 py-1 rounded-full font-semibold" style={{ background: played ? C.babySoft : C.navy800, color: played ? C.baby : C.muted }}>
-            {played ? "Finalizado" : "Pendiente"}
+            {played ? "Finalizado" : isAplazadoPendiente(m) ? (m.nuevaFecha ? `Aplazado · ${m.nuevaFecha}` : "Aplazado") : "Pendiente"}
           </span>
         </div>
 
