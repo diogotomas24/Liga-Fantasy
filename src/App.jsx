@@ -280,10 +280,8 @@ function calcSwishPoints(stats, position) {
     ...(legacy ? [] : [{ key: "robos", label: "Robos", cantidad: robos, pts: pf.robos }]),
     { key: "faltas", label: "Faltas", cantidad: faltas, pts: pf.faltas },
     // Desde la J3 son estadísticas propias (se ven siempre, aunque sean 0).
-    ...(tecnicas > 0 || newStats ? [{ key: "tecnicas", label: "Técnicas", cantidad: tecnicas, pts: pf.tecnicas }] : []),
-    ...(antideportivas > 0 || newStats ? [{ key: "antideportivas", label: "Antideportivas", cantidad: antideportivas, pts: pf.antideportivas }] : []),
-    ...(hasPM ? [{ key: "masMenos", label: `+/- (al equipo le tocaba ${pmEsperado > 0 ? "+" : ""}${(Math.round(pmEsperado * 10) / 10).toLocaleString("es-ES")})${minutos < 10 ? " · <10 min" : ""}`, cantidad: `${Number(s.masMenos) > 0 ? "+" : ""}${s.masMenos}`, pts: pf.masMenos }] : []),
-    { key: "valoracion", label: "Puntos SWISH", cantidad: valoracion, pts: pf.valoracion },
+    ...(tecnicas > 0 || antideportivas > 0 || newStats ? [{ key: "tecnicas", label: "Técnicas y antideportivas", cantidad: tecnicas + antideportivas, pts: pf.tecnicas + pf.antideportivas }] : []),
+    ...(hasPM ? [{ key: "masMenos", label: `+/- (al equipo le tocaba ${pmEs    ...(hasPM ? [{ key: "masMenos", label: "+/-", cantidad: (() => { const r = Math.round(pmDiff * 10) / 10; return `${r > 0 ? "+" : ""}${r.toLocaleString("es-ES")}`; })(), pts: pf.masMenos }] : []), pf.valoracion },
   ];
   return { breakdown, total: breakdown.reduce((sum, b) => sum + b.pts, 0) };
 }
