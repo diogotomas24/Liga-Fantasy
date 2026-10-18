@@ -244,8 +244,8 @@ function calcSwishPoints(stats, position) {
   const pmEsperado = hasPM ? (s.diferencia || 0) * minutos / 40 : 0;
   const pmDiff = hasPM ? Number(s.masMenos) - pmEsperado : 0;
   const pmPts = !hasPM || minutos < 10 ? 0
-    : pmDiff >= 25 ? 3 : pmDiff >= 15 ? 2 : pmDiff >= 8 ? 1
-    : pmDiff <= -25 ? -3 : pmDiff <= -15 ? -2 : pmDiff <= -8 ? -1 : 0;
+    : pmDiff >= 18 ? 3 : pmDiff >= 10 ? 2 : pmDiff >= 5 ? 1
+    : pmDiff <= -18 ? -3 : pmDiff <= -10 ? -2 : pmDiff <= -5 ? -1 : 0;
   const valoracion = s.valoracion || 0;
   // Si NO ha jugado (0 minutos), no puntúa NADA: ni el +1 de minutos ni
   // ninguna otra estadística.
@@ -6461,7 +6461,7 @@ function FuncionamientoScreen({ onClose }) {
         "Pérdidas: −1 por cada 2 (pívots: −1 por cada 3) · Tiros libres fallados: −1 por cada 2.",
         "Faltas: −1 por cada 3; con 5 faltas, −3.",
         "Técnicas: −1 por cada una · Antideportivas: −1 por cada una (desde la J3).",
-        "+/- respecto al equipo (desde la J3, con 10 minutos o más): se compara su +/- con lo que le tocaría según el resultado de su equipo repartido por sus minutos (resultado × minutos ÷ 40). Diferencia de +8 → +1 · +15 → +2 · +25 → +3; y al revés, −8 → −1 · −15 → −2 · −25 → −3.",
+        "+/- respecto al equipo (desde la J3, con 10 minutos o más): se compara su +/- con lo que le tocaría según el resultado de su equipo repartido por sus minutos (resultado × minutos ÷ 40). Diferencia de +5 → +1 · +10 → +2 · +18 → +3; y al revés, −5 → −1 · −10 → −2 · −18 → −3.",
         "Valoración del partido: 1 a 5 → +1 · 6 a 10 → +2 · 11 a 15 → +3 · más de 15 → +4 · 0 o negativa → 0.",
         "Ejemplo: una base con 32 min, 16 puntos, 7 asistencias, 3 rebotes, 2 pérdidas, 3 faltas y 18 de valoración suma 2+4+3+1−1−1+4 = 12 puntos (24 si es tu capitana).",
       ],
