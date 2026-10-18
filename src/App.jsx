@@ -10011,9 +10011,17 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
   const starterIds = { BASE: byPos("BASE"), ALERO: byPos("ALERO"), PIVOT: byPos("PIVOT") };
   const savedFormation = usedLineup?.formation || "2-2-1";
   const fitsFormation = (key) => { const f = FORMATIONS[key]; return f && ["BASE", "ALERO", "PIVOT"].every(k => starterIds[k].length === f[k]); };
+  // Alineación incompleta (menos de 5 titulares): se dibuja la formación que
+  // tenía guardada con los huecos sin rellenar como "vacíos", en vez de
+  // recolocar a las que hay en otras posiciones de la pista.
+  const fitsWithGaps = (key) => { const f = FORMATIONS[key]; return f && ["BASE", "ALERO", "PIVOT"].every(k => starterIds[k].length <= f[k]); };
+  const nStarters = starterIds.BASE.length + starterIds.ALERO.length + starterIds.PIVOT.length;
+  const incompleteLineup = !!usedLineup && (usedLineup.starters || []).length > 0 && nStarters < 5;
   const shownFormation = fitsFormation(savedFormation)
     ? savedFormation
-    : (Object.keys(FORMATIONS).find(fitsFormation) || null);
+    : (Object.keys(FORMATIONS).find(fitsFormation)
+      || (fitsWithGaps(savedFormation) ? savedFormation : Object.keys(FORMATIONS).find(fitsWithGaps))
+      || null);
   const req = shownFormation
     ? FORMATIONS[shownFormation]
     : { BASE: starterIds.BASE.length, ALERO: starterIds.ALERO.length, PIVOT: starterIds.PIVOT.length };
@@ -10047,6 +10055,11 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
         <EmptyState compact title="Sin alineación guardada" text="No se guardó una alineación para esta jornada." />
       ) : (
         <>
+          {incompleteLineup && (
+            <div className="fl-row p-3 mb-3 fl-body text-xs" style={{ border: `1px solid ${C.negative}66`, color: C.muted }}>
+              <span style={{ color: C.negative, fontWeight: 700 }}>Alineación incompleta ({nStarters}/5):</span> sin las 5 titulares esta jornada no puntúa.
+            </div>
+          )}
           <div className="rounded-2xl mb-3 relative overflow-hidden" style={{ background: C.navy700, border: `1px solid ${C.line}`, minHeight: 420 }}>
             <BasketballCourt />
             <div className="relative h-full flex flex-col justify-between py-5 px-1" style={{ minHeight: 420 }}>
@@ -10059,7 +10072,7 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
                       return (
                         <div key={id || `${rowKey}-${posKey}-empty-${i}`} className="flex flex-col items-center">
                           <div className="relative" style={{ opacity: isOut ? 0.45 : 1 }}>
-                            <CourtSlot player={p} size={70} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
+                            <CourtSlot player={p} size={70} label={p ? undefined : POS_BY_KEY[posKey]?.label} isCaptain={!!id && usedLineup.captainId === id} teamCrests={teamCrests} onClick={p ? () => onOpenPlayer(p) : undefined} />
                             {p && (
                               <span className="absolute -top-1.5 -right-1.5 fl-mono text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                                 style={{ background: C.navy900, color: isOut ? C.muted : (pointsFor(id) >= 0 ? C.positive : C.negative), border: `1px solid ${isOut ? C.negative : C.line}`, textDecoration: isOut ? "line-through" : "none" }}>
