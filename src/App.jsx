@@ -10042,14 +10042,6 @@ function PuntosJornadaView({ jornadas, history, leagueId, teamName, players, lin
         ))}
       </div>
 
-      {Object.keys(swaps).length > 0 && (
-        <div className="fl-row p-3 mb-3 flex items-center gap-2" style={{ border: `1px solid ${C.gold}55` }}>
-          <RefreshCw size={14} color={C.gold} />
-          <p className="fl-body text-xs" style={{ color: C.muted }}>
-            Cambio automático: la del banquillo puntuó más que su titular en la misma posición, así que cuenta ella. Mira las flechas <span style={{ color: C.negative }}>↓</span>/<span style={{ color: C.positive }}>↑</span> en la pista.
-          </p>
-        </div>
-      )}
 
       {!usedLineup || (usedLineup.starters || []).length === 0 ? (
         <EmptyState compact title="Sin alineación guardada" text="No se guardó una alineación para esta jornada." />
