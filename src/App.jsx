@@ -5114,8 +5114,13 @@ function AppInner() {
     if (!activeLeagueId || !marketClosesAt) return;
     const wait = marketClosesAt - realNowMs();
     if (wait > 24 * 3600 * 1000) return;
-    const timers = [300, 3000, 8000].map((extra, i) =>
-      setTimeout(async () => { if (i === 0) await runServerTick(); syncMarket(activeLeagueId, marketResetHour); }, Math.max(0, wait) + extra));
+    const timers = [5000, 30000, 70000].map((extra) =>
+      // Solo se RELEE el estado: el mercado lo resuelve únicamente el cron del
+      // servidor (cada minuto). Antes cada móvil abierto lanzaba además una
+      // pasada del servidor al llegar a 0, y varias pasadas a la vez se
+      // pisaban entre sí (una resolvía los fichajes y otra, con los equipos
+      // leídos un instante antes, los borraba al guardar las ofertas).
+      setTimeout(() => { syncMarket(activeLeagueId, marketResetHour); }, Math.max(0, wait) + extra));
     return () => timers.forEach(clearTimeout);
   }, [activeLeagueId, marketClosesAt, marketResetHour, syncMarket]);
 
