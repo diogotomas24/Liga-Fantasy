@@ -4,6 +4,7 @@ const r = await Bun.build({
   plugins: [{ name: "alias", setup(b) {
     b.onResolve({ filter: /^react$|^react\/jsx(-dev)?-runtime$/ }, () => ({ path: import.meta.dir + "/react-stub.js" }));
     b.onResolve({ filter: /^lucide-react$/ }, () => ({ path: import.meta.dir + "/lucide-stub.js" }));
+    b.onResolve({ filter: /PilarGame\.jsx$/ }, () => ({ path: import.meta.dir + "/pilar-stub.js" }));
   } }],
 });
 console.log(r.success, r.logs.map(String).join("\n"));

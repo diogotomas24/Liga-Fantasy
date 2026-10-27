@@ -28,3 +28,17 @@ POST a la función con `{"dry": true, "clockOffsetMs": <ms>}`: hace una pasada
 completa leyendo datos reales, pero en vez de guardar devuelve la lista de
 escrituras que haría. `clockOffsetMs` adelanta el reloj (p. ej. hasta las
 22:00:30 para probar el cierre del mercado, o las 00:00:30 para los precios).
+
+## Nota (27/10/2026): ahorro de datos
+
+- `server-client.js` lleva una **caché de lecturas por pasada**: la misma
+  consulta solo se pide una vez por pasada y una escritura en una tabla borra
+  la caché de esa tabla.
+- La función desplegada sigue usando la **lógica del servidor de septiembre**
+  (`functions/fabtasy-cron-v2/bundle.js`), a la que se le ha añadido a mano la
+  misma caché. Así no cambia ninguna regla del juego en el servidor. Si se
+  vuelve a generar con este script, el servidor pasará a usar la lógica
+  actual de `src/App.jsx` (conviene probarlo antes con un simulacro).
+- `index.ts` carga `bundle.js` desde jsDelivr fijado a un commit, para poder
+  desplegar sin pegar el bundle entero.
+- El cron pasa cada 5 minutos (antes cada minuto).

@@ -151,7 +151,22 @@ return ($.filters ||= []).push(`${String(Y)}(${V.map((G) => JSON.stringify(G)).j
 });
 return X;
 }
-function m$($, Q) {
+// Caché de lecturas por pasada (misma consulta = una sola petición; una
+// escritura en una tabla borra la caché de esa tabla).
+var Zc = new Map(), Zs = { reads: 0, cached: 0, writes: 0 };
+function Zi($) {
+for (let Q of [...Zc.keys()])
+if (Q.startsWith($ + "|"))
+Zc.delete(Q);
+}
+var Zl = ($) => {
+try {
+return structuredClone($);
+} catch {
+return $;
+}
+};
+function m$($, Q, Zq = [], Wq = !1) {
 return new Proxy($, {
 get(X, Z) {
 if (Q$ && y$.has(Z))
@@ -159,8 +174,43 @@ return (V) => {
 let G = u$(Q, Z, V);
 return n0.push(G), j$(G);
 };
+if (Z === "then")
+return (R, E) => {
+if (Wq)
+return Zi(Q), Zs.writes++, X.then((r) => (Zi(Q), r)).then(R, E);
+let K;
+try {
+K = Q + "|" + JSON.stringify(Zq);
+} catch {
+K = null;
+}
+if (K && Zc.has(K))
+return Zs.cached++, Zc.get(K).then((r) => Zl(r)).then(R, E);
+Zs.reads++;
+let P = Promise.resolve(X.then((r) => r));
+if (K)
+Zc.set(K, P), P.then((r) => {
+if (r && r.error)
+Zc.delete(K);
+}, () => Zc.delete(K));
+return P.then((r) => Zl(r)).then(R, E);
+};
 let Y = X[Z];
-return typeof Y === "function" ? Y.bind(X) : Y;
+if (typeof Y !== "function")
+return Y;
+return (...V) => {
+let O = Y.apply(X, V);
+if (O && typeof O === "object" && typeof O.then === "function") {
+let A;
+try {
+A = JSON.parse(JSON.stringify(V));
+} catch {
+A = String(V);
+}
+return m$(O, Q, [...Zq, [String(Z), A]], Wq || y$.has(Z));
+}
+return O;
+};
 }
 });
 }
@@ -182,7 +232,7 @@ return typeof X === "function" ? X.bind(g0) : X;
 }
 });
 function _$($, { dry: Q = !1 } = {}) {
-g0 = $, Q$ = !!Q, n0 = [], p0 = [];
+g0 = $, Q$ = !!Q, n0 = [], p0 = [], Zc = new Map(), Zs = { reads: 0, cached: 0, writes: 0 };
 }
 function R$() {
 return n0;
@@ -2235,7 +2285,7 @@ return { ok: !0, skipped: "locked", source: Z };
 await l("cronLock", Date.now());
 }
 let V = await C$(Y), G = await J$();
-return { ok: !0, dry: Q, source: Z, ...V, pendingPush: G, steps: Y, writes: Q ? R$() : void 0, now: (/* @__PURE__ */ new Date()).toString(), madrid: (/* @__PURE__ */ new Date()).toLocaleString("es-ES") };
+return { ok: !0, dry: Q, source: Z, ...V, pendingPush: G, reads: { ...Zs }, steps: Y, writes: Q ? R$() : void 0, now: (/* @__PURE__ */ new Date()).toString(), madrid: (/* @__PURE__ */ new Date()).toLocaleString("es-ES") };
 } catch (V) {
 return { ok: !1, error: String(V && V.message || V), steps: Y };
 } finally {

@@ -1040,6 +1040,8 @@ function realNowMs() { return Date.now(); }
 let IS_SERVER = false;
 const SERVER_AUTOMATION = true;
 function clientSkipsAutomation() { return !IS_SERVER && SERVER_AUTOMATION; }
+// Última vez que la app descargó la lista completa de jugadoras (ver syncMarket).
+let lastPlayersReadAt = 0;
 // Pide al servidor que ejecute YA una pasada (p. ej. justo al llegar el
 // contador del mercado a 0, al crear una liga o con los botones del
 // simulador), en vez de esperar al siguiente minuto.
@@ -3946,8 +3948,9 @@ function AppInner() {
   // sin empezar). Se hace una sola vez por jornada (lista global "lineupLocked").
   const checkLineupLock = useCallback(async () => {
     if (clientSkipsAutomation()) {
-      // Lo congela el servidor; la app solo recoge las alineaciones ya bloqueadas.
-      try { const fj = await readJornadas(); if (fj.length) setJornadas((prev) => mergeJornadasPreservingLineups(fj, prev)); } catch {}
+      // Lo congela el servidor; la app recoge las alineaciones ya bloqueadas
+      // con la sincronización general (y con los avisos en directo), así que
+      // aquí ya no se vuelven a descargar todas las jornadas cada minuto.
       return;
     }
     try {
@@ -4692,7 +4695,7 @@ function AppInner() {
   // Nota: esta comprobación corre en el cliente a intervalos como sustituto temporal
   // de un job programado en servidor; la resolución de la subasta y el descuento del
   // presupuesto deben ejecutarse como operación atómica en backend cuando haya BD real.
-  const syncMarket = useCallback(async (leagueId, resetHour) => {
+  const syncMarket = useCallback(async (leagueId, resetHour, opts = {}) => {
     if (!leagueId || resetHour == null || resolvingRef.current) return;
     // En playoffs no hay mercado (se pasa a draft, sin dinero de por medio) —
     // sin este freno, el motor de mercado seguía rotando en segundo plano
@@ -4706,8 +4709,13 @@ function AppInner() {
     if (clientSkipsAutomation()) {
       // Solo LECTURA: el mercado lo resuelve/renueva el servidor.
       try {
+        // Las jugadoras (con su historial de precios) son lo que más pesa y
+        // solo cambian una vez al día: se descargan al abrir/volver a la app
+        // o, como mucho, cada 10 minutos — no en cada sincronización.
+        const wantPlayers = !!opts.players || realNowMs() - lastPlayersReadAt > 10 * 60 * 1000;
+        if (wantPlayers) lastPlayersReadAt = realNowMs();
         const [pl, tm, mk, bd, hi, ac, of, tr, jo] = await Promise.all([
-          readPlayers(), readAllTeams(leagueId),
+          wantPlayers ? readPlayers() : Promise.resolve(null), readAllTeams(leagueId),
           readShared(leagueKey(leagueId, "currentMarket"), null), readShared(leagueKey(leagueId, "bids"), []),
           readShared(leagueKey(leagueId, "marketHistory"), []), readShared(leagueKey(leagueId, "activity"), []),
           readShared(leagueKey(leagueId, "offers"), []), readShared(leagueKey(leagueId, "triple"), []),
@@ -5096,12 +5104,102 @@ function AppInner() {
     return { ok: true };
   }, []);
 
+  // SINCRONIZACIÓN CON EL SERVIDOR (ahorro de datos).
+  // · Avisos en directo (Supabase Realtime): cuando cambia algo de la liga
+  //   (equipo, pujas, mercado, actividad, ofertas, Triple, playoffs) llega el
+  //   dato nuevo al momento y se aplica tal cual, sin volver a descargar nada.
+  //   Si cambian estadísticas/partidos, se releen solo las jornadas.
+  // · Red de seguridad: una sincronización completa cada 5 min si los avisos
+  //   en directo funcionan, o cada 60 s si no se han podido conectar.
+  // · Con la app en segundo plano no se sincroniza nada; al volver a ella se
+  //   hace una sincronización completa (incluidas las jugadoras).
+  const liveRef = useRef({ connected: false, lastSync: 0 });
   useEffect(() => {
     if (!activeLeagueId) return;
     setMarket(null); // evita mostrar por un instante el mercado de la liga anterior
-    syncMarket(activeLeagueId, marketResetHour);
-    const t = setInterval(() => syncMarket(activeLeagueId, marketResetHour), 15000);
-    return () => clearInterval(t);
+    const full = (players = false) => {
+      liveRef.current.lastSync = realNowMs();
+      return syncMarket(activeLeagueId, marketResetHour, { players });
+    };
+    full(true);
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const every = liveRef.current.connected ? 5 * 60 * 1000 : 60 * 1000;
+      if (realNowMs() - liveRef.current.lastSync >= every - 1000) full(false);
+    }, 30000);
+    const onVisible = () => {
+      if (typeof document !== "undefined" && !document.hidden) full(true);
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [activeLeagueId, marketResetHour, syncMarket]);
+
+  useEffect(() => {
+    if (!activeLeagueId || IS_SERVER) return;
+    const suffix = `_${activeLeagueId}`;
+    const teamPrefix = `${TEAM_KEY_PREFIX}${activeLeagueId}::`;
+    let jornadasTimer = null, refreshTimer = null;
+    const reloadJornadas = () => {
+      clearTimeout(jornadasTimer);
+      jornadasTimer = setTimeout(async () => {
+        try { const fj = await readJornadas(); if (fj.length) setJornadas((prev) => mergeJornadasPreservingLineups(fj, prev)); } catch {}
+      }, 3000);
+    };
+    const scheduleRefresh = () => {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        liveRef.current.lastSync = realNowMs();
+        syncMarket(activeLeagueId, marketResetHour, {});
+      }, 3000);
+    };
+    const onKv = (payload) => {
+      const row = payload.new && payload.new.key ? payload.new : null;
+      const key = row ? row.key : payload.old?.key;
+      if (!key || key === "cronLock") return;
+      if (!row) { scheduleRefresh(); return; } // borrado: se relee todo
+      const value = row.value;
+      if (key.startsWith(teamPrefix)) {
+        const name = value?.name || key.slice(teamPrefix.length);
+        setTeams((prev) => ({ ...prev, [name]: value }));
+        return;
+      }
+      if (key.endsWith(suffix)) {
+        const base = key.slice(0, -suffix.length);
+        if (base === "currentMarket") setMarket(value);
+        else if (base === "bids") setBids(value || []);
+        else if (base === "marketHistory") setMarketHistory(value || []);
+        else if (base === "activity") setActivity(value || []);
+        else if (base === "offers") setOffers(value || []);
+        else if (base === "triple") setTripleEntries(value || []);
+        else if (base === "playoffState") setPlayoffState(value || playoffService.emptyState());
+        return;
+      }
+      // Otras ligas o claves internas del servidor: no afectan a esta pantalla.
+    };
+    let channel = null;
+    try {
+      channel = supabase.channel(`fabtasy-live-${activeLeagueId}`)
+        .on("postgres_changes", { event: "*", schema: "public", table: "kv_store", filter: "key=neq.cronLock" }, onKv)
+        .on("postgres_changes", { event: "*", schema: "public", table: "jornada_stats" }, reloadJornadas)
+        .on("postgres_changes", { event: "*", schema: "public", table: "partidos" }, reloadJornadas)
+        .on("postgres_changes", { event: "*", schema: "public", table: "jornadas" }, reloadJornadas)
+        .on("postgres_changes", { event: "*", schema: "public", table: "partidos_aplazados" }, reloadJornadas)
+        .subscribe((status) => {
+          const was = liveRef.current.connected;
+          liveRef.current.connected = status === "SUBSCRIBED";
+          // Al (re)conectar se sincroniza una vez para no perder nada de lo
+          // que haya pasado mientras no había conexión en directo.
+          if (liveRef.current.connected && !was) scheduleRefresh();
+        });
+    } catch { liveRef.current.connected = false; }
+    return () => {
+      clearTimeout(jornadasTimer); clearTimeout(refreshTimer);
+      liveRef.current.connected = false;
+      try { if (channel) supabase.removeChannel(channel); } catch {}
+    };
   }, [activeLeagueId, marketResetHour, syncMarket]);
 
   // Justo cuando la cuenta atrás llega a 0: se resuelve el mercado AL
@@ -5114,9 +5212,12 @@ function AppInner() {
     if (!activeLeagueId || !marketClosesAt) return;
     const wait = marketClosesAt - realNowMs();
     if (wait > 24 * 3600 * 1000) return;
-    const timers = [5000, 30000, 70000].map((extra) =>
+    // El servidor pasa cada 5 min: si los avisos en directo no están
+    // conectados, se relee unas cuantas veces en esos minutos tras el cierre.
+    if (liveRef.current.connected) return;
+    const timers = [10000, 100000, 200000, 320000].map((extra) =>
       // Solo se RELEE el estado: el mercado lo resuelve únicamente el cron del
-      // servidor (cada minuto). Antes cada móvil abierto lanzaba además una
+      // servidor (cada 5 min). Antes cada móvil abierto lanzaba además una
       // pasada del servidor al llegar a 0, y varias pasadas a la vez se
       // pisaban entre sí (una resolvía los fichajes y otra, con los equipos
       // leídos un instante antes, los borraba al guardar las ofertas).

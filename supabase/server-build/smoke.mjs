@@ -38,5 +38,5 @@ const client = { from: builder, functions: { invoke: async (n, o) => { writes.pu
 const offs = [0, (Date.parse("2026-09-28T20:00:30Z") - Date.now()), (Date.parse("2026-09-28T22:00:30Z") - Date.now())];
 for (const off of offs) {
   const r = await runTick({ client, dry: true, clockOffsetMs: off });
-  console.log(JSON.stringify({ ok: r.ok, err: r.error, madrid: r.madrid, steps: r.steps, writes: r.writes }, null, 0).slice(0, 2500));
+  console.log(JSON.stringify({ ok: r.ok, err: r.error, madrid: r.madrid, reads: r.reads, steps: r.steps, writes: r.writes }, null, 0).slice(0, 2500));
 }
