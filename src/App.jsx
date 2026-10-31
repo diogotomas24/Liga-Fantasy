@@ -241,7 +241,8 @@ function calcSwishPoints(stats, position) {
   // por sus minutos (resultado × minutos / 40). Desde la J3 y con 10+ minutos.
   const newStats = !PRE_TECNICAS_JORNADAS.has(s._jornada);
   const hasPM = newStats && s.masMenos != null && s.masMenos !== "";
-  const pmEsperado = hasPM ? (s.diferencia || 0) * minutos / 40 : 0;
+  const minutosPartido = Number(s.minutosPartido) || 40; // 40 + 5 por prórroga
+  const pmEsperado = hasPM ? (s.diferencia || 0) * minutos / minutosPartido : 0;
   const pmDiff = hasPM ? Number(s.masMenos) - pmEsperado : 0;
   const pmPts = !hasPM || minutos < 10 ? 0
     : pmDiff >= 18 ? 3 : pmDiff >= 10 ? 2 : pmDiff >= 5 ? 1
@@ -2625,17 +2626,22 @@ async function readJornadas() {
     // "guarde" esa jornada incompleta (como el guardado de alineaciones)
     // podría dar por hecho que esos partidos "no existen" y acabar
     // borrándolos de verdad. Mejor un límite generoso que dejarlo al default.
-    const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }, { data: aRows }] = await Promise.all([
+    const [{ data: jRows, error: e1 }, { data: pRows, error: e2 }, { data: sRows, error: e3 }, { data: aRows }, { data: otRows }] = await Promise.all([
       supabase.from("jornadas").select("*").limit(2000),
       supabase.from("partidos").select("*").limit(20000),
       supabase.from("jornada_stats").select("*").limit(50000),
       // Partidos aplazados: siguen siendo de SU jornada (sus puntos cuentan en
       // ella cuando se jueguen) pero se marcan para que se vea en la app.
       supabase.from("partidos_aplazados").select("*").limit(2000).then((r) => r, () => ({ data: [] })),
+      // Prórrogas: tabla aparte (la de partidos se reescribe entera al
+      // guardar una jornada y perdería estos datos).
+      supabase.from("partidos_prorroga").select("*").limit(2000).then((r) => r, () => ({ data: [] })),
     ]);
     if (e1) throw e1; if (e2) throw e2; if (e3) throw e3;
     const aplazados = {};
     (aRows || []).forEach((a) => { aplazados[a.partido_id] = a; });
+    const prorrogas = {};
+    (otRows || []).forEach((o) => { prorrogas[o.partido_id] = o; });
 
     const partidosByJornada = {};
     (pRows || []).forEach((p) => {
@@ -2647,6 +2653,7 @@ async function readJornadas() {
         p1Local: p.marcador_local_p1 ?? "", p2Local: p.marcador_local_p2 ?? "", p3Local: p.marcador_local_p3 ?? "", p4Local: p.marcador_local_p4 ?? "",
         p1Visitante: p.marcador_visitante_p1 ?? "", p2Visitante: p.marcador_visitante_p2 ?? "", p3Visitante: p.marcador_visitante_p3 ?? "", p4Visitante: p.marcador_visitante_p4 ?? "",
         ...(aplazados[p.id] ? { aplazado: true, nuevaFecha: aplazados[p.id].nueva_fecha || "" } : {}),
+        ...(prorrogas[p.id] ? { otLocal: prorrogas[p.id].ot_local ?? "", otVisitante: prorrogas[p.id].ot_visitante ?? "", prorrogas: prorrogas[p.id].prorrogas || 1 } : {}),
       });
     });
     const statsByJornada = {};
@@ -2659,6 +2666,7 @@ async function readJornadas() {
         robos: s.robos || 0, tap: s.tap || 0, faltas: s.faltas || 0, valoracion: s.valoracion || 0,
         tecnicas: s.tecnicas || 0, antideportivas: s.antideportivas || 0, masMenos: s.mas_menos ?? null,
         jugo: !!s.jugo, victoria: !!s.victoria, diferencia: s.diferencia || 0, mvp: !!s.mvp,
+        minutosPartido: s.minutos_partido || null, // 45, 50... si hubo prórroga
         _jornada: s.jornada_id,
       };
     });
@@ -5187,6 +5195,7 @@ function AppInner() {
         .on("postgres_changes", { event: "*", schema: "public", table: "partidos" }, reloadJornadas)
         .on("postgres_changes", { event: "*", schema: "public", table: "jornadas" }, reloadJornadas)
         .on("postgres_changes", { event: "*", schema: "public", table: "partidos_aplazados" }, reloadJornadas)
+        .on("postgres_changes", { event: "*", schema: "public", table: "partidos_prorroga" }, reloadJornadas)
         .subscribe((status) => {
           const was = liveRef.current.connected;
           liveRef.current.connected = status === "SUBSCRIBED";
@@ -6566,7 +6575,7 @@ function FuncionamientoScreen({ onClose }) {
         "Pérdidas: −1 por cada 2 (pívots: −1 por cada 3) · Tiros libres fallados: −1 por cada 2.",
         "Faltas: −1 por cada 3; con 5 faltas, −3.",
         "Técnicas: −1 por cada una · Antideportivas: −1 por cada una (desde la J3).",
-        "+/- respecto al equipo (desde la J3, con 10 minutos o más): se compara su +/- con lo que le tocaría según el resultado de su equipo repartido por sus minutos (resultado × minutos ÷ 40). Diferencia de +5 → +1 · +10 → +2 · +18 → +3; y al revés, −5 → −1 · −10 → −2 · −18 → −3.",
+        "+/- respecto al equipo (desde la J3, con 10 minutos o más): se compara su +/- con lo que le tocaría según el resultado de su equipo repartido por sus minutos (resultado × minutos ÷ 40, o ÷ 45 si hubo prórroga). Diferencia de +5 → +1 · +10 → +2 · +18 → +3; y al revés, −5 → −1 · −10 → −2 · −18 → −3.",
         "Valoración del partido: 1 a 5 → +1 · 6 a 10 → +2 · 11 a 15 → +3 · más de 15 → +4 · 0 o negativa → 0.",
         "Ejemplo: una base con 32 min, 16 puntos, 7 asistencias, 3 rebotes, 2 pérdidas, 3 faltas y 18 de valoración suma 2+4+3+1−1−1+4 = 12 puntos (24 si es tu capitana).",
       ],
@@ -7465,6 +7474,8 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
   const quarters = [
     [m.p1Local, m.p1Visitante], [m.p2Local, m.p2Visitante], [m.p3Local, m.p3Visitante], [m.p4Local, m.p4Visitante],
   ];
+  const hasOT = (m.otLocal !== "" && m.otLocal != null) || (m.otVisitante !== "" && m.otVisitante != null);
+  if (hasOT) quarters.push([m.otLocal, m.otVisitante]);
   const hasQuarters = quarters.some(([a, b]) => (a !== "" && a != null) || (b !== "" && b != null));
 
   const localStats = useMemo(() => aggregateTeamStats(m.local, jornada, players), [m.local, jornada, players]);
@@ -7497,7 +7508,7 @@ function PartidoDetailScreen({ partido: m, jornada, players, teamCrests, onClose
         <div className="fl-row p-4 mb-5">
           {hasQuarters && (
             <div className="flex items-center justify-end gap-2 mb-1.5 pr-0.5">
-              {["P1", "P2", "P3", "P4"].map((q) => <span key={q} className="fl-mono text-[9px] text-center" style={{ color: C.muted, width: 22 }}>{q}</span>)}
+              {["P1", "P2", "P3", "P4", ...(hasOT ? [m.prorrogas > 1 ? `PR×${m.prorrogas}` : "PR"] : [])].map((q) => <span key={q} className="fl-mono text-[9px] text-center" style={{ color: C.muted, width: 22 }}>{q}</span>)}
               <span style={{ width: 34 }} />
             </div>
           )}
